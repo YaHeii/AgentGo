@@ -1,0 +1,24 @@
+# Go 语言编译结果
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.app
+
+# IDE 相关
+*.idea/
+*.vscode/
+*.swp
+
+# 依赖和临时文件
+vendor/
+*.DS_Store
+*.env
+
+# agent
+.trellis/**
+.agents/**
+.codex/**
