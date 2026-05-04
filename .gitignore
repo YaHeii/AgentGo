@@ -1,4 +1,4 @@
-# Go 语言编译结果
+# 编译结果
 *.exe
 *.exe~
 *.dll
@@ -22,3 +22,5 @@ vendor/
 .trellis/**
 .agents/**
 .codex/**
+
+docs/

@@ -1,0 +1,85 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"embed"
+	"fmt"
+	"io/fs"
+	"path"
+	"sort"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/YaHeii/agentGo/internal/store"
+)
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+type Store struct {
+	db *sql.DB
+	q  *Queries
+}
+
+var _ store.SessionStore = (*Store)(nil)
+
+func Open(dbPath string) (*Store, error) {
+	dbConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+
+	dbConn.SetMaxOpenConns(1)
+
+	if err := initSchema(context.Background(), dbConn); err != nil {
+		_ = dbConn.Close()
+		return nil, err
+	}
+
+	return &Store{
+		db: dbConn,
+		q:  New(dbConn),
+	}, nil
+}
+
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+func initSchema(ctx context.Context, dbConn *sql.DB) error {
+	if _, err := dbConn.ExecContext(ctx, "PRAGMA foreign_keys = ON;"); err != nil {
+		return fmt.Errorf("enable foreign keys: %w", err)
+	}
+
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("read migrations: %w", err)
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		sqlBytes, err := migrationsFS.ReadFile(path.Join("migrations", name))
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		if _, err := dbConn.ExecContext(ctx, string(sqlBytes)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
+func unixMilliToTime(ms int64) time.Time {
+	return time.UnixMilli(ms).UTC()
+}
