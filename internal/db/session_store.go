@@ -9,7 +9,55 @@ import (
 )
 
 func (s *Store) CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error) {
-	row, err := s.q.CreateSession(ctx, CreateSessionParams{
+	return createSessionWithQuerier(ctx, s.q, params)
+}
+
+func (s *Store) ListSessions(ctx context.Context) ([]store.Session, error) {
+	return listSessionsWithQuerier(ctx, s.q)
+}
+
+func (s *Store) GetSession(ctx context.Context, id string) (store.Session, error) {
+	return getSessionWithQuerier(ctx, s.q, id)
+}
+
+func (s *Store) UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error) {
+	return updateSessionWithQuerier(ctx, s.q, params)
+}
+
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	return deleteSessionWithQuerier(ctx, s.q, id)
+}
+
+func (s *txStore) CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error) {
+	return createSessionWithQuerier(ctx, s.q, params)
+}
+
+func (s *txStore) ListSessions(ctx context.Context) ([]store.Session, error) {
+	return listSessionsWithQuerier(ctx, s.q)
+}
+
+func (s *txStore) GetSession(ctx context.Context, id string) (store.Session, error) {
+	return getSessionWithQuerier(ctx, s.q, id)
+}
+
+func (s *txStore) UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error) {
+	return updateSessionWithQuerier(ctx, s.q, params)
+}
+
+func (s *txStore) DeleteSession(ctx context.Context, id string) error {
+	return deleteSessionWithQuerier(ctx, s.q, id)
+}
+
+type sessionQuerier interface {
+	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	ListSessions(ctx context.Context) ([]Session, error)
+	GetSession(ctx context.Context, id string) (Session, error)
+	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
+	DeleteSession(ctx context.Context, id string) (int64, error)
+}
+
+func createSessionWithQuerier(ctx context.Context, q sessionQuerier, params store.CreateSessionParams) (store.Session, error) {
+	row, err := q.CreateSession(ctx, CreateSessionParams{
 		ID:           params.ID,
 		Title:        params.Title,
 		CreatedAt:    params.CreatedAt.UTC().UnixMilli(),
@@ -29,8 +77,8 @@ func (s *Store) CreateSession(ctx context.Context, params store.CreateSessionPar
 	}, nil
 }
 
-func (s *Store) ListSessions(ctx context.Context) ([]store.Session, error) {
-	rows, err := s.q.ListSessions(ctx)
+func listSessionsWithQuerier(ctx context.Context, q sessionQuerier) ([]store.Session, error) {
+	rows, err := q.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -49,8 +97,8 @@ func (s *Store) ListSessions(ctx context.Context) ([]store.Session, error) {
 	return sessions, nil
 }
 
-func (s *Store) GetSession(ctx context.Context, id string) (store.Session, error) {
-	row, err := s.q.GetSession(ctx, id)
+func getSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) (store.Session, error) {
+	row, err := q.GetSession(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Session{}, store.ErrSessionNotFound
 	}
@@ -67,8 +115,8 @@ func (s *Store) GetSession(ctx context.Context, id string) (store.Session, error
 	}, nil
 }
 
-func (s *Store) UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error) {
-	row, err := s.q.UpdateSession(ctx, UpdateSessionParams{
+func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params store.UpdateSessionParams) (store.Session, error) {
+	row, err := q.UpdateSession(ctx, UpdateSessionParams{
 		Title:        params.Title,
 		UpdatedAt:    params.UpdatedAt.UTC().UnixMilli(),
 		LastActiveAt: params.LastActiveAt.UTC().UnixMilli(),
@@ -90,8 +138,8 @@ func (s *Store) UpdateSession(ctx context.Context, params store.UpdateSessionPar
 	}, nil
 }
 
-func (s *Store) DeleteSession(ctx context.Context, id string) error {
-	rows, err := s.q.DeleteSession(ctx, id)
+func deleteSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) error {
+	rows, err := q.DeleteSession(ctx, id)
 	if err != nil {
 		return err
 	}

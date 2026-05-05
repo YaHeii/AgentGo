@@ -174,6 +174,33 @@ func TestStoreLoadsSavesAndDeletesDrafts(t *testing.T) {
 	require.Equal(t, "", draft)
 }
 
+func TestStoreWithinTxRollsBackOnError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	now := time.Unix(1710003000, 0).UTC()
+
+	err := s.WithinTx(ctx, func(tx store.TxStore) error {
+		_, err := tx.CreateSession(ctx, store.CreateSessionParams{
+			ID:           "session-1",
+			Title:        "tx-session",
+			CreatedAt:    now,
+			UpdatedAt:    now,
+			LastActiveAt: now,
+		})
+		require.NoError(t, err)
+
+		return errors.New("force rollback")
+	})
+	require.EqualError(t, err, "force rollback")
+
+	sessions, err := s.ListSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, sessions, 0)
+}
+
 func newTestStore(t *testing.T) *db.Store {
 	t.Helper()
 

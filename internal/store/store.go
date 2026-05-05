@@ -100,5 +100,6 @@ type Store interface {
 	SessionStore
 	MessageStore
 	DraftStore
+	Transactor
 	Close() error
 }

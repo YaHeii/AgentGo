@@ -1,9 +1,16 @@
 package openai
 
 import (
+	"github.com/YaHeii/agentGo/internal/provider"
 	"strings"
 	"testing"
 )
+
+func TestClientImplementsStreamingLLM(t *testing.T) {
+	t.Parallel()
+
+	var _ provider.StreamingLLM = (*Client)(nil)
+}
 
 func TestNewRequiresAPIKey(t *testing.T) {
 	t.Parallel()

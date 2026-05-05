@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/YaHeii/agentGo/internal/provider"
@@ -69,6 +70,66 @@ func (c *Client) Chat(ctx context.Context, messages []provider.Message) (string,
 	}
 
 	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
+}
+
+func (c *Client) StreamChat(ctx context.Context, messages []provider.Message) <-chan provider.StreamEvent {
+	ch := make(chan provider.StreamEvent)
+
+	go func() {
+		defer close(ch)
+
+		if len(messages) == 0 {
+			ch <- provider.StreamEvent{Err: errors.New("messages cannot be empty")}
+			return
+		}
+
+		req := openai.ChatCompletionRequest{
+			Model:    c.model,
+			Stream:   true,
+			Messages: make([]openai.ChatCompletionMessage, 0, len(messages)),
+		}
+
+		for _, msg := range messages {
+			req.Messages = append(req.Messages, openai.ChatCompletionMessage{
+				Role:    msg.Role,
+				Content: msg.Content,
+			})
+		}
+
+		stream, err := c.client.CreateChatCompletionStream(ctx, req)
+		if err != nil {
+			ch <- provider.StreamEvent{Err: fmt.Errorf("create chat completion stream: %w", err)}
+			return
+		}
+		defer stream.Close()
+
+		for {
+			resp, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				ch <- provider.StreamEvent{Type: provider.StreamEventDone}
+				return
+			}
+			if err != nil {
+				ch <- provider.StreamEvent{Err: fmt.Errorf("receive stream chunk: %w", err)}
+				return
+			}
+			if len(resp.Choices) == 0 {
+				continue
+			}
+
+			delta := resp.Choices[0].Delta.Content
+			if delta == "" {
+				continue
+			}
+
+			ch <- provider.StreamEvent{
+				Type:  provider.StreamEventDelta,
+				Delta: delta,
+			}
+		}
+	}()
+
+	return ch
 }
 
 func (c *Client) Prompt(ctx context.Context, prompt string) (string, error) {

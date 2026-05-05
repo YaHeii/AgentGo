@@ -23,7 +23,12 @@ type Store struct {
 	q  *Queries
 }
 
-var _ store.SessionStore = (*Store)(nil)
+type txStore struct {
+	q *Queries
+}
+
+var _ store.Store = (*Store)(nil)
+var _ store.TxStore = (*txStore)(nil)
 
 func Open(dbPath string) (*Store, error) {
 	dbConn, err := sql.Open("sqlite", dbPath)
@@ -46,6 +51,21 @@ func Open(dbPath string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+func (s *Store) WithinTx(ctx context.Context, fn func(tx store.TxStore) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	wrapped := &txStore{q: s.q.WithTx(tx)}
+	if err := fn(wrapped); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func initSchema(ctx context.Context, dbConn *sql.DB) error {

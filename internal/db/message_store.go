@@ -9,7 +9,37 @@ import (
 )
 
 func (s *Store) CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error) {
-	row, err := s.q.CreateMessage(ctx, CreateMessageParams{
+	return createMessageWithQuerier(ctx, s.q, params)
+}
+
+func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]store.Message, error) {
+	return listMessagesWithQuerier(ctx, s.q, sessionID)
+}
+
+func (s *Store) UpdateMessage(ctx context.Context, params store.UpdateMessageParams) (store.Message, error) {
+	return updateMessageWithQuerier(ctx, s.q, params)
+}
+
+func (s *txStore) CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error) {
+	return createMessageWithQuerier(ctx, s.q, params)
+}
+
+func (s *txStore) ListMessages(ctx context.Context, sessionID string) ([]store.Message, error) {
+	return listMessagesWithQuerier(ctx, s.q, sessionID)
+}
+
+func (s *txStore) UpdateMessage(ctx context.Context, params store.UpdateMessageParams) (store.Message, error) {
+	return updateMessageWithQuerier(ctx, s.q, params)
+}
+
+type messageQuerier interface {
+	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
+	ListMessages(ctx context.Context, sessionID string) ([]Message, error)
+	UpdateMessage(ctx context.Context, arg UpdateMessageParams) (Message, error)
+}
+
+func createMessageWithQuerier(ctx context.Context, q messageQuerier, params store.CreateMessageParams) (store.Message, error) {
+	row, err := q.CreateMessage(ctx, CreateMessageParams{
 		ID:        params.ID,
 		SessionID: params.SessionID,
 		Role:      params.Role,
@@ -33,8 +63,8 @@ func (s *Store) CreateMessage(ctx context.Context, params store.CreateMessagePar
 	}, nil
 }
 
-func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]store.Message, error) {
-	rows, err := s.q.ListMessages(ctx, sessionID)
+func listMessagesWithQuerier(ctx context.Context, q messageQuerier, sessionID string) ([]store.Message, error) {
+	rows, err := q.ListMessages(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -55,8 +85,8 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]store.Mes
 	return messages, nil
 }
 
-func (s *Store) UpdateMessage(ctx context.Context, params store.UpdateMessageParams) (store.Message, error) {
-	row, err := s.q.UpdateMessage(ctx, UpdateMessageParams{
+func updateMessageWithQuerier(ctx context.Context, q messageQuerier, params store.UpdateMessageParams) (store.Message, error) {
+	row, err := q.UpdateMessage(ctx, UpdateMessageParams{
 		Content:   params.Content,
 		Status:    string(params.Status),
 		UpdatedAt: params.UpdatedAt.UTC().UnixMilli(),
