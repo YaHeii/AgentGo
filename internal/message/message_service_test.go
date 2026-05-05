@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/bus"
-	"github.com/YaHeii/agentGo/internal/event"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
@@ -17,7 +15,6 @@ func TestMessageServicePublishesCreatedDeltaAndCompletedEvents(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	eventBus := bus.NewBus(8)
 	llm := &fakeStreamingLLM{
 		events: []provider.StreamEvent{
 			{Type: provider.StreamEventDelta, Delta: "hel"},
@@ -26,7 +23,7 @@ func TestMessageServicePublishesCreatedDeltaAndCompletedEvents(t *testing.T) {
 		},
 	}
 
-	svc := NewMessageService(st, llm, eventBus, timeNowStub)
+	svc := NewMessageService(st, llm, timeNowStub)
 
 	result, err := svc.SendMessage(context.Background(), SendMessageParams{
 		SessionID: "session-1",
@@ -35,29 +32,28 @@ func TestMessageServicePublishesCreatedDeltaAndCompletedEvents(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hello", result.Assistant.Content)
 
-	events := []event.Event{
-		<-eventBus.Events(),
-		<-eventBus.Events(),
-		<-eventBus.Events(),
-		<-eventBus.Events(),
-		<-eventBus.Events(),
+	events := []Event{
+		<-svc.Events(),
+		<-svc.Events(),
+		<-svc.Events(),
+		<-svc.Events(),
+		<-svc.Events(),
 	}
 
-	require.IsType(t, event.MessageCreatedEvent{}, events[0])
-	require.IsType(t, event.MessageCreatedEvent{}, events[1])
-	require.IsType(t, event.MessageDeltaEvent{}, events[2])
-	require.IsType(t, event.MessageDeltaEvent{}, events[3])
-	require.IsType(t, event.MessageCompletedEvent{}, events[4])
-	require.Equal(t, "hel", events[2].(event.MessageDeltaEvent).Delta)
-	require.Equal(t, "hello", events[4].(event.MessageCompletedEvent).Message.Content)
-	require.Equal(t, store.MessageStatusComplete, events[4].(event.MessageCompletedEvent).Message.Status)
+	require.IsType(t, MessageCreatedEvent{}, events[0])
+	require.IsType(t, MessageCreatedEvent{}, events[1])
+	require.IsType(t, MessageDeltaEvent{}, events[2])
+	require.IsType(t, MessageDeltaEvent{}, events[3])
+	require.IsType(t, MessageCompletedEvent{}, events[4])
+	require.Equal(t, "hel", events[2].(MessageDeltaEvent).Delta)
+	require.Equal(t, "hello", events[4].(MessageCompletedEvent).Message.Content)
+	require.Equal(t, StatusComplete, events[4].(MessageCompletedEvent).Message.Status)
 }
 
 func TestMessageServicePublishesFailedEventWhenStreamErrors(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	eventBus := bus.NewBus(8)
 	llm := &fakeStreamingLLM{
 		events: []provider.StreamEvent{
 			{Type: provider.StreamEventDelta, Delta: "par"},
@@ -65,7 +61,7 @@ func TestMessageServicePublishesFailedEventWhenStreamErrors(t *testing.T) {
 		},
 	}
 
-	svc := NewMessageService(st, llm, eventBus, timeNowStub)
+	svc := NewMessageService(st, llm, timeNowStub)
 
 	result, err := svc.SendMessage(context.Background(), SendMessageParams{
 		SessionID: "session-1",
@@ -73,20 +69,20 @@ func TestMessageServicePublishesFailedEventWhenStreamErrors(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Equal(t, "par", result.Assistant.Content)
-	require.Equal(t, store.MessageStatusFailed, result.Assistant.Status)
+	require.Equal(t, StatusFailed, result.Assistant.Status)
 
-	events := []event.Event{
-		<-eventBus.Events(),
-		<-eventBus.Events(),
-		<-eventBus.Events(),
-		<-eventBus.Events(),
+	events := []Event{
+		<-svc.Events(),
+		<-svc.Events(),
+		<-svc.Events(),
+		<-svc.Events(),
 	}
 
-	require.IsType(t, event.MessageCreatedEvent{}, events[0])
-	require.IsType(t, event.MessageCreatedEvent{}, events[1])
-	require.IsType(t, event.MessageDeltaEvent{}, events[2])
-	require.IsType(t, event.MessageFailedEvent{}, events[3])
-	require.EqualError(t, events[3].(event.MessageFailedEvent).Err, "stream failed")
+	require.IsType(t, MessageCreatedEvent{}, events[0])
+	require.IsType(t, MessageCreatedEvent{}, events[1])
+	require.IsType(t, MessageDeltaEvent{}, events[2])
+	require.IsType(t, MessageFailedEvent{}, events[3])
+	require.EqualError(t, events[3].(MessageFailedEvent).Err, "stream failed")
 }
 
 func TestMessageServiceBuildsProviderHistoryWithoutAssistantPlaceholder(t *testing.T) {
@@ -98,14 +94,13 @@ func TestMessageServiceBuildsProviderHistoryWithoutAssistantPlaceholder(t *testi
 		{ID: "a1", SessionID: "session-1", Role: "assistant", Content: "second"},
 	}
 
-	eventBus := bus.NewBus(8)
 	llm := &fakeStreamingLLM{
 		events: []provider.StreamEvent{
 			{Type: provider.StreamEventDone},
 		},
 	}
 
-	svc := NewMessageService(st, llm, eventBus, timeNowStub)
+	svc := NewMessageService(st, llm, timeNowStub)
 
 	_, err := svc.SendMessage(context.Background(), SendMessageParams{
 		SessionID: "session-1",

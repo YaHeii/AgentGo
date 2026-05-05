@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/bus"
-	"github.com/YaHeii/agentGo/internal/event"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/store"
 )
@@ -16,11 +15,11 @@ import (
 type MessageService struct {
 	store   store.Store
 	llm     provider.StreamingLLM
-	bus     bus.EventBus
+	bus     bus.Bus[Event]
 	nowFunc func() time.Time
 }
 
-func NewMessageService(st store.Store, llm provider.StreamingLLM, bus bus.EventBus, nowFunc func() time.Time) *MessageService {
+func NewMessageService(st store.Store, llm provider.StreamingLLM, nowFunc func() time.Time) *MessageService {
 	if nowFunc == nil {
 		nowFunc = time.Now
 	}
@@ -28,10 +27,12 @@ func NewMessageService(st store.Store, llm provider.StreamingLLM, bus bus.EventB
 	return &MessageService{
 		store:   st,
 		llm:     llm,
-		bus:     bus,
+		bus:     bus.NewBus[Event](128),
 		nowFunc: nowFunc,
 	}
 }
+
+var _ Service = (*MessageService)(nil)
 
 func (s *MessageService) SendMessage(ctx context.Context, params SendMessageParams) (SendMessageResult, error) {
 	prompt := strings.TrimSpace(params.Prompt)
@@ -94,8 +95,8 @@ func (s *MessageService) SendMessage(ctx context.Context, params SendMessagePara
 		return SendMessageResult{}, err
 	}
 
-	s.publish(event.MessageCreatedEvent{Message: userMessage})
-	s.publish(event.MessageCreatedEvent{Message: assistantMessage})
+	s.publish(MessageCreatedEvent{Message: toMessage(userMessage)})
+	s.publish(MessageCreatedEvent{Message: toMessage(assistantMessage)})
 
 	history, err := s.store.ListMessages(ctx, params.SessionID)
 	if err != nil {
@@ -134,14 +135,14 @@ func (s *MessageService) SendMessage(ctx context.Context, params SendMessagePara
 			}
 
 			if assistantMessage.Status == store.MessageStatusCancelled {
-				s.publish(event.MessageCancelledEvent{Message: assistantMessage, Err: streamEvent.Err})
+				s.publish(MessageCancelledEvent{Message: toMessage(assistantMessage), Err: streamEvent.Err})
 			} else {
-				s.publish(event.MessageFailedEvent{Message: assistantMessage, Err: streamEvent.Err})
+				s.publish(MessageFailedEvent{Message: toMessage(assistantMessage), Err: streamEvent.Err})
 			}
 
 			return SendMessageResult{
-				User:      userMessage,
-				Assistant: assistantMessage,
+				User:      toMessage(userMessage),
+				Assistant: toMessage(assistantMessage),
 			}, streamEvent.Err
 		}
 
@@ -158,8 +159,8 @@ func (s *MessageService) SendMessage(ctx context.Context, params SendMessagePara
 				return SendMessageResult{}, fmt.Errorf("update assistant message: %w", err)
 			}
 
-			s.publish(event.MessageDeltaEvent{
-				Message: assistantMessage,
+			s.publish(MessageDeltaEvent{
+				Message: toMessage(assistantMessage),
 				Delta:   streamEvent.Delta,
 			})
 		case provider.StreamEventDone:
@@ -174,20 +175,36 @@ func (s *MessageService) SendMessage(ctx context.Context, params SendMessagePara
 				return SendMessageResult{}, fmt.Errorf("complete assistant message: %w", err)
 			}
 
-			s.publish(event.MessageCompletedEvent{Message: assistantMessage})
+			s.publish(MessageCompletedEvent{Message: toMessage(assistantMessage)})
 		}
 	}
 
 	return SendMessageResult{
-		User:      userMessage,
-		Assistant: assistantMessage,
+		User:      toMessage(userMessage),
+		Assistant: toMessage(assistantMessage),
 	}, nil
 }
 
-func (s *MessageService) publish(evt event.Event) {
+func (s *MessageService) Events() <-chan Event {
+	return s.bus.Events()
+}
+
+func (s *MessageService) publish(evt Event) {
 	if s.bus == nil {
 		return
 	}
 
 	s.bus.Publish(evt)
+}
+
+func toMessage(msg store.Message) Message {
+	return Message{
+		ID:        msg.ID,
+		SessionID: msg.SessionID,
+		Role:      msg.Role,
+		Content:   msg.Content,
+		Status:    Status(msg.Status),
+		CreatedAt: msg.CreatedAt,
+		UpdatedAt: msg.UpdatedAt,
+	}
 }

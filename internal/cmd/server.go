@@ -8,6 +8,13 @@ import (
 	"github.com/YaHeii/agentGo/internal/utils"
 )
 
+//TODO: add Oauth
+//WIP: As the minimal bootstrap layer:
+// Loads configuration
+// Connects to the database
+// Creates the workspace (local or remote)
+// Initializes the service and event systems
+
 func ProviderConfigFromAppConfig(cfg utils.Config) (provideropenai.Config, error) {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return provideropenai.Config{}, errors.New("API_KEY is required")

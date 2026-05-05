@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,8 +49,8 @@ func (s *stubMessageSender) SendMessage(_ context.Context, params message.SendMe
 	return s.result, s.err
 }
 
-func messageRecord(id string) store.Message {
-	return store.Message{
+func messageRecord(id string) message.Message {
+	return message.Message{
 		ID: id,
 	}
 }

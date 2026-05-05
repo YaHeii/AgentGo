@@ -1,32 +1,28 @@
 package bus
 
-import "github.com/YaHeii/agentGo/internal/event"
-
-type EventBus interface {
-	Publish(event event.Event)
-	Events() <-chan event.Event
+type Bus[T any] interface {
+	Publish(event T)
+	Events() <-chan T
 }
 
-type InMemoryBus struct {
-	events chan event.Event
+type InMemoryBus[T any] struct {
+	events chan T
 }
 
-var _ EventBus = (*InMemoryBus)(nil)
-
-func NewBus(buffer int) *InMemoryBus {
+func NewBus[T any](buffer int) *InMemoryBus[T] {
 	if buffer <= 0 {
 		buffer = 1
 	}
 
-	return &InMemoryBus{
-		events: make(chan event.Event, buffer),
+	return &InMemoryBus[T]{
+		events: make(chan T, buffer),
 	}
 }
 
-func (b *InMemoryBus) Publish(event event.Event) {
+func (b *InMemoryBus[T]) Publish(event T) {
 	b.events <- event
 }
 
-func (b *InMemoryBus) Events() <-chan event.Event {
+func (b *InMemoryBus[T]) Events() <-chan T {
 	return b.events
 }

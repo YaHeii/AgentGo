@@ -3,55 +3,36 @@ package bus
 import (
 	"testing"
 
-	"github.com/YaHeii/agentGo/internal/event"
-	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
 )
+
+type testEvent struct {
+	Name  string
+	Value int
+}
 
 func TestInMemoryBusPublishesEventsInOrder(t *testing.T) {
 	t.Parallel()
 
-	bus := NewBus(4)
+	b := NewBus[testEvent](4)
 
-	first := event.SessionReadyEvent{
-		Session: store.Session{ID: "session-1"},
-	}
-	second := event.MessageDeltaEvent{
-		Message: store.Message{ID: "assistant-1", SessionID: "session-1", Content: "hel"},
-		Delta:   "hel",
-	}
+	first := testEvent{Name: "first", Value: 1}
+	second := testEvent{Name: "second", Value: 2}
 
-	bus.Publish(first)
-	bus.Publish(second)
+	b.Publish(first)
+	b.Publish(second)
 
-	gotFirst := <-bus.Events()
-	gotSecond := <-bus.Events()
-
-	require.IsType(t, event.SessionReadyEvent{}, gotFirst)
-	require.IsType(t, event.MessageDeltaEvent{}, gotSecond)
-	require.Equal(t, "session-1", gotFirst.(event.SessionReadyEvent).Session.ID)
-	require.Equal(t, "hel", gotSecond.(event.MessageDeltaEvent).Delta)
+	require.Equal(t, first, <-b.Events())
+	require.Equal(t, second, <-b.Events())
 }
 
-func TestInMemoryBusKeepsMessagePayload(t *testing.T) {
+func TestInMemoryBusKeepsPayload(t *testing.T) {
 	t.Parallel()
 
-	bus := NewBus(1)
+	b := NewBus[testEvent](1)
+	want := testEvent{Name: "payload", Value: 42}
 
-	want := event.MessageCompletedEvent{
-		Message: store.Message{
-			ID:        "assistant-1",
-			SessionID: "session-1",
-			Role:      "assistant",
-			Content:   "hello",
-			Status:    store.MessageStatusComplete,
-		},
-	}
+	b.Publish(want)
 
-	bus.Publish(want)
-
-	got := (<-bus.Events()).(event.MessageCompletedEvent)
-	require.Equal(t, want.Message.ID, got.Message.ID)
-	require.Equal(t, want.Message.Content, got.Message.Content)
-	require.Equal(t, want.Message.Status, got.Message.Status)
+	require.Equal(t, want, <-b.Events())
 }

@@ -7,25 +7,24 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/store"
 )
 
 func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
-	svc.ensureSessionFn = func(_ context.Context) (store.Session, error) {
+	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
 		svc.events <- app.SessionReadyEvent{
-			Session: store.Session{ID: "session-1", Title: "demo"},
+			Session: app.Session{ID: "session-1", Title: "demo"},
 		}
 		svc.events <- app.ConversationHydratedEvent{
 			SessionID: "session-1",
-			Messages: []store.Message{
+			Messages: []app.Message{
 				{ID: "u1", SessionID: "session-1", Role: roleUser, Content: "hello"},
 				{ID: "a1", SessionID: "session-1", Role: roleAssistant, Content: "world"},
 			},
 		}
-		return store.Session{ID: "session-1", Title: "demo"}, nil
+		return app.Session{ID: "session-1", Title: "demo"}, nil
 	}
 
 	model := NewRootModel(svc)
@@ -52,29 +51,29 @@ func TestEnterDispatchesSendAndAppliesStreamEvents(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
-	svc.ensureSessionFn = func(_ context.Context) (store.Session, error) {
+	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
 		svc.events <- app.SessionReadyEvent{
-			Session: store.Session{ID: "session-1", Title: "demo"},
+			Session: app.Session{ID: "session-1", Title: "demo"},
 		}
 		svc.events <- app.ConversationHydratedEvent{
 			SessionID: "session-1",
 			Messages:  nil,
 		}
-		return store.Session{ID: "session-1", Title: "demo"}, nil
+		return app.Session{ID: "session-1", Title: "demo"}, nil
 	}
 	svc.sendMessageFn = func(_ context.Context, params app.SendMessageParams) (app.SendMessageResult, error) {
 		svc.events <- app.MessageCreatedEvent{
-			Message: store.Message{ID: "user-1", SessionID: params.SessionID, Role: roleUser, Content: params.Prompt},
+			Message: app.Message{ID: "user-1", SessionID: params.SessionID, Role: roleUser, Content: params.Prompt},
 		}
 		svc.events <- app.MessageCreatedEvent{
-			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "", Status: store.MessageStatusStreaming},
+			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "", Status: app.MessageStatusStreaming},
 		}
 		svc.events <- app.MessageDeltaEvent{
-			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "hel", Status: store.MessageStatusStreaming},
+			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "hel", Status: app.MessageStatusStreaming},
 			Delta:   "hel",
 		}
 		svc.events <- app.MessageCompletedEvent{
-			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "hello", Status: store.MessageStatusComplete},
+			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "hello", Status: app.MessageStatusComplete},
 		}
 		return app.SendMessageResult{}, nil
 	}
@@ -120,29 +119,29 @@ func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
-	svc.ensureSessionFn = func(_ context.Context) (store.Session, error) {
+	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
 		svc.events <- app.SessionReadyEvent{
-			Session: store.Session{ID: "session-1", Title: "demo"},
+			Session: app.Session{ID: "session-1", Title: "demo"},
 		}
 		svc.events <- app.ConversationHydratedEvent{
 			SessionID: "session-1",
 			Messages:  nil,
 		}
-		return store.Session{ID: "session-1", Title: "demo"}, nil
+		return app.Session{ID: "session-1", Title: "demo"}, nil
 	}
 	svc.sendMessageFn = func(_ context.Context, params app.SendMessageParams) (app.SendMessageResult, error) {
 		svc.events <- app.MessageCreatedEvent{
-			Message: store.Message{ID: "user-1", SessionID: params.SessionID, Role: roleUser, Content: params.Prompt},
+			Message: app.Message{ID: "user-1", SessionID: params.SessionID, Role: roleUser, Content: params.Prompt},
 		}
 		svc.events <- app.MessageCreatedEvent{
-			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "", Status: store.MessageStatusStreaming},
+			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "", Status: app.MessageStatusStreaming},
 		}
 		svc.events <- app.MessageDeltaEvent{
-			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "par", Status: store.MessageStatusStreaming},
+			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "par", Status: app.MessageStatusStreaming},
 			Delta:   "par",
 		}
 		svc.events <- app.MessageFailedEvent{
-			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "par", Status: store.MessageStatusFailed},
+			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "par", Status: app.MessageStatusFailed},
 			Err:     errors.New("stream failed"),
 		}
 		return app.SendMessageResult{}, errors.New("stream failed")
@@ -181,7 +180,7 @@ func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 
 type stubChatService struct {
 	events          chan app.Event
-	ensureSessionFn func(ctx context.Context) (store.Session, error)
+	ensureSessionFn func(ctx context.Context) (app.Session, error)
 	sendMessageFn   func(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error)
 }
 
@@ -191,9 +190,9 @@ func newStubChatService() *stubChatService {
 	}
 }
 
-func (s *stubChatService) EnsureActiveSession(ctx context.Context) (store.Session, error) {
+func (s *stubChatService) EnsureActiveSession(ctx context.Context) (app.Session, error) {
 	if s.ensureSessionFn == nil {
-		return store.Session{}, nil
+		return app.Session{}, nil
 	}
 	return s.ensureSessionFn(ctx)
 }

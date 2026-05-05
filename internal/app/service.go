@@ -10,12 +10,14 @@ import (
 	"github.com/YaHeii/agentGo/internal/store"
 )
 
+// WIP：as a facade to multi service
+
 type Store interface{ store.Store }
 
 type Service struct {
 	store    Store
-	bus      bus.EventBus
-	messages *message.MessageService
+	bus      bus.Bus[Event]
+	messages message.Service
 	nowFunc  func() time.Time
 }
 
@@ -24,24 +26,29 @@ func NewService(st Store, llm provider.StreamingLLM, nowFunc func() time.Time) *
 		nowFunc = time.Now
 	}
 
-	bus := bus.NewBus(128)
+	appBus := bus.NewBus[Event](128)
+	messages := message.NewMessageService(st, llm, nowFunc)
 
-	return &Service{
+	svc := &Service{
 		store:    st,
-		bus:      bus,
+		bus:      appBus,
 		nowFunc:  nowFunc,
-		messages: message.NewMessageService(st, llm, bus, nowFunc),
+		messages: messages,
 	}
+
+	go svc.forwardMessageEvents(messages.Events())
+
+	return svc
 }
 
 func (s *Service) Events() <-chan Event {
 	return s.bus.Events()
 }
 
-func (s *Service) EnsureActiveSession(ctx context.Context) (store.Session, error) {
+func (s *Service) EnsureActiveSession(ctx context.Context) (Session, error) {
 	sessions, err := s.store.ListSessions(ctx)
 	if err != nil {
-		return store.Session{}, err
+		return Session{}, err
 	}
 
 	var session store.Session
@@ -55,7 +62,7 @@ func (s *Service) EnsureActiveSession(ctx context.Context) (store.Session, error
 			LastActiveAt: now,
 		})
 		if err != nil {
-			return store.Session{}, err
+			return Session{}, err
 		}
 	} else {
 		session = sessions[0]
@@ -63,18 +70,83 @@ func (s *Service) EnsureActiveSession(ctx context.Context) (store.Session, error
 
 	messages, err := s.store.ListMessages(ctx, session.ID)
 	if err != nil {
-		return store.Session{}, err
+		return Session{}, err
 	}
 
-	s.bus.Publish(SessionReadyEvent{Session: session})
+	s.bus.Publish(SessionReadyEvent{Session: toAppSession(session)})
 	s.bus.Publish(ConversationHydratedEvent{
 		SessionID: session.ID,
-		Messages:  messages,
+		Messages:  toAppMessages(messages),
 	})
 
-	return session, nil
+	return toAppSession(session), nil
 }
 
 func (s *Service) SendMessage(ctx context.Context, params SendMessageParams) (SendMessageResult, error) {
 	return s.messages.SendMessage(ctx, params)
+}
+
+func (s *Service) forwardMessageEvents(events <-chan message.Event) {
+	for evt := range events {
+		switch event := evt.(type) {
+		case message.MessageCreatedEvent:
+			s.bus.Publish(MessageCreatedEvent{Message: toAppMessage(event.Message)})
+		case message.MessageDeltaEvent:
+			s.bus.Publish(MessageDeltaEvent{
+				Message: toAppMessage(event.Message),
+				Delta:   event.Delta,
+			})
+		case message.MessageCompletedEvent:
+			s.bus.Publish(MessageCompletedEvent{Message: toAppMessage(event.Message)})
+		case message.MessageFailedEvent:
+			s.bus.Publish(MessageFailedEvent{
+				Message: toAppMessage(event.Message),
+				Err:     event.Err,
+			})
+		case message.MessageCancelledEvent:
+			s.bus.Publish(MessageCancelledEvent{
+				Message: toAppMessage(event.Message),
+				Err:     event.Err,
+			})
+		}
+	}
+}
+
+func toAppSession(session store.Session) Session {
+	return Session{
+		ID:           session.ID,
+		Title:        session.Title,
+		CreatedAt:    session.CreatedAt,
+		UpdatedAt:    session.UpdatedAt,
+		LastActiveAt: session.LastActiveAt,
+	}
+}
+
+func toAppMessages(messages []store.Message) []Message {
+	out := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, Message{
+			ID:        msg.ID,
+			SessionID: msg.SessionID,
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Status:    MessageStatus(msg.Status),
+			CreatedAt: msg.CreatedAt,
+			UpdatedAt: msg.UpdatedAt,
+		})
+	}
+
+	return out
+}
+
+func toAppMessage(msg message.Message) Message {
+	return Message{
+		ID:        msg.ID,
+		SessionID: msg.SessionID,
+		Role:      msg.Role,
+		Content:   msg.Content,
+		Status:    MessageStatus(msg.Status),
+		CreatedAt: msg.CreatedAt,
+		UpdatedAt: msg.UpdatedAt,
+	}
 }

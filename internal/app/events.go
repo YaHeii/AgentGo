@@ -1,52 +1,50 @@
-package event
-
-import "github.com/YaHeii/agentGo/internal/store"
+package app
 
 type Event interface {
 	isAppEvent()
 }
 
 type SessionReadyEvent struct {
-	Session store.Session
+	Session Session
 }
 
 func (SessionReadyEvent) isAppEvent() {}
 
 type ConversationHydratedEvent struct {
 	SessionID string
-	Messages  []store.Message
+	Messages  []Message
 }
 
 func (ConversationHydratedEvent) isAppEvent() {}
 
 type MessageCreatedEvent struct {
-	Message store.Message
+	Message Message
 }
 
 func (MessageCreatedEvent) isAppEvent() {}
 
 type MessageDeltaEvent struct {
-	Message store.Message
+	Message Message
 	Delta   string
 }
 
 func (MessageDeltaEvent) isAppEvent() {}
 
 type MessageCompletedEvent struct {
-	Message store.Message
+	Message Message
 }
 
 func (MessageCompletedEvent) isAppEvent() {}
 
 type MessageFailedEvent struct {
-	Message store.Message
+	Message Message
 	Err     error
 }
 
 func (MessageFailedEvent) isAppEvent() {}
 
 type MessageCancelledEvent struct {
-	Message store.Message
+	Message Message
 	Err     error
 }
 

@@ -7,7 +7,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/store"
 )
 
 const (
@@ -30,7 +29,7 @@ type appEventMsg struct {
 }
 
 type chatService interface {
-	EnsureActiveSession(ctx context.Context) (store.Session, error)
+	EnsureActiveSession(ctx context.Context) (app.Session, error)
 	SendMessage(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error)
 	Events() <-chan app.Event
 }
@@ -39,7 +38,7 @@ type rootModel struct {
 	app        chatService
 	events     <-chan app.Event
 	sessionID  string
-	messages   []store.Message
+	messages   []app.Message
 	input      string
 	errMessage string
 	loading    bool
@@ -81,7 +80,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case app.SessionReadyEvent:
 			m.sessionID = event.Session.ID
 		case app.ConversationHydratedEvent:
-			m.messages = append([]store.Message(nil), event.Messages...)
+			m.messages = append([]app.Message(nil), event.Messages...)
 		case app.MessageCreatedEvent:
 			m.upsertMessage(event.Message)
 		case app.MessageDeltaEvent:
@@ -189,7 +188,7 @@ func waitAppEventCmd(events <-chan app.Event) tea.Cmd {
 	}
 }
 
-func (m *rootModel) upsertMessage(msg store.Message) {
+func (m *rootModel) upsertMessage(msg app.Message) {
 	for i := range m.messages {
 		if m.messages[i].ID == msg.ID {
 			m.messages[i] = msg
