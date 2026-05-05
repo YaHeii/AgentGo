@@ -17,6 +17,7 @@
 vendor/
 *.DS_Store
 *.env
+*.db
 
 # agent
 .trellis/**

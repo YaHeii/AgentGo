@@ -9,6 +9,7 @@ import (
 	cmd "github.com/YaHeii/agentGo/internal/cmd"
 	"github.com/YaHeii/agentGo/internal/db"
 	provideropenai "github.com/YaHeii/agentGo/internal/provider/openai"
+	"github.com/YaHeii/agentGo/internal/ui"
 	"github.com/YaHeii/agentGo/internal/utils"
 )
 
@@ -40,7 +41,7 @@ func main() {
 
 	svc := app.NewService(st, llm, nil)
 
-	p := tea.NewProgram(cmd.NewChatModel(svc))
+	p := tea.NewProgram(ui.NewRootModel(svc))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "run program: %v\n", err)
 		os.Exit(1)
