@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/YaHeii/agentGo/internal/provider"
+	"github.com/YaHeii/agentGo/internal/app"
 	provideropenai "github.com/YaHeii/agentGo/internal/provider/openai"
+	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/YaHeii/agentGo/internal/utils"
 )
 
@@ -21,13 +21,32 @@ const (
 )
 
 type chatResponseMsg struct {
-	reply string
-	err   error
+	err error
+}
+
+type bootstrapDoneMsg struct {
+	err error
+}
+
+type sendMessageDoneMsg struct {
+	err error
+}
+
+type appEventMsg struct {
+	event app.Event
+}
+
+type chatService interface {
+	EnsureActiveSession(ctx context.Context) (store.Session, error)
+	SendMessage(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error)
+	Events() <-chan app.Event
 }
 
 type chatModel struct {
-	llm        provider.LLM
-	messages   []provider.Message
+	app        chatService
+	events     <-chan app.Event
+	sessionID  string
+	messages   []store.Message
 	input      string
 	errMessage string
 	loading    bool
@@ -35,16 +54,17 @@ type chatModel struct {
 	height     int
 }
 
-func NewChatModel(llm provider.LLM) chatModel {
+func NewChatModel(appSvc chatService) chatModel {
 	return chatModel{
-		llm:    llm,
+		app:    appSvc,
+		events: appSvc.Events(),
 		width:  defaultWidth,
 		height: defaultHeight,
 	}
 }
 
 func (m chatModel) Init() tea.Cmd {
-	return nil
+	return bootstrapSessionCmd(m.app)
 }
 
 func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -52,6 +72,44 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+	case bootstrapDoneMsg:
+		if msg.err != nil {
+			m.errMessage = msg.err.Error()
+			return m, nil
+		}
+		return m, waitAppEventCmd(m.events)
+	case sendMessageDoneMsg:
+		if msg.err != nil {
+			m.errMessage = msg.err.Error()
+		}
+		return m, nil
+	case appEventMsg:
+		switch event := msg.event.(type) {
+		case app.SessionReadyEvent:
+			m.sessionID = event.Session.ID
+		case app.ConversationHydratedEvent:
+			m.messages = append([]store.Message(nil), event.Messages...)
+		case app.MessageCreatedEvent:
+			m.upsertMessage(event.Message)
+		case app.MessageDeltaEvent:
+			m.upsertMessage(event.Message)
+		case app.MessageCompletedEvent:
+			m.upsertMessage(event.Message)
+			m.loading = false
+		case app.MessageFailedEvent:
+			m.upsertMessage(event.Message)
+			if event.Err != nil {
+				m.errMessage = event.Err.Error()
+			}
+			m.loading = false
+		case app.MessageCancelledEvent:
+			m.upsertMessage(event.Message)
+			if event.Err != nil {
+				m.errMessage = event.Err.Error()
+			}
+			m.loading = false
+		}
+		return m, waitAppEventCmd(m.events)
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -61,20 +119,14 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			prompt := strings.TrimSpace(m.input)
-			if prompt == "" {
+			if prompt == "" || m.sessionID == "" {
 				return m, nil
 			}
 
 			m.errMessage = ""
 			m.loading = true
 			m.input = ""
-			m.messages = append(m.messages, provider.Message{
-				Role:    roleUser,
-				Content: prompt,
-			})
-
-			history := append([]provider.Message(nil), m.messages...)
-			return m, requestReplyCmd(m.llm, history)
+			return m, sendMessageCmd(m.app, m.sessionID, prompt)
 		case "backspace":
 			if len(m.input) > 0 {
 				runes := []rune(m.input)
@@ -85,21 +137,6 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input += msg.Key().Text
 			}
 		}
-	case chatResponseMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.errMessage = msg.err.Error()
-			return m, nil
-		}
-
-		reply := strings.TrimSpace(msg.reply)
-		if reply == "" {
-			reply = "(empty response)"
-		}
-		m.messages = append(m.messages, provider.Message{
-			Role:    roleAssistant,
-			Content: reply,
-		})
 	}
 
 	return m, nil
@@ -133,14 +170,41 @@ func (m chatModel) View() tea.View {
 	return tea.NewView(strings.Join(lines, "\n"))
 }
 
-func requestReplyCmd(llm provider.LLM, messages []provider.Message) tea.Cmd {
+func bootstrapSessionCmd(appSvc chatService) tea.Cmd {
 	return func() tea.Msg {
-		reply, err := llm.Chat(context.Background(), messages)
-		return chatResponseMsg{
-			reply: reply,
-			err:   err,
+		_, err := appSvc.EnsureActiveSession(context.Background())
+		return bootstrapDoneMsg{
+			err: err,
 		}
 	}
+}
+
+func sendMessageCmd(appSvc chatService, sessionID string, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := appSvc.SendMessage(context.Background(), app.SendMessageParams{
+			SessionID: sessionID,
+			Prompt:    prompt,
+		})
+		return sendMessageDoneMsg{err: err}
+	}
+}
+
+func waitAppEventCmd(events <-chan app.Event) tea.Cmd {
+	return func() tea.Msg {
+		event := <-events
+		return appEventMsg{event: event}
+	}
+}
+
+func (m *chatModel) upsertMessage(msg store.Message) {
+	for i := range m.messages {
+		if m.messages[i].ID == msg.ID {
+			m.messages[i] = msg
+			return
+		}
+	}
+
+	m.messages = append(m.messages, msg)
 }
 
 func roleLabel(role string) string {

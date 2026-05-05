@@ -1,13 +1,19 @@
 package app
 
-import "github.com/YaHeii/agentGo/internal/store"
+import (
+	"github.com/YaHeii/agentGo/internal/event"
+	"github.com/YaHeii/agentGo/internal/message"
+)
 
-type SendMessageParams struct {
-	SessionID string
-	Prompt    string
-}
+type Event = event.Event
 
-type SendMessageResult struct {
-	User      store.Message
-	Assistant store.Message
-}
+type SessionReadyEvent = event.SessionReadyEvent
+type ConversationHydratedEvent = event.ConversationHydratedEvent
+type MessageCreatedEvent = event.MessageCreatedEvent
+type MessageDeltaEvent = event.MessageDeltaEvent
+type MessageCompletedEvent = event.MessageCompletedEvent
+type MessageFailedEvent = event.MessageFailedEvent
+type MessageCancelledEvent = event.MessageCancelledEvent
+
+type SendMessageParams = message.SendMessageParams
+type SendMessageResult = message.SendMessageResult

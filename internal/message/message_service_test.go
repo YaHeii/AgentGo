@@ -1,98 +1,122 @@
-package app
+package message
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/YaHeii/agentGo/internal/bus"
+	"github.com/YaHeii/agentGo/internal/event"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
-func TestServiceEnsureActiveSessionCreatesFirstSessionAndPublishesBootstrapEvents(t *testing.T) {
+func TestMessageServicePublishesCreatedDeltaAndCompletedEvents(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	llm := &fakeStreamingLLM{}
-	svc := NewService(st, llm, timeNowStub)
-
-	session, err := svc.EnsureActiveSession(context.Background())
-	require.NoError(t, err)
-	require.NotEmpty(t, session.ID)
-	require.Len(t, st.sessions, 1)
-
-	first := <-svc.Events()
-	second := <-svc.Events()
-
-	require.IsType(t, SessionReadyEvent{}, first)
-	require.IsType(t, ConversationHydratedEvent{}, second)
-	require.Equal(t, session.ID, first.(SessionReadyEvent).Session.ID)
-	require.Equal(t, session.ID, second.(ConversationHydratedEvent).SessionID)
-	require.Len(t, second.(ConversationHydratedEvent).Messages, 0)
-}
-
-func TestServiceEnsureActiveSessionLoadsMostRecentSessionHistory(t *testing.T) {
-	t.Parallel()
-
-	st := newFakeStore()
-	st.sessions = []store.Session{
-		{
-			ID:           "session-2",
-			Title:        "latest",
-			CreatedAt:    time.Unix(1710000200, 0).UTC(),
-			UpdatedAt:    time.Unix(1710000200, 0).UTC(),
-			LastActiveAt: time.Unix(1710000200, 0).UTC(),
-		},
-		{
-			ID:           "session-1",
-			Title:        "older",
-			CreatedAt:    time.Unix(1710000000, 0).UTC(),
-			UpdatedAt:    time.Unix(1710000000, 0).UTC(),
-			LastActiveAt: time.Unix(1710000000, 0).UTC(),
+	eventBus := bus.NewBus(8)
+	llm := &fakeStreamingLLM{
+		events: []provider.StreamEvent{
+			{Type: provider.StreamEventDelta, Delta: "hel"},
+			{Type: provider.StreamEventDelta, Delta: "lo"},
+			{Type: provider.StreamEventDone},
 		},
 	}
-	st.messagesBySession["session-2"] = []store.Message{
-		{ID: "u1", SessionID: "session-2", Role: "user", Content: "hello"},
-		{ID: "a1", SessionID: "session-2", Role: "assistant", Content: "world"},
+
+	svc := NewMessageService(st, llm, eventBus, timeNowStub)
+
+	result, err := svc.SendMessage(context.Background(), SendMessageParams{
+		SessionID: "session-1",
+		Prompt:    "hi",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "hello", result.Assistant.Content)
+
+	events := []event.Event{
+		<-eventBus.Events(),
+		<-eventBus.Events(),
+		<-eventBus.Events(),
+		<-eventBus.Events(),
+		<-eventBus.Events(),
 	}
 
-	svc := NewService(st, &fakeStreamingLLM{}, timeNowStub)
-
-	session, err := svc.EnsureActiveSession(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "session-2", session.ID)
-
-	<-svc.Events()
-	hydrated := (<-svc.Events()).(ConversationHydratedEvent)
-	require.Equal(t, "session-2", hydrated.SessionID)
-	require.Len(t, hydrated.Messages, 2)
-	require.Equal(t, "hello", hydrated.Messages[0].Content)
-	require.Equal(t, "world", hydrated.Messages[1].Content)
+	require.IsType(t, event.MessageCreatedEvent{}, events[0])
+	require.IsType(t, event.MessageCreatedEvent{}, events[1])
+	require.IsType(t, event.MessageDeltaEvent{}, events[2])
+	require.IsType(t, event.MessageDeltaEvent{}, events[3])
+	require.IsType(t, event.MessageCompletedEvent{}, events[4])
+	require.Equal(t, "hel", events[2].(event.MessageDeltaEvent).Delta)
+	require.Equal(t, "hello", events[4].(event.MessageCompletedEvent).Message.Content)
+	require.Equal(t, store.MessageStatusComplete, events[4].(event.MessageCompletedEvent).Message.Status)
 }
 
-func TestServiceSendMessageDelegatesToMessageService(t *testing.T) {
+func TestMessageServicePublishesFailedEventWhenStreamErrors(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	st.sessions = []store.Session{
-		{ID: "session-1", Title: "demo"},
+	eventBus := bus.NewBus(8)
+	llm := &fakeStreamingLLM{
+		events: []provider.StreamEvent{
+			{Type: provider.StreamEventDelta, Delta: "par"},
+			{Err: errors.New("stream failed")},
+		},
 	}
 
+	svc := NewMessageService(st, llm, eventBus, timeNowStub)
+
+	result, err := svc.SendMessage(context.Background(), SendMessageParams{
+		SessionID: "session-1",
+		Prompt:    "hi",
+	})
+	require.Error(t, err)
+	require.Equal(t, "par", result.Assistant.Content)
+	require.Equal(t, store.MessageStatusFailed, result.Assistant.Status)
+
+	events := []event.Event{
+		<-eventBus.Events(),
+		<-eventBus.Events(),
+		<-eventBus.Events(),
+		<-eventBus.Events(),
+	}
+
+	require.IsType(t, event.MessageCreatedEvent{}, events[0])
+	require.IsType(t, event.MessageCreatedEvent{}, events[1])
+	require.IsType(t, event.MessageDeltaEvent{}, events[2])
+	require.IsType(t, event.MessageFailedEvent{}, events[3])
+	require.EqualError(t, events[3].(event.MessageFailedEvent).Err, "stream failed")
+}
+
+func TestMessageServiceBuildsProviderHistoryWithoutAssistantPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	st.messagesBySession["session-1"] = []store.Message{
+		{ID: "u1", SessionID: "session-1", Role: "user", Content: "first"},
+		{ID: "a1", SessionID: "session-1", Role: "assistant", Content: "second"},
+	}
+
+	eventBus := bus.NewBus(8)
 	llm := &fakeStreamingLLM{
 		events: []provider.StreamEvent{
 			{Type: provider.StreamEventDone},
 		},
 	}
 
-	svc := NewService(st, llm, timeNowStub)
+	svc := NewMessageService(st, llm, eventBus, timeNowStub)
 
 	_, err := svc.SendMessage(context.Background(), SendMessageParams{
 		SessionID: "session-1",
-		Prompt:    "hello",
+		Prompt:    "third",
 	})
 	require.NoError(t, err)
 	require.Len(t, llm.calls, 1)
+	require.Len(t, llm.calls[0], 3)
+	require.Equal(t, "first", llm.calls[0][0].Content)
+	require.Equal(t, "second", llm.calls[0][1].Content)
+	require.Equal(t, "third", llm.calls[0][2].Content)
 }
 
 func timeNowStub() time.Time {
@@ -100,11 +124,9 @@ func timeNowStub() time.Time {
 }
 
 type fakeStore struct {
-	sessions          []store.Session
 	messagesBySession map[string][]store.Message
 	createdMessages   []store.Message
 	updatedMessages   []store.Message
-	updatedSessions   []store.UpdateSessionParams
 	deletedDrafts     []string
 }
 
@@ -119,45 +141,25 @@ func (s *fakeStore) WithinTx(_ context.Context, fn func(tx store.TxStore) error)
 }
 
 func (s *fakeStore) CreateSession(_ context.Context, params store.CreateSessionParams) (store.Session, error) {
-	session := store.Session{
+	return store.Session{
 		ID:           params.ID,
 		Title:        params.Title,
 		CreatedAt:    params.CreatedAt,
 		UpdatedAt:    params.UpdatedAt,
 		LastActiveAt: params.LastActiveAt,
-	}
-	s.sessions = append([]store.Session{session}, s.sessions...)
-	return session, nil
+	}, nil
 }
 
 func (s *fakeStore) ListSessions(_ context.Context) ([]store.Session, error) {
-	copied := append([]store.Session(nil), s.sessions...)
-	return copied, nil
+	return nil, nil
 }
 
-func (s *fakeStore) GetSession(_ context.Context, id string) (store.Session, error) {
-	for _, session := range s.sessions {
-		if session.ID == id {
-			return session, nil
-		}
-	}
-	return store.Session{}, store.ErrSessionNotFound
+func (s *fakeStore) GetSession(_ context.Context, _ string) (store.Session, error) {
+	return store.Session{}, nil
 }
 
-func (s *fakeStore) UpdateSession(_ context.Context, params store.UpdateSessionParams) (store.Session, error) {
-	s.updatedSessions = append(s.updatedSessions, params)
-	for i := range s.sessions {
-		if s.sessions[i].ID != params.ID {
-			continue
-		}
-		if params.Title != "" {
-			s.sessions[i].Title = params.Title
-		}
-		s.sessions[i].UpdatedAt = params.UpdatedAt
-		s.sessions[i].LastActiveAt = params.LastActiveAt
-		return s.sessions[i], nil
-	}
-	return store.Session{}, store.ErrSessionNotFound
+func (s *fakeStore) UpdateSession(_ context.Context, _ store.UpdateSessionParams) (store.Session, error) {
+	return store.Session{}, nil
 }
 
 func (s *fakeStore) DeleteSession(_ context.Context, _ string) error {

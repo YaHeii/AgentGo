@@ -2,13 +2,14 @@ package main
 
 import (
 	"fmt"
-
 	"os"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/YaHeii/agentGo/internal/app"
+	cmd "github.com/YaHeii/agentGo/internal/cmd"
+	"github.com/YaHeii/agentGo/internal/db"
 	provideropenai "github.com/YaHeii/agentGo/internal/provider/openai"
 	"github.com/YaHeii/agentGo/internal/utils"
-	cmd "github.com/YaHeii/agentGo/internal/cmd"
 )
 
 func main() {
@@ -30,7 +31,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(cmd.NewChatModel(llm))
+	st, err := db.Open("agentgo.db")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open store: %v\n", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	svc := app.NewService(st, llm, nil)
+
+	p := tea.NewProgram(cmd.NewChatModel(svc))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "run program: %v\n", err)
 		os.Exit(1)

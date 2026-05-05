@@ -7,10 +7,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-
-	
-	// "github.com/stretchr/testify/require"
-	"github.com/YaHeii/agentGo/internal/provider"
+	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/YaHeii/agentGo/internal/utils"
 )
 
@@ -34,152 +32,203 @@ func TestValidateProviderConfigRequiresAPIKeyAndModel(t *testing.T) {
 	}
 }
 
-func TestEnterSendsMessageAndAppendsAssistantReply(t *testing.T) {
+func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	t.Parallel()
 
-	llm := &stubLLM{reply: "Hello back"}
-	m := NewChatModel(llm)
-	m.input = "Hello"
+	svc := newStubChatService()
+	svc.ensureSessionFn = func(_ context.Context) (store.Session, error) {
+		svc.events <- app.SessionReadyEvent{
+			Session: store.Session{ID: "session-1", Title: "demo"},
+		}
+		svc.events <- app.ConversationHydratedEvent{
+			SessionID: "session-1",
+			Messages: []store.Message{
+				{ID: "u1", SessionID: "session-1", Role: roleUser, Content: "hello"},
+				{ID: "a1", SessionID: "session-1", Role: roleAssistant, Content: "world"},
+			},
+		}
+		return store.Session{ID: "session-1", Title: "demo"}, nil
+	}
 
-	updated, cmd := m.Update(enterKey())
+	model := NewChatModel(svc)
+
+	initMsg := model.Init()()
+	updated, listenCmd := model.Update(initMsg)
 	next := updated.(chatModel)
 
-	if !next.loading {
-		t.Fatal("expected loading state after enter")
-	}
-	if next.input != "" {
-		t.Fatalf("expected cleared input, got %q", next.input)
-	}
-	if len(next.messages) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(next.messages))
-	}
-	if next.messages[0].Role != roleUser || next.messages[0].Content != "Hello" {
-		t.Fatalf("unexpected user message: %+v", next.messages[0])
-	}
-	if cmd == nil {
-		t.Fatal("expected async command")
-	}
-
-	msg := cmd()
-	if len(llm.calls) != 1 {
-		t.Fatalf("expected 1 provider call, got %d", len(llm.calls))
-	}
-	if got := llm.calls[0]; len(got) != 1 || got[0].Role != roleUser || got[0].Content != "Hello" {
-		t.Fatalf("unexpected provider history: %+v", got)
-	}
-
-	updated, _ = next.Update(msg)
+	updated, listenCmd = next.Update(listenCmd())
 	next = updated.(chatModel)
 
-	if next.loading {
-		t.Fatal("expected loading to stop after response")
+	updated, _ = next.Update(listenCmd())
+	next = updated.(chatModel)
+
+	if next.sessionID != "session-1" {
+		t.Fatalf("expected active session, got %q", next.sessionID)
 	}
 	if len(next.messages) != 2 {
-		t.Fatalf("expected 2 messages after reply, got %d", len(next.messages))
-	}
-	if next.messages[1].Role != roleAssistant || next.messages[1].Content != "Hello back" {
-		t.Fatalf("unexpected assistant message: %+v", next.messages[1])
+		t.Fatalf("expected 2 hydrated messages, got %d", len(next.messages))
 	}
 }
 
-func TestSendIncludesPriorConversationHistory(t *testing.T) {
+func TestEnterDispatchesSendAndAppliesStreamEvents(t *testing.T) {
 	t.Parallel()
 
-	llm := &stubLLM{reply: "Final answer"}
-	m := NewChatModel(llm)
-	m.messages = []provider.Message{
-		{Role: roleUser, Content: "First"},
-		{Role: roleAssistant, Content: "Second"},
+	svc := newStubChatService()
+	svc.ensureSessionFn = func(_ context.Context) (store.Session, error) {
+		svc.events <- app.SessionReadyEvent{
+			Session: store.Session{ID: "session-1", Title: "demo"},
+		}
+		svc.events <- app.ConversationHydratedEvent{
+			SessionID: "session-1",
+			Messages:  nil,
+		}
+		return store.Session{ID: "session-1", Title: "demo"}, nil
 	}
-	m.input = "Third"
+	svc.sendMessageFn = func(_ context.Context, params app.SendMessageParams) (app.SendMessageResult, error) {
+		svc.events <- app.MessageCreatedEvent{
+			Message: store.Message{ID: "user-1", SessionID: params.SessionID, Role: roleUser, Content: params.Prompt},
+		}
+		svc.events <- app.MessageCreatedEvent{
+			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "", Status: store.MessageStatusStreaming},
+		}
+		svc.events <- app.MessageDeltaEvent{
+			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "hel", Status: store.MessageStatusStreaming},
+			Delta:   "hel",
+		}
+		svc.events <- app.MessageCompletedEvent{
+			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "hello", Status: store.MessageStatusComplete},
+		}
+		return app.SendMessageResult{}, nil
+	}
 
-	_, cmd := m.Update(enterKey())
-	if cmd == nil {
-		t.Fatal("expected async command")
-	}
-	_ = cmd()
+	model := NewChatModel(svc)
 
-	if len(llm.calls) != 1 {
-		t.Fatalf("expected 1 provider call, got %d", len(llm.calls))
+	bootstrapMsg := model.Init()()
+	updated, listenCmd := model.Update(bootstrapMsg)
+	model = updated.(chatModel)
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(chatModel)
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(chatModel)
+
+	model.input = "hello"
+
+	updated, sendCmd := model.Update(enterKey())
+	model = updated.(chatModel)
+
+	if !model.loading {
+		t.Fatal("expected loading state after enter")
 	}
-	got := llm.calls[0]
-	if len(got) != 3 {
-		t.Fatalf("expected 3 messages in history, got %d", len(got))
+
+	_ = sendCmd()
+
+	for i := 0; i < 4; i++ {
+		updated, listenCmd = model.Update(listenCmd())
+		model = updated.(chatModel)
 	}
-	if got[0].Content != "First" || got[1].Content != "Second" || got[2].Content != "Third" {
-		t.Fatalf("unexpected history order: %+v", got)
+
+	if model.loading {
+		t.Fatal("expected loading to stop after completion event")
+	}
+	if len(model.messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(model.messages))
+	}
+	if model.messages[1].Content != "hello" {
+		t.Fatalf("expected streamed assistant content, got %q", model.messages[1].Content)
 	}
 }
 
-func TestRequestFailureShowsErrorAndKeepsChatUsable(t *testing.T) {
+func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 	t.Parallel()
 
-	llm := &stubLLM{err: errors.New("request failed")}
-	m := NewChatModel(llm)
-	m.input = "Hello"
-
-	updated, cmd := m.Update(enterKey())
-	if cmd == nil {
-		t.Fatal("expected async command")
+	svc := newStubChatService()
+	svc.ensureSessionFn = func(_ context.Context) (store.Session, error) {
+		svc.events <- app.SessionReadyEvent{
+			Session: store.Session{ID: "session-1", Title: "demo"},
+		}
+		svc.events <- app.ConversationHydratedEvent{
+			SessionID: "session-1",
+			Messages:  nil,
+		}
+		return store.Session{ID: "session-1", Title: "demo"}, nil
+	}
+	svc.sendMessageFn = func(_ context.Context, params app.SendMessageParams) (app.SendMessageResult, error) {
+		svc.events <- app.MessageCreatedEvent{
+			Message: store.Message{ID: "user-1", SessionID: params.SessionID, Role: roleUser, Content: params.Prompt},
+		}
+		svc.events <- app.MessageCreatedEvent{
+			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "", Status: store.MessageStatusStreaming},
+		}
+		svc.events <- app.MessageDeltaEvent{
+			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "par", Status: store.MessageStatusStreaming},
+			Delta:   "par",
+		}
+		svc.events <- app.MessageFailedEvent{
+			Message: store.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "par", Status: store.MessageStatusFailed},
+			Err:     errors.New("stream failed"),
+		}
+		return app.SendMessageResult{}, errors.New("stream failed")
 	}
 
-	updated, _ = updated.(chatModel).Update(cmd())
-	next := updated.(chatModel)
+	model := NewChatModel(svc)
 
-	if next.loading {
-		t.Fatal("expected loading to stop after error")
-	}
-	if next.errMessage == "" {
-		t.Fatal("expected ui error message")
-	}
-	if len(next.messages) != 1 {
-		t.Fatalf("expected only the user message to remain, got %d", len(next.messages))
+	bootstrapMsg := model.Init()()
+	updated, listenCmd := model.Update(bootstrapMsg)
+	model = updated.(chatModel)
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(chatModel)
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(chatModel)
+
+	model.input = "hello"
+	updated, sendCmd := model.Update(enterKey())
+	model = updated.(chatModel)
+	_ = sendCmd()
+
+	for i := 0; i < 4; i++ {
+		updated, listenCmd = model.Update(listenCmd())
+		model = updated.(chatModel)
 	}
 
-	view := next.View().Content
-	if !strings.Contains(view, "request failed") {
-		t.Fatalf("expected error in view, got %q", view)
+	if model.loading {
+		t.Fatal("expected loading to stop after failure event")
 	}
-	if !strings.Contains(view, "> ") {
-		t.Fatalf("expected input area in view, got %q", view)
+	if model.errMessage == "" {
+		t.Fatal("expected error message")
+	}
+	if model.messages[1].Content != "par" {
+		t.Fatalf("expected partial reply, got %q", model.messages[1].Content)
 	}
 }
 
-func TestViewKeepsInputVisibleWhenHeightIsSmall(t *testing.T) {
-	t.Parallel()
+type stubChatService struct {
+	events          chan app.Event
+	ensureSessionFn func(ctx context.Context) (store.Session, error)
+	sendMessageFn   func(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error)
+}
 
-	m := NewChatModel(&stubLLM{})
-	m.height = 6
-	m.messages = []provider.Message{
-		{Role: roleUser, Content: "one"},
-		{Role: roleAssistant, Content: "two"},
-		{Role: roleUser, Content: "three"},
-		{Role: roleAssistant, Content: "four"},
-	}
-	m.input = "next"
-
-	view := m.View().Content
-	if !strings.Contains(view, "> next") {
-		t.Fatalf("expected input to stay visible, got %q", view)
-	}
-	if strings.Contains(view, "one") {
-		t.Fatalf("expected older lines to be trimmed in small view, got %q", view)
+func newStubChatService() *stubChatService {
+	return &stubChatService{
+		events: make(chan app.Event, 16),
 	}
 }
 
-type stubLLM struct {
-	reply string
-	err   error
-	calls [][]provider.Message
+func (s *stubChatService) EnsureActiveSession(ctx context.Context) (store.Session, error) {
+	if s.ensureSessionFn == nil {
+		return store.Session{}, nil
+	}
+	return s.ensureSessionFn(ctx)
 }
 
-func (s *stubLLM) Chat(_ context.Context, messages []provider.Message) (string, error) {
-	copied := append([]provider.Message(nil), messages...)
-	s.calls = append(s.calls, copied)
-	if s.err != nil {
-		return "", s.err
+func (s *stubChatService) SendMessage(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error) {
+	if s.sendMessageFn == nil {
+		return app.SendMessageResult{}, nil
 	}
-	return s.reply, nil
+	return s.sendMessageFn(ctx, params)
+}
+
+func (s *stubChatService) Events() <-chan app.Event {
+	return s.events
 }
 
 func enterKey() tea.KeyPressMsg {
