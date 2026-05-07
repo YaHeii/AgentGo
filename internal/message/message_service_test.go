@@ -2,120 +2,103 @@ package message
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
-func TestMessageServicePublishesCreatedDeltaAndCompletedEvents(t *testing.T) {
+func TestMessageServiceCreatePersistsMessageAndPublishesCreatedEvent(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	llm := &fakeStreamingLLM{
-		events: []provider.StreamEvent{
-			{Type: provider.StreamEventDelta, Delta: "hel"},
-			{Type: provider.StreamEventDelta, Delta: "lo"},
-			{Type: provider.StreamEventDone},
+	svc := NewMessageService(st)
+
+	msg, err := svc.Create(context.Background(), "session-1", CreateMessageParams{
+		Kind:   KindUser,
+		Origin: OriginHuman,
+		Status: StatusComplete,
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: "hello",
+			},
 		},
-	}
-
-	svc := NewMessageService(st, llm, timeNowStub)
-
-	result, err := svc.SendMessage(context.Background(), SendMessageParams{
-		SessionID: "session-1",
-		Prompt:    "hi",
 	})
 	require.NoError(t, err)
-	require.Equal(t, "hello", result.Assistant.Content)
+	require.Equal(t, "session-1", msg.SessionID)
+	require.Equal(t, "hello", msg.Parts[0].Text)
 
-	events := []Event{
-		<-svc.Events(),
-		<-svc.Events(),
-		<-svc.Events(),
-		<-svc.Events(),
-		<-svc.Events(),
-	}
-
-	require.IsType(t, MessageCreatedEvent{}, events[0])
-	require.IsType(t, MessageCreatedEvent{}, events[1])
-	require.IsType(t, MessageDeltaEvent{}, events[2])
-	require.IsType(t, MessageDeltaEvent{}, events[3])
-	require.IsType(t, MessageCompletedEvent{}, events[4])
-	require.Equal(t, "hel", events[2].(MessageDeltaEvent).Delta)
-	require.Equal(t, "hello", events[4].(MessageCompletedEvent).Message.Content)
-	require.Equal(t, StatusComplete, events[4].(MessageCompletedEvent).Message.Status)
+	event := <-svc.Events()
+	require.IsType(t, MessageCreatedEvent{}, event)
+	require.Equal(t, msg.ID, event.(MessageCreatedEvent).Message.ID)
 }
 
-func TestMessageServicePublishesFailedEventWhenStreamErrors(t *testing.T) {
-	t.Parallel()
-
-	st := newFakeStore()
-	llm := &fakeStreamingLLM{
-		events: []provider.StreamEvent{
-			{Type: provider.StreamEventDelta, Delta: "par"},
-			{Err: errors.New("stream failed")},
-		},
-	}
-
-	svc := NewMessageService(st, llm, timeNowStub)
-
-	result, err := svc.SendMessage(context.Background(), SendMessageParams{
-		SessionID: "session-1",
-		Prompt:    "hi",
-	})
-	require.Error(t, err)
-	require.Equal(t, "par", result.Assistant.Content)
-	require.Equal(t, StatusFailed, result.Assistant.Status)
-
-	events := []Event{
-		<-svc.Events(),
-		<-svc.Events(),
-		<-svc.Events(),
-		<-svc.Events(),
-	}
-
-	require.IsType(t, MessageCreatedEvent{}, events[0])
-	require.IsType(t, MessageCreatedEvent{}, events[1])
-	require.IsType(t, MessageDeltaEvent{}, events[2])
-	require.IsType(t, MessageFailedEvent{}, events[3])
-	require.EqualError(t, events[3].(MessageFailedEvent).Err, "stream failed")
-}
-
-func TestMessageServiceBuildsProviderHistoryWithoutAssistantPlaceholder(t *testing.T) {
+func TestMessageServiceListMapsStoredMessages(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
 	st.messagesBySession["session-1"] = []store.Message{
-		{ID: "u1", SessionID: "session-1", Role: "user", Content: "first"},
-		{ID: "a1", SessionID: "session-1", Role: "assistant", Content: "second"},
-	}
-
-	llm := &fakeStreamingLLM{
-		events: []provider.StreamEvent{
-			{Type: provider.StreamEventDone},
+		{
+			ID:        "u1",
+			SessionID: "session-1",
+			Role:      "user",
+			Content:   "hello",
+			Status:    store.MessageStatusComplete,
+			CreatedAt: time.Unix(1710000000, 0).UTC(),
+			UpdatedAt: time.Unix(1710000000, 0).UTC(),
 		},
 	}
 
-	svc := NewMessageService(st, llm, timeNowStub)
+	svc := NewMessageService(st)
 
-	_, err := svc.SendMessage(context.Background(), SendMessageParams{
-		SessionID: "session-1",
-		Prompt:    "third",
-	})
+	messages, err := svc.List(context.Background(), "session-1")
 	require.NoError(t, err)
-	require.Len(t, llm.calls, 1)
-	require.Len(t, llm.calls[0], 3)
-	require.Equal(t, "first", llm.calls[0][0].Content)
-	require.Equal(t, "second", llm.calls[0][1].Content)
-	require.Equal(t, "third", llm.calls[0][2].Content)
+	require.Len(t, messages, 1)
+	require.Equal(t, KindUser, messages[0].Kind)
+	require.Equal(t, "hello", messages[0].Parts[0].Text)
 }
 
-func timeNowStub() time.Time {
-	return time.Unix(1710004000, 0).UTC()
+func TestMessageServiceUpdatePersistsMessageAndPublishesCompletedEvent(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	st.createdMessages = append(st.createdMessages, store.Message{
+		ID:        "assistant-1",
+		SessionID: "session-1",
+		Role:      "assistant",
+		Content:   "",
+		Status:    store.MessageStatusStreaming,
+		CreatedAt: time.Unix(1710000000, 0).UTC(),
+		UpdatedAt: time.Unix(1710000000, 0).UTC(),
+	})
+	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
+
+	svc := NewMessageService(st)
+	msg := Message{
+		ID:        "assistant-1",
+		SessionID: "session-1",
+		Kind:      KindAssistant,
+		Origin:    OriginModel,
+		Status:    StatusComplete,
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: "done",
+			},
+		},
+	}
+
+	err := svc.Update(context.Background(), msg)
+	require.NoError(t, err)
+	require.Len(t, st.updatedMessages, 1)
+	require.Equal(t, "done", st.updatedMessages[0].Content)
+	require.Equal(t, store.MessageStatusComplete, st.updatedMessages[0].Status)
+
+	event := <-svc.Events()
+	require.IsType(t, MessageCompletedEvent{}, event)
+	require.Equal(t, "assistant-1", event.(MessageCompletedEvent).Message.ID)
 }
 
 type fakeStore struct {
@@ -218,21 +201,4 @@ func (s *fakeStore) DeleteDraft(_ context.Context, sessionID string) error {
 
 func (s *fakeStore) Close() error {
 	return nil
-}
-
-type fakeStreamingLLM struct {
-	events []provider.StreamEvent
-	calls  [][]provider.Message
-}
-
-func (f *fakeStreamingLLM) StreamChat(_ context.Context, messages []provider.Message) <-chan provider.StreamEvent {
-	copied := append([]provider.Message(nil), messages...)
-	f.calls = append(f.calls, copied)
-
-	ch := make(chan provider.StreamEvent, len(f.events))
-	for _, event := range f.events {
-		ch <- event
-	}
-	close(ch)
-	return ch
 }

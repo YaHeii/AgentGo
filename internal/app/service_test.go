@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
@@ -93,6 +94,24 @@ func TestServiceSendMessageDelegatesToMessageService(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, llm.calls, 1)
+}
+
+func TestServiceUsesMessageServiceInterface(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	svc := &Service{
+		store:   st,
+		bus:     nil,
+		nowFunc: timeNowStub,
+		query:   stubQueryRunner{},
+	}
+
+	_, err := svc.SendMessage(context.Background(), SendMessageParams{
+		SessionID: "session-1",
+		Prompt:    "hello",
+	})
+	require.NoError(t, err)
 }
 
 func timeNowStub() time.Time {
@@ -238,4 +257,10 @@ func (f *fakeStreamingLLM) StreamChat(_ context.Context, messages []provider.Mes
 	}
 	close(ch)
 	return ch
+}
+
+type stubQueryRunner struct{}
+
+func (stubQueryRunner) RunQuery(_ context.Context, _ agent.QueryParams) (agent.QueryResult, error) {
+	return agent.QueryResult{}, nil
 }

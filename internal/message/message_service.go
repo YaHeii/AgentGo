@@ -3,190 +3,125 @@ package message
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/bus"
-	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/store"
 )
 
+var errTODO = errors.New("TODO: not implemented")
+
 type MessageService struct {
-	store   store.Store
-	llm     provider.StreamingLLM
-	bus     bus.Bus[Event]
-	nowFunc func() time.Time
+	store  store.Store
+	bus    bus.Bus[Event]
+	events <-chan Event
 }
 
-func NewMessageService(st store.Store, llm provider.StreamingLLM, nowFunc func() time.Time) *MessageService {
-	if nowFunc == nil {
-		nowFunc = time.Now
-	}
+func NewMessageService(st store.Store) *MessageService {
+	b := bus.NewBus[Event](128)
 
 	return &MessageService{
-		store:   st,
-		llm:     llm,
-		bus:     bus.NewBus[Event](128),
-		nowFunc: nowFunc,
+		store:  st,
+		bus:    b,
+		events: b.Subscribe(context.Background()),
 	}
 }
 
 var _ Service = (*MessageService)(nil)
 
-func (s *MessageService) SendMessage(ctx context.Context, params SendMessageParams) (SendMessageResult, error) {
-	prompt := strings.TrimSpace(params.Prompt)
-	if prompt == "" {
-		return SendMessageResult{}, errors.New("prompt cannot be empty")
+func (s *MessageService) Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
+	now := time.Now().UTC()
+	if len(params.Parts) == 0 {
+		params.Parts = []Part{{Type: PartTypeText}}
+	}
+	if params.Status == "" {
+		params.Status = StatusComplete
 	}
 
-	now := s.nowFunc().UTC()
-	userMessage := store.Message{
-		ID:        "user-" + now.Format(time.RFC3339Nano),
-		SessionID: params.SessionID,
-		Role:      "user",
-		Content:   prompt,
-		Status:    store.MessageStatusComplete,
+	row, err := s.store.CreateMessage(ctx, store.CreateMessageParams{
+		ID:        buildMessageID(params.Kind, now),
+		SessionID: sessionID,
+		Role:      toStoreRole(params.Kind),
+		Content:   textContent(params.Parts),
+		Status:    toStoreStatus(params.Status),
 		CreatedAt: now,
 		UpdatedAt: now,
-	}
-	assistantMessage := store.Message{
-		ID:        "assistant-" + now.Format(time.RFC3339Nano),
-		SessionID: params.SessionID,
-		Role:      "assistant",
-		Content:   "",
-		Status:    store.MessageStatusStreaming,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	err := s.store.WithinTx(ctx, func(tx store.TxStore) error {
-		if _, err := tx.CreateMessage(ctx, store.CreateMessageParams{
-			ID:        userMessage.ID,
-			SessionID: userMessage.SessionID,
-			Role:      userMessage.Role,
-			Content:   userMessage.Content,
-			Status:    userMessage.Status,
-			CreatedAt: userMessage.CreatedAt,
-			UpdatedAt: userMessage.UpdatedAt,
-		}); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateMessage(ctx, store.CreateMessageParams{
-			ID:        assistantMessage.ID,
-			SessionID: assistantMessage.SessionID,
-			Role:      assistantMessage.Role,
-			Content:   assistantMessage.Content,
-			Status:    assistantMessage.Status,
-			CreatedAt: assistantMessage.CreatedAt,
-			UpdatedAt: assistantMessage.UpdatedAt,
-		}); err != nil {
-			return err
-		}
-
-		if err := tx.DeleteDraft(ctx, params.SessionID); err != nil {
-			return err
-		}
-
-		return nil
 	})
 	if err != nil {
-		return SendMessageResult{}, err
+		return Message{}, err
 	}
 
-	s.publish(MessageCreatedEvent{Message: toMessage(userMessage)})
-	s.publish(MessageCreatedEvent{Message: toMessage(assistantMessage)})
+	msg := toMessage(row)
+	msg.ParentID = params.ParentID
+	msg.Flags = params.Flags
+	msg.Parts = cloneParts(params.Parts)
+	msg.System = cloneSystemPayload(params.System)
+	msg.Progress = cloneProgressPayload(params.Progress)
+	msg.Status = params.Status
 
-	history, err := s.store.ListMessages(ctx, params.SessionID)
+	s.publish(MessageCreatedEvent{Message: msg})
+
+	return msg, nil
+}
+
+func (s *MessageService) Update(ctx context.Context, message Message) error {
+	updatedAt := message.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+
+	_, err := s.store.UpdateMessage(ctx, store.UpdateMessageParams{
+		ID:        message.ID,
+		Content:   textContent(message.Parts),
+		Status:    toStoreStatus(message.Status),
+		UpdatedAt: updatedAt,
+	})
 	if err != nil {
-		return SendMessageResult{}, fmt.Errorf("list session history: %w", err)
+		return err
 	}
 
-	messages := make([]provider.Message, 0, len(history))
-	for _, msg := range history {
-		if msg.ID == assistantMessage.ID && msg.Content == "" {
-			continue
-		}
+	message.UpdatedAt = updatedAt
+	s.publish(MessageCompletedEvent{Message: message})
 
-		messages = append(messages, provider.Message{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
+	return nil
+}
+
+func (s *MessageService) Get(_ context.Context, _ string) (Message, error) {
+	return Message{}, errTODO
+}
+
+func (s *MessageService) List(ctx context.Context, sessionID string) ([]Message, error) {
+	rows, err := s.store.ListMessages(ctx, sessionID)
+	if err != nil {
+		return nil, err
 	}
 
-	stream := s.llm.StreamChat(ctx, messages)
-
-	for streamEvent := range stream {
-		if streamEvent.Err != nil {
-			assistantMessage.Status = store.MessageStatusFailed
-			if errors.Is(streamEvent.Err, context.Canceled) {
-				assistantMessage.Status = store.MessageStatusCancelled
-			}
-			assistantMessage.UpdatedAt = s.nowFunc().UTC()
-
-			if _, err := s.store.UpdateMessage(ctx, store.UpdateMessageParams{
-				ID:        assistantMessage.ID,
-				Content:   assistantMessage.Content,
-				Status:    assistantMessage.Status,
-				UpdatedAt: assistantMessage.UpdatedAt,
-			}); err != nil {
-				return SendMessageResult{}, err
-			}
-
-			if assistantMessage.Status == store.MessageStatusCancelled {
-				s.publish(MessageCancelledEvent{Message: toMessage(assistantMessage), Err: streamEvent.Err})
-			} else {
-				s.publish(MessageFailedEvent{Message: toMessage(assistantMessage), Err: streamEvent.Err})
-			}
-
-			return SendMessageResult{
-				User:      toMessage(userMessage),
-				Assistant: toMessage(assistantMessage),
-			}, streamEvent.Err
-		}
-
-		switch streamEvent.Type {
-		case provider.StreamEventDelta:
-			assistantMessage.Content += streamEvent.Delta
-			assistantMessage.UpdatedAt = s.nowFunc().UTC()
-			if _, err := s.store.UpdateMessage(ctx, store.UpdateMessageParams{
-				ID:        assistantMessage.ID,
-				Content:   assistantMessage.Content,
-				Status:    assistantMessage.Status,
-				UpdatedAt: assistantMessage.UpdatedAt,
-			}); err != nil {
-				return SendMessageResult{}, fmt.Errorf("update assistant message: %w", err)
-			}
-
-			s.publish(MessageDeltaEvent{
-				Message: toMessage(assistantMessage),
-				Delta:   streamEvent.Delta,
-			})
-		case provider.StreamEventDone:
-			assistantMessage.Status = store.MessageStatusComplete
-			assistantMessage.UpdatedAt = s.nowFunc().UTC()
-			if _, err := s.store.UpdateMessage(ctx, store.UpdateMessageParams{
-				ID:        assistantMessage.ID,
-				Content:   assistantMessage.Content,
-				Status:    assistantMessage.Status,
-				UpdatedAt: assistantMessage.UpdatedAt,
-			}); err != nil {
-				return SendMessageResult{}, fmt.Errorf("complete assistant message: %w", err)
-			}
-
-			s.publish(MessageCompletedEvent{Message: toMessage(assistantMessage)})
-		}
+	messages := make([]Message, 0, len(rows))
+	for _, row := range rows {
+		messages = append(messages, toMessage(row))
 	}
 
-	return SendMessageResult{
-		User:      toMessage(userMessage),
-		Assistant: toMessage(assistantMessage),
-	}, nil
+	return messages, nil
+}
+
+func (s *MessageService) ListUserMessages(_ context.Context, _ string) ([]Message, error) {
+	return nil, errTODO
+}
+
+func (s *MessageService) ListAllUserMessages(_ context.Context) ([]Message, error) {
+	return nil, errTODO
+}
+
+func (s *MessageService) Delete(_ context.Context, _ string) error {
+	return errTODO
+}
+
+func (s *MessageService) DeleteSessionMessages(_ context.Context, _ string) error {
+	return errTODO
 }
 
 func (s *MessageService) Events() <-chan Event {
-	return s.bus.Events()
+	return s.events
 }
 
 func (s *MessageService) publish(evt Event) {
@@ -201,10 +136,122 @@ func toMessage(msg store.Message) Message {
 	return Message{
 		ID:        msg.ID,
 		SessionID: msg.SessionID,
-		Role:      msg.Role,
-		Content:   msg.Content,
-		Status:    Status(msg.Status),
+		Kind:      toKind(msg.Role),
+		Origin:    toOrigin(msg.Role),
+		Status:    toStatus(msg.Status),
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: msg.Content,
+			},
+		},
 		CreatedAt: msg.CreatedAt,
 		UpdatedAt: msg.UpdatedAt,
 	}
+}
+
+func toKind(role string) Kind {
+	switch role {
+	case "user":
+		return KindUser
+	case "assistant":
+		return KindAssistant
+	default:
+		return KindSystem
+	}
+}
+
+func toOrigin(role string) Origin {
+	switch role {
+	case "user":
+		return OriginHuman
+	case "assistant":
+		return OriginModel
+	default:
+		return OriginSystem
+	}
+}
+
+func toStoreRole(kind Kind) string {
+	switch kind {
+	case KindAssistant:
+		return "assistant"
+	case KindUser:
+		return "user"
+	default:
+		return "system"
+	}
+}
+
+func toStoreStatus(status Status) store.MessageStatus {
+	switch status {
+	case StatusStreaming:
+		return store.MessageStatusStreaming
+	case StatusCancelled:
+		return store.MessageStatusCancelled
+	case StatusFailed:
+		return store.MessageStatusFailed
+	default:
+		return store.MessageStatusComplete
+	}
+}
+
+func toStatus(status store.MessageStatus) Status {
+	switch status {
+	case store.MessageStatusStreaming:
+		return StatusStreaming
+	case store.MessageStatusCancelled:
+		return StatusCancelled
+	case store.MessageStatusFailed:
+		return StatusFailed
+	default:
+		return StatusComplete
+	}
+}
+
+func buildMessageID(kind Kind, now time.Time) string {
+	prefix := "message"
+	switch kind {
+	case KindUser:
+		prefix = "user"
+	case KindAssistant:
+		prefix = "assistant"
+	case KindSystem:
+		prefix = "system"
+	}
+	return prefix + "-" + now.Format(time.RFC3339Nano)
+}
+
+func textContent(parts []Part) string {
+	for _, part := range parts {
+		if part.Type == PartTypeText {
+			return part.Text
+		}
+	}
+	return ""
+}
+
+func cloneParts(parts []Part) []Part {
+	if len(parts) == 0 {
+		return nil
+	}
+	cloned := make([]Part, len(parts))
+	copy(cloned, parts)
+	return cloned
+}
+
+func cloneSystemPayload(payload *SystemPayload) *SystemPayload {
+	if payload == nil {
+		return nil
+	}
+	copied := *payload
+	return &copied
+}
+
+func cloneProgressPayload(payload *ProgressPayload) *ProgressPayload {
+	if payload == nil {
+		return nil
+	}
+	copied := *payload
+	return &copied
 }

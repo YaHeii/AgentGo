@@ -1,7 +1,9 @@
 package bus
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -11,28 +13,54 @@ type testEvent struct {
 	Value int
 }
 
-func TestInMemoryBusPublishesEventsInOrder(t *testing.T) {
+func TestInMemoryBusPublishesEventsToAllSubscribers(t *testing.T) {
 	t.Parallel()
 
 	b := NewBus[testEvent](4)
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
 
-	first := testEvent{Name: "first", Value: 1}
-	second := testEvent{Name: "second", Value: 2}
+	sub1 := b.Subscribe(ctx1)
+	sub2 := b.Subscribe(ctx2)
 
-	b.Publish(first)
-	b.Publish(second)
+	want := testEvent{Name: "payload", Value: 42}
+	b.Publish(want)
 
-	require.Equal(t, first, <-b.Events())
-	require.Equal(t, second, <-b.Events())
+	require.Equal(t, want, <-sub1)
+	require.Equal(t, want, <-sub2)
 }
 
-func TestInMemoryBusKeepsPayload(t *testing.T) {
+func TestInMemoryBusClosesSubscriptionWhenContextIsDone(t *testing.T) {
 	t.Parallel()
 
 	b := NewBus[testEvent](1)
-	want := testEvent{Name: "payload", Value: 42}
+	ctx, cancel := context.WithCancel(context.Background())
+	sub := b.Subscribe(ctx)
 
-	b.Publish(want)
+	cancel()
 
-	require.Equal(t, want, <-b.Events())
+	select {
+	case _, ok := <-sub:
+		require.False(t, ok)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected subscription channel to close")
+	}
+}
+
+func TestInMemoryBusShutdownClosesAllSubscribers(t *testing.T) {
+	t.Parallel()
+
+	b := NewBus[testEvent](1)
+	ctx := context.Background()
+	sub1 := b.Subscribe(ctx)
+	sub2 := b.Subscribe(ctx)
+
+	b.Shutdown()
+
+	_, ok1 := <-sub1
+	_, ok2 := <-sub2
+	require.False(t, ok1)
+	require.False(t, ok2)
 }

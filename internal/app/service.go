@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/bus"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
@@ -17,7 +18,9 @@ type Store interface{ store.Store }
 type Service struct {
 	store    Store
 	bus      bus.Bus[Event]
+	events   <-chan Event
 	messages message.Service
+	query    agent.QueryRunner
 	nowFunc  func() time.Time
 }
 
@@ -27,13 +30,16 @@ func NewService(st Store, llm provider.StreamingLLM, nowFunc func() time.Time) *
 	}
 
 	appBus := bus.NewBus[Event](128)
-	messages := message.NewMessageService(st, llm, nowFunc)
+	messages := message.NewMessageService(st)
+	query := agent.NewMessageQueryRunner(messages, llm)
 
 	svc := &Service{
 		store:    st,
 		bus:      appBus,
+		events:   appBus.Subscribe(context.Background()),
 		nowFunc:  nowFunc,
 		messages: messages,
+		query:    query,
 	}
 
 	go svc.forwardMessageEvents(messages.Events())
@@ -42,7 +48,7 @@ func NewService(st Store, llm provider.StreamingLLM, nowFunc func() time.Time) *
 }
 
 func (s *Service) Events() <-chan Event {
-	return s.bus.Events()
+	return s.events
 }
 
 func (s *Service) EnsureActiveSession(ctx context.Context) (Session, error) {
@@ -83,7 +89,21 @@ func (s *Service) EnsureActiveSession(ctx context.Context) (Session, error) {
 }
 
 func (s *Service) SendMessage(ctx context.Context, params SendMessageParams) (SendMessageResult, error) {
-	return s.messages.SendMessage(ctx, params)
+	result, err := s.query.RunQuery(ctx, agent.QueryParams{
+		SessionID: params.SessionID,
+		Prompt:    params.Prompt,
+	})
+	if err != nil {
+		return SendMessageResult{
+			User:      Message{ID: result.UserMessageID},
+			Assistant: Message{ID: result.AssistantMessageID},
+		}, err
+	}
+
+	return SendMessageResult{
+		User:      Message{ID: result.UserMessageID},
+		Assistant: Message{ID: result.AssistantMessageID},
+	}, nil
 }
 
 func (s *Service) forwardMessageEvents(events <-chan message.Event) {
@@ -143,10 +163,30 @@ func toAppMessage(msg message.Message) Message {
 	return Message{
 		ID:        msg.ID,
 		SessionID: msg.SessionID,
-		Role:      msg.Role,
-		Content:   msg.Content,
+		Role:      toAppRole(msg.Kind),
+		Content:   toAppContent(msg),
 		Status:    MessageStatus(msg.Status),
 		CreatedAt: msg.CreatedAt,
 		UpdatedAt: msg.UpdatedAt,
 	}
+}
+
+func toAppRole(kind message.Kind) string {
+	switch kind {
+	case message.KindAssistant:
+		return "assistant"
+	case message.KindUser:
+		return "user"
+	default:
+		return "system"
+	}
+}
+
+func toAppContent(msg message.Message) string {
+	for _, part := range msg.Parts {
+		if part.Type == message.PartTypeText {
+			return part.Text
+		}
+	}
+	return ""
 }

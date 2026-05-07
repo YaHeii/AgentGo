@@ -1,6 +1,11 @@
 package app
 
-import "github.com/YaHeii/agentGo/internal/message"
+type SendMessageParams struct {
+	SessionID string
+	Prompt    string
+}
 
-type SendMessageParams = message.SendMessageParams
-type SendMessageResult = message.SendMessageResult
+type SendMessageResult struct {
+	User      Message
+	Assistant Message
+}
