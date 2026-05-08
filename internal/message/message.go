@@ -1,5 +1,6 @@
 package message
 
+//manage message communicate/store
 import (
 	"context"
 	"time"

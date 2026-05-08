@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 )
-
+//XXX：sub could be a metadata(SubscriberInfo)
 type Bus[T any] interface {
 	Publish(event T)
 	Subscribe(ctx context.Context) <-chan T
@@ -41,7 +41,7 @@ func (b *InMemoryBus[T]) Publish(event T) {
 	}
 
 	for sub := range b.subs {
-		sub <- event
+		sub <- event //Blocked release
 	}
 }
 

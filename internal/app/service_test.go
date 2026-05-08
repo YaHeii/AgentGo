@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/agent"
+	"github.com/YaHeii/agentGo/internal/bus"
+	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
+	"github.com/YaHeii/agentGo/internal/session"
 	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -14,14 +17,13 @@ import (
 func TestServiceEnsureActiveSessionCreatesFirstSessionAndPublishesBootstrapEvents(t *testing.T) {
 	t.Parallel()
 
-	st := newFakeStore()
-	llm := &fakeStreamingLLM{}
-	svc := NewService(st, llm, timeNowStub)
+	sessions := newStubSessionService()
+	svc := newServiceWithDeps(sessions, &stubMessageService{}, newStubQueryRunner(), timeNowStub)
 
 	session, err := svc.EnsureActiveSession(context.Background())
 	require.NoError(t, err)
 	require.NotEmpty(t, session.ID)
-	require.Len(t, st.sessions, 1)
+	require.Len(t, sessions.createdTitles, 1)
 
 	first := <-svc.Events()
 	second := <-svc.Events()
@@ -36,8 +38,8 @@ func TestServiceEnsureActiveSessionCreatesFirstSessionAndPublishesBootstrapEvent
 func TestServiceEnsureActiveSessionLoadsMostRecentSessionHistory(t *testing.T) {
 	t.Parallel()
 
-	st := newFakeStore()
-	st.sessions = []store.Session{
+	sessions := newStubSessionService()
+	sessions.listResult = []session.Session{
 		{
 			ID:           "session-2",
 			Title:        "latest",
@@ -53,16 +55,18 @@ func TestServiceEnsureActiveSessionLoadsMostRecentSessionHistory(t *testing.T) {
 			LastActiveAt: time.Unix(1710000000, 0).UTC(),
 		},
 	}
-	st.messagesBySession["session-2"] = []store.Message{
-		{ID: "u1", SessionID: "session-2", Role: "user", Content: "hello"},
-		{ID: "a1", SessionID: "session-2", Role: "assistant", Content: "world"},
+	msgSvc := &stubMessageService{
+		listResult: []message.Message{
+			messageRecord("u1", message.KindUser, "hello"),
+			messageRecord("a1", message.KindAssistant, "world"),
+		},
 	}
-
-	svc := NewService(st, &fakeStreamingLLM{}, timeNowStub)
+	svc := newServiceWithDeps(sessions, msgSvc, newStubQueryRunner(), timeNowStub)
 
 	session, err := svc.EnsureActiveSession(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "session-2", session.ID)
+	require.Equal(t, "session-2", msgSvc.lastListSessionID)
 
 	<-svc.Events()
 	hydrated := (<-svc.Events()).(ConversationHydratedEvent)
@@ -72,13 +76,29 @@ func TestServiceEnsureActiveSessionLoadsMostRecentSessionHistory(t *testing.T) {
 	require.Equal(t, "world", hydrated.Messages[1].Content)
 }
 
+func TestServiceForwardsAgentEventsToUnifiedAppEventStream(t *testing.T) {
+	t.Parallel()
+
+	sessions := newStubSessionService()
+	msgSvc := &stubMessageService{}
+	query := newStubQueryRunner()
+	svc := newServiceWithDeps(sessions, msgSvc, query, timeNowStub)
+
+	query.publish(agent.QueryCompletedEvent{
+		SessionID:          "session-1",
+		UserMessageID:      "user-1",
+		AssistantMessageID: "assistant-1",
+	})
+
+	event := <-svc.Events()
+	require.IsType(t, MessageCompletedEvent{}, event)
+	require.Equal(t, "assistant-1", event.(MessageCompletedEvent).Message.ID)
+}
+
 func TestServiceSendMessageDelegatesToMessageService(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	st.sessions = []store.Session{
-		{ID: "session-1", Title: "demo"},
-	}
 
 	llm := &fakeStreamingLLM{
 		events: []provider.StreamEvent{
@@ -99,12 +119,12 @@ func TestServiceSendMessageDelegatesToMessageService(t *testing.T) {
 func TestServiceUsesMessageServiceInterface(t *testing.T) {
 	t.Parallel()
 
-	st := newFakeStore()
+	sessions := newStubSessionService()
 	svc := &Service{
-		store:   st,
-		bus:     nil,
-		nowFunc: timeNowStub,
-		query:   stubQueryRunner{},
+		sessions: sessions,
+		bus:      nil,
+		nowFunc:  timeNowStub,
+		query:    newStubQueryRunner(),
 	}
 
 	_, err := svc.SendMessage(context.Background(), SendMessageParams{
@@ -123,7 +143,6 @@ type fakeStore struct {
 	messagesBySession map[string][]store.Message
 	createdMessages   []store.Message
 	updatedMessages   []store.Message
-	updatedSessions   []store.UpdateSessionParams
 	deletedDrafts     []string
 }
 
@@ -150,21 +169,19 @@ func (s *fakeStore) CreateSession(_ context.Context, params store.CreateSessionP
 }
 
 func (s *fakeStore) ListSessions(_ context.Context) ([]store.Session, error) {
-	copied := append([]store.Session(nil), s.sessions...)
-	return copied, nil
+	return append([]store.Session(nil), s.sessions...), nil
 }
 
 func (s *fakeStore) GetSession(_ context.Context, id string) (store.Session, error) {
-	for _, session := range s.sessions {
-		if session.ID == id {
-			return session, nil
+	for _, item := range s.sessions {
+		if item.ID == id {
+			return item, nil
 		}
 	}
 	return store.Session{}, store.ErrSessionNotFound
 }
 
 func (s *fakeStore) UpdateSession(_ context.Context, params store.UpdateSessionParams) (store.Session, error) {
-	s.updatedSessions = append(s.updatedSessions, params)
 	for i := range s.sessions {
 		if s.sessions[i].ID != params.ID {
 			continue
@@ -179,8 +196,15 @@ func (s *fakeStore) UpdateSession(_ context.Context, params store.UpdateSessionP
 	return store.Session{}, store.ErrSessionNotFound
 }
 
-func (s *fakeStore) DeleteSession(_ context.Context, _ string) error {
-	return nil
+func (s *fakeStore) DeleteSession(_ context.Context, id string) error {
+	for i := range s.sessions {
+		if s.sessions[i].ID != id {
+			continue
+		}
+		s.sessions = append(s.sessions[:i], s.sessions[i+1:]...)
+		return nil
+	}
+	return store.ErrSessionNotFound
 }
 
 func (s *fakeStore) CreateMessage(_ context.Context, params store.CreateMessageParams) (store.Message, error) {
@@ -259,8 +283,180 @@ func (f *fakeStreamingLLM) StreamChat(_ context.Context, messages []provider.Mes
 	return ch
 }
 
-type stubQueryRunner struct{}
+type stubMessageService struct {
+	listResult        []message.Message
+	lastListSessionID string
+}
 
-func (stubQueryRunner) RunQuery(_ context.Context, _ agent.QueryParams) (agent.QueryResult, error) {
+func (s *stubMessageService) Create(_ context.Context, _ string, _ message.CreateMessageParams) (message.Message, error) {
+	return message.Message{}, nil
+}
+
+func (s *stubMessageService) Update(_ context.Context, _ message.Message) error {
+	return nil
+}
+
+func (s *stubMessageService) Get(_ context.Context, _ string) (message.Message, error) {
+	return message.Message{}, nil
+}
+
+func (s *stubMessageService) List(_ context.Context, sessionID string) ([]message.Message, error) {
+	s.lastListSessionID = sessionID
+	return append([]message.Message(nil), s.listResult...), nil
+}
+
+func (s *stubMessageService) ListUserMessages(_ context.Context, _ string) ([]message.Message, error) {
+	return nil, nil
+}
+
+func (s *stubMessageService) ListAllUserMessages(_ context.Context) ([]message.Message, error) {
+	return nil, nil
+}
+
+func (s *stubMessageService) Delete(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *stubMessageService) DeleteSessionMessages(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *stubMessageService) Events() <-chan message.Event {
+	return make(chan message.Event)
+}
+
+type stubQueryRunner struct {
+	bus    bus.Bus[agent.Event]
+	events <-chan agent.Event
+}
+
+func newStubQueryRunner() *stubQueryRunner {
+	b := bus.NewBus[agent.Event](8)
+	return &stubQueryRunner{
+		bus:    b,
+		events: b.Subscribe(context.Background()),
+	}
+}
+
+func (s *stubQueryRunner) RunQuery(_ context.Context, _ agent.QueryParams) (agent.QueryResult, error) {
 	return agent.QueryResult{}, nil
+}
+
+func (s *stubQueryRunner) Events() <-chan agent.Event {
+	return s.events
+}
+
+func (s *stubQueryRunner) publish(event agent.Event) {
+	s.bus.Publish(event)
+}
+
+func newServiceWithDeps(sessionSvc session.Service, msgSvc message.Service, query agent.QueryRunner, nowFunc func() time.Time) *Service {
+	if nowFunc == nil {
+		nowFunc = time.Now
+	}
+
+	appBus := bus.NewBus[Event](128)
+	svc := &Service{
+		sessions: sessionSvc,
+		bus:      appBus,
+		events:   appBus.Subscribe(context.Background()),
+		nowFunc:  nowFunc,
+		messages: msgSvc,
+		query:    query,
+	}
+
+	go svc.forwardSessionEvents(sessionSvc.Events())
+	go svc.forwardMessageEvents(msgSvc.Events())
+	go svc.forwardAgentEvents(query.Events())
+
+	return svc
+}
+
+func messageRecord(id string, kind message.Kind, text string) message.Message {
+	return message.Message{
+		ID:     id,
+		Kind:   kind,
+		Status: message.StatusComplete,
+		Parts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: text,
+			},
+		},
+	}
+}
+
+type stubSessionService struct {
+	bus           bus.Bus[session.Event]
+	events        <-chan session.Event
+	listResult    []session.Session
+	createdTitles []string
+}
+
+func newStubSessionService() *stubSessionService {
+	b := bus.NewBus[session.Event](8)
+	return &stubSessionService{
+		bus:    b,
+		events: b.Subscribe(context.Background()),
+	}
+}
+
+func (s *stubSessionService) Create(_ context.Context, title string) (session.Session, error) {
+	s.createdTitles = append(s.createdTitles, title)
+
+	created := session.Session{
+		ID:           "session-created",
+		Title:        title,
+		CreatedAt:    timeNowStub(),
+		UpdatedAt:    timeNowStub(),
+		LastActiveAt: timeNowStub(),
+	}
+	s.listResult = append([]session.Session{created}, s.listResult...)
+	return created, nil
+}
+
+func (s *stubSessionService) Get(_ context.Context, id string) (session.Session, error) {
+	for _, item := range s.listResult {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return session.Session{}, session.ErrSessionNotFound
+}
+
+func (s *stubSessionService) GetLast(_ context.Context) (session.Session, error) {
+	if len(s.listResult) == 0 {
+		return session.Session{}, session.ErrSessionNotFound
+	}
+	return s.listResult[0], nil
+}
+
+func (s *stubSessionService) List(_ context.Context) ([]session.Session, error) {
+	return append([]session.Session(nil), s.listResult...), nil
+}
+
+func (s *stubSessionService) Rename(_ context.Context, id string, title string) (session.Session, error) {
+	for i := range s.listResult {
+		if s.listResult[i].ID != id {
+			continue
+		}
+		s.listResult[i].Title = title
+		return s.listResult[i], nil
+	}
+	return session.Session{}, session.ErrSessionNotFound
+}
+
+func (s *stubSessionService) Delete(_ context.Context, id string) error {
+	for i := range s.listResult {
+		if s.listResult[i].ID != id {
+			continue
+		}
+		s.listResult = append(s.listResult[:i], s.listResult[i+1:]...)
+		return nil
+	}
+	return session.ErrSessionNotFound
+}
+
+func (s *stubSessionService) Events() <-chan session.Event {
+	return s.events
 }

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 
+	"github.com/YaHeii/agentGo/internal/bus"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 )
 
 type QueryRunner interface {
 	RunQuery(ctx context.Context, params QueryParams) (QueryResult, error)
+	Events() <-chan Event
 }
 
 type QueryParams struct {
@@ -31,12 +33,17 @@ type MessageStore interface {
 type MessageQueryRunner struct {
 	messages MessageStore
 	llm      provider.StreamingLLM
+	bus      bus.Bus[Event]
+	events   <-chan Event
 }
 
 func NewMessageQueryRunner(messages MessageStore, llm provider.StreamingLLM) *MessageQueryRunner {
+	b := bus.NewBus[Event](32)
 	return &MessageQueryRunner{
 		messages: messages,
 		llm:      llm,
+		bus:      b,
+		events:   b.Subscribe(context.Background()),
 	}
 }
 
@@ -84,6 +91,12 @@ func (r *MessageQueryRunner) RunQuery(ctx context.Context, params QueryParams) (
 				assistantMessage.Status = message.StatusCancelled
 			}
 			_ = r.messages.Update(ctx, assistantMessage)
+			r.publish(QueryFailedEvent{
+				SessionID:          params.SessionID,
+				UserMessageID:      userMessage.ID,
+				AssistantMessageID: assistantMessage.ID,
+				Err:                event.Err,
+			})
 			return QueryResult{
 				UserMessageID:      userMessage.ID,
 				AssistantMessageID: assistantMessage.ID,
@@ -105,10 +118,28 @@ func (r *MessageQueryRunner) RunQuery(ctx context.Context, params QueryParams) (
 		}
 	}
 
+	r.publish(QueryCompletedEvent{
+		SessionID:          params.SessionID,
+		UserMessageID:      userMessage.ID,
+		AssistantMessageID: assistantMessage.ID,
+	})
+
 	return QueryResult{
 		UserMessageID:      userMessage.ID,
 		AssistantMessageID: assistantMessage.ID,
 	}, nil
+}
+
+func (r *MessageQueryRunner) Events() <-chan Event {
+	return r.events
+}
+
+func (r *MessageQueryRunner) publish(event Event) {
+	if r.bus == nil {
+		return
+	}
+
+	r.bus.Publish(event)
 }
 
 func toProviderMessages(messages []message.Message, skipID string) []provider.Message {

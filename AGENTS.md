@@ -33,54 +33,31 @@
   of leaving the decision only in chat history.
 
 
-1. 编码前思考
-不要假设。不要隐藏困惑。呈现权衡。
+**NEED TO UPDATE**
+## Module spec
+session 只负责“这场对话是谁、何时创建、当前标题是什么、最近一次活跃是什么、它和别的 session 是什么关系”。
 
-LLM 经常默默选择一种解释然后执行。这个原则强制明确推理：
+Create / Get / GetLast / List / Rename / Delete
+未来可放 ParentSessionID、SummaryMessageID、usage 聚合这类“会话级元数据”
+发布 session.Event
+不返回 []message.Message
+不理解 message 的 Parts / Status / Delta / ToolCall
+message 只负责“这场对话里说了什么、消息怎么演进、如何流式更新”。
 
-明确说明假设 — 如果不确定，询问而不是猜测
-呈现多种解释 — 当存在歧义时，不要默默选择
-适时提出异议 — 如果存在更简单的方法，说出来
-困惑时停下来 — 指出不清楚的地方并要求澄清
-2. 简洁优先
-用最少的代码解决问题。不要过度推测。
+Create / Update / Get / List / Delete
+rich message DTO：Kind / Origin / Status / Parts / Flags
+message 流式事件：Created / Delta / Completed / Failed / Cancelled
+必须带 SessionID，因为 message 从属于 session
+不负责创建 session、选 active session、改 session title
+agent/query 只负责“一轮 query 如何驱动 message 演进”。
 
-对抗过度工程的倾向：
+接收 sessionID
+从 message.Service 取历史、创建 user/assistant message、处理 provider stream
+查询结束后，如需更新标题/usage，再调用 session.Service
+不自己持久化 session
+app 只负责编排。
 
-不要添加要求之外的功能
-不要为一次性代码创建抽象
-不要添加未要求的"灵活性"或"可配置性"
-不要为不可能发生的场景做错误处理
-如果 200 行代码可以写成 50 行，重写它
-检验标准： 资深工程师会觉得这过于复杂吗？如果是，简化。
-
-3. 精准修改
-只碰必须碰的。只清理自己造成的混乱。
-
-编辑现有代码时：
-
-不要"改进"相邻的代码、注释或格式
-不要重构没坏的东西
-匹配现有风格，即使你更倾向于不同的写法
-如果注意到无关的死代码，提一下 —— 不要删除它
-当你的改动产生孤儿代码时：
-
-删除因你的改动而变得无用的导入/变量/函数
-不要删除预先存在的死代码，除非被要求
-检验标准： 每一行修改都应该能直接追溯到用户的请求。
-
-4. 目标驱动执行
-定义成功标准。循环验证直到达成。
-
-将指令式任务转化为可验证的目标：
-
-不要这样做...	转化为...
-"添加验证"	"为无效输入编写测试，然后让它们通过"
-"修复 bug"	"编写重现 bug 的测试，然后让它通过"
-"重构 X"	"确保重构前后测试都能通过"
-对于多步骤任务，说明一个简短的计划：
-
-1. [步骤] → 验证: [检查]
-2. [步骤] → 验证: [检查]
-3. [步骤] → 验证: [检查]
-强有力的成功标准让 LLM 能够独立循环执行。弱标准（"让它工作"）需要不断澄清。
+调 session.Service 决定当前 session
+调 message.Service 装载历史
+订阅 session/message/agent 事件
+汇聚成统一 app.Event 给 UI

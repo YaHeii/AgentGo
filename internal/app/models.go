@@ -11,12 +11,16 @@ const (
 	MessageStatusFailed    MessageStatus = "failed"
 )
 
+// TODO: Abstract session layer
 type Session struct {
 	ID           string
 	Title        string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	LastActiveAt time.Time
+
+	// TODO: Add ParentSessionID when session topology is introduced.
+	// TODO: Add SummaryMessageID and usage fields when session metadata expands.
 }
 
 type Message struct {

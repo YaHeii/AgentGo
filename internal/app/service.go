@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/bus"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
+	"github.com/YaHeii/agentGo/internal/session"
 	"github.com/YaHeii/agentGo/internal/store"
 )
 
@@ -16,7 +18,7 @@ import (
 type Store interface{ store.Store }
 
 type Service struct {
-	store    Store
+	sessions session.Service
 	bus      bus.Bus[Event]
 	events   <-chan Event
 	messages message.Service
@@ -30,11 +32,12 @@ func NewService(st Store, llm provider.StreamingLLM, nowFunc func() time.Time) *
 	}
 
 	appBus := bus.NewBus[Event](128)
+	sessions := session.NewSessionService(st, nowFunc)
 	messages := message.NewMessageService(st)
 	query := agent.NewMessageQueryRunner(messages, llm)
 
 	svc := &Service{
-		store:    st,
+		sessions: sessions,
 		bus:      appBus,
 		events:   appBus.Subscribe(context.Background()),
 		nowFunc:  nowFunc,
@@ -42,7 +45,9 @@ func NewService(st Store, llm provider.StreamingLLM, nowFunc func() time.Time) *
 		query:    query,
 	}
 
+	go svc.forwardSessionEvents(sessions.Events())
 	go svc.forwardMessageEvents(messages.Events())
+	go svc.forwardAgentEvents(query.Events())
 
 	return svc
 }
@@ -52,40 +57,30 @@ func (s *Service) Events() <-chan Event {
 }
 
 func (s *Service) EnsureActiveSession(ctx context.Context) (Session, error) {
-	sessions, err := s.store.ListSessions(ctx)
+	current, err := s.sessions.GetLast(ctx)
 	if err != nil {
-		return Session{}, err
-	}
+		if !errors.Is(err, session.ErrSessionNotFound) {
+			return Session{}, err
+		}
 
-	var session store.Session
-	if len(sessions) == 0 {
-		now := s.nowFunc().UTC()
-		session, err = s.store.CreateSession(ctx, store.CreateSessionParams{
-			ID:           "session-" + now.Format(time.RFC3339Nano),
-			Title:        "New Session",
-			CreatedAt:    now,
-			UpdatedAt:    now,
-			LastActiveAt: now,
-		})
+		current, err = s.sessions.Create(ctx, "New Session")
 		if err != nil {
 			return Session{}, err
 		}
-	} else {
-		session = sessions[0]
 	}
 
-	messages, err := s.store.ListMessages(ctx, session.ID)
+	messages, err := s.messages.List(ctx, current.ID)
 	if err != nil {
 		return Session{}, err
 	}
 
-	s.bus.Publish(SessionReadyEvent{Session: toAppSession(session)})
+	s.bus.Publish(SessionReadyEvent{Session: toAppSession(current)})
 	s.bus.Publish(ConversationHydratedEvent{
-		SessionID: session.ID,
-		Messages:  toAppMessages(messages),
+		SessionID: current.ID,
+		Messages:  toAppHydratedMessages(messages),
 	})
 
-	return toAppSession(session), nil
+	return toAppSession(current), nil
 }
 
 func (s *Service) SendMessage(ctx context.Context, params SendMessageParams) (SendMessageResult, error) {
@@ -132,7 +127,39 @@ func (s *Service) forwardMessageEvents(events <-chan message.Event) {
 	}
 }
 
-func toAppSession(session store.Session) Session {
+func (s *Service) forwardSessionEvents(events <-chan session.Event) {
+	for range events {
+		// Session-specific app events can be introduced here as session workflows expand.
+	}
+}
+
+func (s *Service) forwardAgentEvents(events <-chan agent.Event) {
+	for evt := range events {
+		switch event := evt.(type) {
+		case agent.QueryCompletedEvent:
+			s.bus.Publish(MessageCompletedEvent{
+				Message: Message{
+					ID:        event.AssistantMessageID,
+					SessionID: event.SessionID,
+					Role:      "assistant",
+					Status:    MessageStatusComplete,
+				},
+			})
+		case agent.QueryFailedEvent:
+			s.bus.Publish(MessageFailedEvent{
+				Message: Message{
+					ID:        event.AssistantMessageID,
+					SessionID: event.SessionID,
+					Role:      "assistant",
+					Status:    MessageStatusFailed,
+				},
+				Err: event.Err,
+			})
+		}
+	}
+}
+
+func toAppSession(session session.Session) Session {
 	return Session{
 		ID:           session.ID,
 		Title:        session.Title,
@@ -142,18 +169,10 @@ func toAppSession(session store.Session) Session {
 	}
 }
 
-func toAppMessages(messages []store.Message) []Message {
+func toAppHydratedMessages(messages []message.Message) []Message {
 	out := make([]Message, 0, len(messages))
 	for _, msg := range messages {
-		out = append(out, Message{
-			ID:        msg.ID,
-			SessionID: msg.SessionID,
-			Role:      msg.Role,
-			Content:   msg.Content,
-			Status:    MessageStatus(msg.Status),
-			CreatedAt: msg.CreatedAt,
-			UpdatedAt: msg.UpdatedAt,
-		})
+		out = append(out, toAppMessage(msg))
 	}
 
 	return out
