@@ -90,9 +90,11 @@ func TestServiceForwardsAgentEventsToUnifiedAppEventStream(t *testing.T) {
 		AssistantMessageID: "assistant-1",
 	})
 
-	event := <-svc.Events()
-	require.IsType(t, MessageCompletedEvent{}, event)
-	require.Equal(t, "assistant-1", event.(MessageCompletedEvent).Message.ID)
+	select {
+	case event := <-svc.Events():
+		t.Fatalf("expected no app event from agent query completion, got %T", event)
+	case <-time.After(20 * time.Millisecond):
+	}
 }
 
 func TestServiceSendMessageDelegatesToMessageService(t *testing.T) {
@@ -339,7 +341,13 @@ func newStubQueryRunner() *stubQueryRunner {
 }
 
 func (s *stubQueryRunner) RunQuery(_ context.Context, _ agent.QueryParams) (agent.QueryResult, error) {
-	return agent.QueryResult{}, nil
+	return agent.QueryResult{
+		SessionID:               "session-1",
+		UserMessageID:           "user-1",
+		FinalAssistantMessageID: "assistant-1",
+		Turns:                   1,
+		FinishReason:            agent.FinishReasonCompleted,
+	}, nil
 }
 
 func (s *stubQueryRunner) Events() <-chan agent.Event {
@@ -350,7 +358,7 @@ func (s *stubQueryRunner) publish(event agent.Event) {
 	s.bus.Publish(event)
 }
 
-func newServiceWithDeps(sessionSvc session.Service, msgSvc message.Service, query agent.QueryRunner, nowFunc func() time.Time) *Service {
+func newServiceWithDeps(sessionSvc session.Service, msgSvc message.Service, query agent.Runner, nowFunc func() time.Time) *Service {
 	if nowFunc == nil {
 		nowFunc = time.Now
 	}

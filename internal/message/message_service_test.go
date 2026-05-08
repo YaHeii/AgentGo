@@ -60,7 +60,7 @@ func TestMessageServiceListMapsStoredMessages(t *testing.T) {
 	require.Equal(t, "hello", messages[0].Parts[0].Text)
 }
 
-func TestMessageServiceUpdatePersistsMessageAndPublishesCompletedEvent(t *testing.T) {
+func TestMessageServiceUpdateStreamingPublishesDeltaEvent(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
@@ -69,6 +69,48 @@ func TestMessageServiceUpdatePersistsMessageAndPublishesCompletedEvent(t *testin
 		SessionID: "session-1",
 		Role:      "assistant",
 		Content:   "",
+		Status:    store.MessageStatusStreaming,
+		CreatedAt: time.Unix(1710000000, 0).UTC(),
+		UpdatedAt: time.Unix(1710000000, 0).UTC(),
+	})
+	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
+
+	svc := NewMessageService(st)
+	msg := Message{
+		ID:        "assistant-1",
+		SessionID: "session-1",
+		Kind:      KindAssistant,
+		Origin:    OriginModel,
+		Status:    StatusStreaming,
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: "par",
+			},
+		},
+	}
+
+	err := svc.Update(context.Background(), msg)
+	require.NoError(t, err)
+	require.Len(t, st.updatedMessages, 1)
+	require.Equal(t, "par", st.updatedMessages[0].Content)
+	require.Equal(t, store.MessageStatusStreaming, st.updatedMessages[0].Status)
+
+	event := <-svc.Events()
+	require.IsType(t, MessageDeltaEvent{}, event)
+	require.Equal(t, "assistant-1", event.(MessageDeltaEvent).Message.ID)
+	require.Equal(t, "par", event.(MessageDeltaEvent).Delta)
+}
+
+func TestMessageServiceUpdateCompletedPublishesCompletedEvent(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	st.createdMessages = append(st.createdMessages, store.Message{
+		ID:        "assistant-1",
+		SessionID: "session-1",
+		Role:      "assistant",
+		Content:   "par",
 		Status:    store.MessageStatusStreaming,
 		CreatedAt: time.Unix(1710000000, 0).UTC(),
 		UpdatedAt: time.Unix(1710000000, 0).UTC(),
@@ -92,13 +134,86 @@ func TestMessageServiceUpdatePersistsMessageAndPublishesCompletedEvent(t *testin
 
 	err := svc.Update(context.Background(), msg)
 	require.NoError(t, err)
-	require.Len(t, st.updatedMessages, 1)
-	require.Equal(t, "done", st.updatedMessages[0].Content)
-	require.Equal(t, store.MessageStatusComplete, st.updatedMessages[0].Status)
 
 	event := <-svc.Events()
 	require.IsType(t, MessageCompletedEvent{}, event)
 	require.Equal(t, "assistant-1", event.(MessageCompletedEvent).Message.ID)
+}
+
+func TestMessageServiceUpdateFailedPublishesFailedEvent(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	st.createdMessages = append(st.createdMessages, store.Message{
+		ID:        "assistant-1",
+		SessionID: "session-1",
+		Role:      "assistant",
+		Content:   "par",
+		Status:    store.MessageStatusStreaming,
+		CreatedAt: time.Unix(1710000000, 0).UTC(),
+		UpdatedAt: time.Unix(1710000000, 0).UTC(),
+	})
+	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
+
+	svc := NewMessageService(st)
+	msg := Message{
+		ID:        "assistant-1",
+		SessionID: "session-1",
+		Kind:      KindAssistant,
+		Origin:    OriginModel,
+		Status:    StatusFailed,
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: "par",
+			},
+		},
+	}
+
+	err := svc.Update(context.Background(), msg)
+	require.NoError(t, err)
+
+	event := <-svc.Events()
+	require.IsType(t, MessageFailedEvent{}, event)
+	require.Equal(t, "assistant-1", event.(MessageFailedEvent).Message.ID)
+}
+
+func TestMessageServiceUpdateCancelledPublishesCancelledEvent(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	st.createdMessages = append(st.createdMessages, store.Message{
+		ID:        "assistant-1",
+		SessionID: "session-1",
+		Role:      "assistant",
+		Content:   "par",
+		Status:    store.MessageStatusStreaming,
+		CreatedAt: time.Unix(1710000000, 0).UTC(),
+		UpdatedAt: time.Unix(1710000000, 0).UTC(),
+	})
+	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
+
+	svc := NewMessageService(st)
+	msg := Message{
+		ID:        "assistant-1",
+		SessionID: "session-1",
+		Kind:      KindAssistant,
+		Origin:    OriginModel,
+		Status:    StatusCancelled,
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: "par",
+			},
+		},
+	}
+
+	err := svc.Update(context.Background(), msg)
+	require.NoError(t, err)
+
+	event := <-svc.Events()
+	require.IsType(t, MessageCancelledEvent{}, event)
+	require.Equal(t, "assistant-1", event.(MessageCancelledEvent).Message.ID)
 }
 
 type fakeStore struct {

@@ -9,61 +9,53 @@ import (
 	"github.com/YaHeii/agentGo/internal/provider"
 )
 
-type QueryRunner interface {
+type Runner interface {
 	RunQuery(ctx context.Context, params QueryParams) (QueryResult, error)
 	Events() <-chan Event
 }
 
-type QueryParams struct {
-	SessionID string
-	Prompt    string
-}
-
-type QueryResult struct {
-	UserMessageID      string
-	AssistantMessageID string
-}
-
-type MessageStore interface {
+type MessagePort interface {
 	Create(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error)
 	Update(ctx context.Context, message message.Message) error
 	List(ctx context.Context, sessionID string) ([]message.Message, error)
 }
 
-type MessageQueryRunner struct {
-	messages MessageStore
-	llm      provider.StreamingLLM
+type QueryLoop struct {
+	config   QueryConfig
+	deps     QueryDeps
 	bus      bus.Bus[Event]
 	events   <-chan Event
 }
 
-func NewMessageQueryRunner(messages MessageStore, llm provider.StreamingLLM) *MessageQueryRunner {
+func NewQueryLoop(messages MessagePort, llm provider.StreamingLLM) *QueryLoop {
 	b := bus.NewBus[Event](32)
-	return &MessageQueryRunner{
-		messages: messages,
-		llm:      llm,
+	return &QueryLoop{
+		config:   defaultQueryConfig(),
+		deps:     defaultQueryDeps(messages, llm),
 		bus:      b,
 		events:   b.Subscribe(context.Background()),
 	}
 }
 
-func (r *MessageQueryRunner) RunQuery(ctx context.Context, params QueryParams) (QueryResult, error) {
-	userMessage, err := r.messages.Create(ctx, params.SessionID, message.CreateMessageParams{
+func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResult, error) {
+	if r.config.MaxTurns <= 0 {
+		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
+	}
+
+	state := newLoopState(params).withTransition("state_initialized")
+
+	userMessage, err := r.deps.Messages.Create(ctx, params.SessionID, message.CreateMessageParams{
 		Kind:   message.KindUser,
 		Origin: message.OriginHuman,
 		Status: message.StatusComplete,
-		Parts: []message.Part{
-			{
-				Type: message.PartTypeText,
-				Text: params.Prompt,
-			},
-		},
+		Parts:  cloneInputParts(params.InputParts),
 	})
 	if err != nil {
 		return QueryResult{}, err
 	}
+	state = state.replaceLastMessage(userMessage).withTransition("user_message_created")
 
-	assistantMessage, err := r.messages.Create(ctx, params.SessionID, message.CreateMessageParams{
+	assistantMessage, err := r.deps.Messages.Create(ctx, params.SessionID, message.CreateMessageParams{
 		Kind:   message.KindAssistant,
 		Origin: message.OriginModel,
 		Status: message.StatusStreaming,
@@ -77,20 +69,23 @@ func (r *MessageQueryRunner) RunQuery(ctx context.Context, params QueryParams) (
 	if err != nil {
 		return QueryResult{}, err
 	}
+	state = state.appendMessage(assistantMessage).withTransition("assistant_placeholder_created")
 
-	history, err := r.messages.List(ctx, params.SessionID)
+	history, err := r.deps.Messages.List(ctx, params.SessionID)
 	if err != nil {
 		return QueryResult{}, err
 	}
+	state = state.withTransition("history_loaded")
 
-	stream := r.llm.StreamChat(ctx, toProviderMessages(history, assistantMessage.ID))
+	stream := r.deps.LLM.StreamChat(ctx, toProviderMessages(history, assistantMessage.ID))
 	for event := range stream {
 		if event.Err != nil {
 			assistantMessage.Status = message.StatusFailed
 			if errors.Is(event.Err, context.Canceled) {
 				assistantMessage.Status = message.StatusCancelled
 			}
-			_ = r.messages.Update(ctx, assistantMessage)
+			state = state.replaceLastMessage(assistantMessage).withTransition("stream_failed")
+			_ = r.deps.Messages.Update(ctx, assistantMessage)
 			r.publish(QueryFailedEvent{
 				SessionID:          params.SessionID,
 				UserMessageID:      userMessage.ID,
@@ -98,8 +93,11 @@ func (r *MessageQueryRunner) RunQuery(ctx context.Context, params QueryParams) (
 				Err:                event.Err,
 			})
 			return QueryResult{
-				UserMessageID:      userMessage.ID,
-				AssistantMessageID: assistantMessage.ID,
+				SessionID:               params.SessionID,
+				UserMessageID:           userMessage.ID,
+				FinalAssistantMessageID: assistantMessage.ID,
+				Turns:                   state.turnCount,
+				FinishReason:            finishReasonFromError(event.Err),
 			}, event.Err
 		}
 
@@ -107,12 +105,14 @@ func (r *MessageQueryRunner) RunQuery(ctx context.Context, params QueryParams) (
 		case provider.StreamEventDelta:
 			appendTextDelta(&assistantMessage, event.Delta)
 			assistantMessage.Status = message.StatusStreaming
-			if err := r.messages.Update(ctx, assistantMessage); err != nil {
+			state = state.replaceLastMessage(assistantMessage).withTransition("assistant_delta_received")
+			if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
 				return QueryResult{}, err
 			}
 		case provider.StreamEventDone:
 			assistantMessage.Status = message.StatusComplete
-			if err := r.messages.Update(ctx, assistantMessage); err != nil {
+			state = state.replaceLastMessage(assistantMessage).withTransition("assistant_completed")
+			if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
 				return QueryResult{}, err
 			}
 		}
@@ -125,16 +125,19 @@ func (r *MessageQueryRunner) RunQuery(ctx context.Context, params QueryParams) (
 	})
 
 	return QueryResult{
-		UserMessageID:      userMessage.ID,
-		AssistantMessageID: assistantMessage.ID,
+		SessionID:               params.SessionID,
+		UserMessageID:           userMessage.ID,
+		FinalAssistantMessageID: assistantMessage.ID,
+		Turns:                   state.turnCount,
+		FinishReason:            FinishReasonCompleted,
 	}, nil
 }
 
-func (r *MessageQueryRunner) Events() <-chan Event {
+func (r *QueryLoop) Events() <-chan Event {
 	return r.events
 }
 
-func (r *MessageQueryRunner) publish(event Event) {
+func (r *QueryLoop) publish(event Event) {
 	if r.bus == nil {
 		return
 	}
@@ -188,4 +191,22 @@ func appendTextDelta(msg *message.Message, delta string) {
 		Type: message.PartTypeText,
 		Text: delta,
 	})
+}
+
+func cloneInputParts(parts []message.Part) []message.Part {
+	if len(parts) == 0 {
+		return nil
+	}
+
+	cloned := make([]message.Part, len(parts))
+	copy(cloned, parts)
+	return cloned
+}
+
+func finishReasonFromError(err error) FinishReason {
+	if errors.Is(err, context.Canceled) {
+		return FinishReasonCancelled
+	}
+
+	return FinishReasonFailed
 }

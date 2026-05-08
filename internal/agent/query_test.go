@@ -13,8 +13,77 @@ import (
 func TestMessageQueryRunnerImplementsQueryRunner(t *testing.T) {
 	t.Parallel()
 
-	var runner QueryRunner = NewMessageQueryRunner(&stubMessageStore{}, &stubStreamingLLM{})
+	var runner Runner = NewQueryLoop(&stubMessageStore{}, &stubStreamingLLM{})
 	require.NotNil(t, runner)
+}
+
+func TestNewMessageQueryRunnerSeedsConfigAndDeps(t *testing.T) {
+	t.Parallel()
+
+	store := &stubMessageStore{}
+	llm := &stubStreamingLLM{}
+
+	runner := NewQueryLoop(store, llm)
+
+	require.Equal(t, 1, runner.config.MaxTurns)
+	require.Same(t, store, runner.deps.Messages)
+	require.Same(t, llm, runner.deps.LLM)
+}
+
+func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
+	t.Parallel()
+
+	originalStore := &stubMessageStore{}
+	originalLLM := &stubStreamingLLM{}
+
+	depsStore := &stubMessageStore{
+		listResult: []message.Message{
+			messageRecord("user-1", message.KindUser, "hello"),
+			messageRecord("assistant-1", message.KindAssistant, ""),
+		},
+	}
+	depsLLM := &stubStreamingLLM{
+		events: []provider.StreamEvent{
+			{Type: provider.StreamEventDone},
+		},
+	}
+
+	runner := NewQueryLoop(originalStore, originalLLM)
+	runner.deps.Messages = depsStore
+	runner.deps.LLM = depsLLM
+
+	_, err := runner.RunQuery(context.Background(), QueryParams{
+		SessionID: "session-1",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, originalStore.created, 0)
+	require.Len(t, depsStore.created, 2)
+	require.Len(t, originalLLM.calls, 0)
+	require.Len(t, depsLLM.calls, 1)
+}
+
+func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
+	t.Parallel()
+
+	runner := NewQueryLoop(&stubMessageStore{}, &stubStreamingLLM{})
+	runner.config.MaxTurns = 0
+
+	_, err := runner.RunQuery(context.Background(), QueryParams{
+		SessionID: "session-1",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+	require.EqualError(t, err, "agent: max turns must be greater than 0")
 }
 
 func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
@@ -34,15 +103,23 @@ func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T)
 		},
 	}
 
-	runner := NewMessageQueryRunner(store, llm)
+	runner := NewQueryLoop(store, llm)
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
-		Prompt:    "hello",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
 	})
 	require.NoError(t, err)
+	require.Equal(t, "session-1", result.SessionID)
 	require.Equal(t, "user-1", result.UserMessageID)
-	require.Equal(t, "assistant-1", result.AssistantMessageID)
+	require.Equal(t, "assistant-1", result.FinalAssistantMessageID)
+	require.Equal(t, 1, result.Turns)
+	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, store.created, 2)
 	require.Len(t, store.updated, 3)
 	require.Equal(t, "hello", llm.calls[0][0].Content)
@@ -66,16 +143,79 @@ func TestMessageQueryRunnerMarksAssistantFailedOnStreamError(t *testing.T) {
 		},
 	}
 
-	runner := NewMessageQueryRunner(store, llm)
+	runner := NewQueryLoop(store, llm)
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
-		Prompt:    "hello",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
 	})
 	require.Error(t, err)
 	require.Len(t, store.updated, 2)
 	require.Equal(t, message.StatusFailed, store.updated[len(store.updated)-1].Status)
 	require.Equal(t, "par", textOf(store.updated[len(store.updated)-1]))
+}
+
+func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
+	t.Parallel()
+
+	state := newLoopState(QueryParams{
+		SessionID: "session-1",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+
+	require.Len(t, state.messages, 1)
+	require.Equal(t, 1, state.turnCount)
+	require.Equal(t, "hello", textOf(state.messages[0]))
+}
+
+func TestLoopStateWithTransitionReturnsNewSnapshot(t *testing.T) {
+	t.Parallel()
+
+	state := newLoopState(QueryParams{
+		SessionID: "session-1",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+
+	next := state.withTransition("assistant_delta")
+
+	require.Empty(t, state.transition)
+	require.Equal(t, "assistant_delta", next.transition)
+}
+
+func TestLoopStateAppendMessageDoesNotMutateOriginalSnapshot(t *testing.T) {
+	t.Parallel()
+
+	state := newLoopState(QueryParams{
+		SessionID: "session-1",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+
+	next := state.appendMessage(messageRecord("assistant-1", message.KindAssistant, "world"))
+
+	require.Len(t, state.messages, 1)
+	require.Len(t, next.messages, 2)
+	require.Equal(t, "hello", textOf(state.messages[0]))
+	require.Equal(t, "world", textOf(next.messages[1]))
 }
 
 type stubMessageStore struct {

@@ -28,7 +28,7 @@ func NewMessageService(st store.Store) *MessageService {
 }
 
 var _ Service = (*MessageService)(nil)
-
+//TODO:Can the sessionID be passed into the ctx file? Is the ctx reset when the agent creates a single session?
 func (s *MessageService) Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
 	now := time.Now().UTC()
 	if len(params.Parts) == 0 {
@@ -81,7 +81,19 @@ func (s *MessageService) Update(ctx context.Context, message Message) error {
 	}
 
 	message.UpdatedAt = updatedAt
-	s.publish(MessageCompletedEvent{Message: message})
+	switch message.Status {
+	case StatusStreaming:
+		s.publish(MessageDeltaEvent{
+			Message: message,
+			Delta:   textContent(message.Parts),
+		})
+	case StatusFailed:
+		s.publish(MessageFailedEvent{Message: message})
+	case StatusCancelled:
+		s.publish(MessageCancelledEvent{Message: message})
+	default:
+		s.publish(MessageCompletedEvent{Message: message})
+	}
 
 	return nil
 }

@@ -22,7 +22,7 @@ type Service struct {
 	bus      bus.Bus[Event]
 	events   <-chan Event
 	messages message.Service
-	query    agent.QueryRunner
+	query    agent.Runner
 	nowFunc  func() time.Time
 }
 
@@ -34,7 +34,7 @@ func NewService(st Store, llm provider.StreamingLLM, nowFunc func() time.Time) *
 	appBus := bus.NewBus[Event](128)
 	sessions := session.NewSessionService(st, nowFunc)
 	messages := message.NewMessageService(st)
-	query := agent.NewMessageQueryRunner(messages, llm)
+	query := agent.NewQueryLoop(messages, llm)
 
 	svc := &Service{
 		sessions: sessions,
@@ -86,18 +86,23 @@ func (s *Service) EnsureActiveSession(ctx context.Context) (Session, error) {
 func (s *Service) SendMessage(ctx context.Context, params SendMessageParams) (SendMessageResult, error) {
 	result, err := s.query.RunQuery(ctx, agent.QueryParams{
 		SessionID: params.SessionID,
-		Prompt:    params.Prompt,
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: params.Prompt,
+			},
+		},
 	})
 	if err != nil {
 		return SendMessageResult{
 			User:      Message{ID: result.UserMessageID},
-			Assistant: Message{ID: result.AssistantMessageID},
+			Assistant: Message{ID: result.FinalAssistantMessageID},
 		}, err
 	}
 
 	return SendMessageResult{
 		User:      Message{ID: result.UserMessageID},
-		Assistant: Message{ID: result.AssistantMessageID},
+		Assistant: Message{ID: result.FinalAssistantMessageID},
 	}, nil
 }
 
@@ -134,28 +139,9 @@ func (s *Service) forwardSessionEvents(events <-chan session.Event) {
 }
 
 func (s *Service) forwardAgentEvents(events <-chan agent.Event) {
-	for evt := range events {
-		switch event := evt.(type) {
-		case agent.QueryCompletedEvent:
-			s.bus.Publish(MessageCompletedEvent{
-				Message: Message{
-					ID:        event.AssistantMessageID,
-					SessionID: event.SessionID,
-					Role:      "assistant",
-					Status:    MessageStatusComplete,
-				},
-			})
-		case agent.QueryFailedEvent:
-			s.bus.Publish(MessageFailedEvent{
-				Message: Message{
-					ID:        event.AssistantMessageID,
-					SessionID: event.SessionID,
-					Role:      "assistant",
-					Status:    MessageStatusFailed,
-				},
-				Err: event.Err,
-			})
-		}
+	for range events {
+		// Query lifecycle events are intentionally not remapped to app message events.
+		// Message status changes are published by message.Service and forwarded separately.
 	}
 }
 
