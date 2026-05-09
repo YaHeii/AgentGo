@@ -7,15 +7,6 @@ import (
 	"github.com/YaHeii/agentGo/internal/provider"
 )
 
-// FinishReason describes why a query loop reached its terminal state.
-type FinishReason string
-
-const (
-	FinishReasonCompleted FinishReason = "completed"
-	FinishReasonFailed    FinishReason = "failed"
-	FinishReasonCancelled FinishReason = "cancelled"
-)
-
 // QueryParams contains the minimal external inputs required to run a query.
 type QueryParams struct {
 	SessionID  string
@@ -46,7 +37,18 @@ type QueryResult struct {
 	FinalAssistantMessageID string
 	Turns                   int
 	FinishReason            FinishReason
+	PendingToolCalls        []provider.ToolCall
 }
+
+// FinishReason describes why a query loop reached its terminal state.
+type FinishReason string
+
+const (
+	FinishReasonCompleted             FinishReason = "completed"
+	FinishReasonFailed                FinishReason = "failed"
+	FinishReasonCancelled             FinishReason = "cancelled"
+	FinishReasonAwaitingToolExecution FinishReason = "awaiting_tool_execution"
+)
 
 type autoCompactTracking struct{}
 

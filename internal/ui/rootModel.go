@@ -9,36 +9,10 @@ import (
 	"github.com/YaHeii/agentGo/internal/app"
 )
 
-const (
-	roleUser      = "user"
-	roleAssistant = "assistant"
-	defaultWidth  = 80
-	defaultHeight = 24
-)
-
-type bootstrapDoneMsg struct {
-	err error
-}
-
-type sendMessageDoneMsg struct {
-	err error
-}
-
-type appEventMsg struct {
-	event app.Event
-}
-
-type chatService interface {
-	EnsureActiveSession(ctx context.Context) (app.Session, error)
-	SendMessage(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error)
-	Events() <-chan app.Event
-}
-
 type rootModel struct {
 	app        chatService
-	events     <-chan app.Event
 	sessionID  string
-	messages   []app.Message
+	messages   []app.Message //save the redering snapshot
 	input      string
 	errMessage string
 	loading    bool
@@ -46,12 +20,24 @@ type rootModel struct {
 	height     int
 }
 
+type bootstrapDoneMsg struct {
+	err error
+}
+
 func NewRootModel(appSvc chatService) rootModel {
 	return rootModel{
 		app:    appSvc,
-		events: appSvc.Events(),
 		width:  defaultWidth,
 		height: defaultHeight,
+	}
+}
+//TODO: add some Pre-security checks
+func bootstrapSessionCmd(appSvc chatService) tea.Cmd {
+	return func() tea.Msg {
+		_, err := appSvc.EnsureActiveSession(context.Background())
+		return bootstrapDoneMsg{
+			err: err,
+		}
 	}
 }
 
@@ -69,7 +55,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMessage = msg.err.Error()
 			return m, nil
 		}
-		return m, waitAppEventCmd(m.events)
+		return m, waitAppEventCmd(m.app.Events())
 	case sendMessageDoneMsg:
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
@@ -100,11 +86,18 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMessage = event.Err.Error()
 			}
 			m.loading = false
+		case app.QueryCompletedEvent:
+			m.loading = false
+		case app.QueryFailedEvent:
+			if event.Err != nil {
+				m.errMessage = event.Err.Error()
+			}
+			m.loading = false
 		}
-		return m, waitAppEventCmd(m.events)
+		return m, waitAppEventCmd(m.app.Events())
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			return m, tea.Quit
 		case "enter":
 			if m.loading {
@@ -149,7 +142,7 @@ func (m rootModel) View() tea.View {
 		lines = append(lines, "", "assistant is thinking...")
 	}
 
-	lines = append(lines, "", "> "+m.input, "", "Enter to send. q or ctrl+c to quit.")
+	lines = append(lines, "", "> "+m.input, "", "Enter to send. ctrl+c to quit.")
 
 	maxLines := m.height
 	if maxLines <= 0 {
@@ -160,15 +153,6 @@ func (m rootModel) View() tea.View {
 	}
 
 	return tea.NewView(strings.Join(lines, "\n"))
-}
-
-func bootstrapSessionCmd(appSvc chatService) tea.Cmd {
-	return func() tea.Msg {
-		_, err := appSvc.EnsureActiveSession(context.Background())
-		return bootstrapDoneMsg{
-			err: err,
-		}
-	}
 }
 
 func sendMessageCmd(appSvc chatService, sessionID string, prompt string) tea.Cmd {

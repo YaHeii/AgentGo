@@ -90,11 +90,12 @@ func TestServiceForwardsAgentEventsToUnifiedAppEventStream(t *testing.T) {
 		AssistantMessageID: "assistant-1",
 	})
 
-	select {
-	case event := <-svc.Events():
-		t.Fatalf("expected no app event from agent query completion, got %T", event)
-	case <-time.After(20 * time.Millisecond):
-	}
+	event := <-svc.Events()
+	completed, ok := event.(QueryCompletedEvent)
+	require.True(t, ok)
+	require.Equal(t, "session-1", completed.SessionID)
+	require.Equal(t, "user-1", completed.UserMessageID)
+	require.Equal(t, "assistant-1", completed.AssistantMessageID)
 }
 
 func TestServiceSendMessageDelegatesToMessageService(t *testing.T) {
@@ -104,18 +105,19 @@ func TestServiceSendMessageDelegatesToMessageService(t *testing.T) {
 
 	llm := &fakeStreamingLLM{
 		events: []provider.StreamEvent{
-			{Type: provider.StreamEventDone},
+			{Type: provider.StreamEventTurnFinished},
 		},
 	}
 
 	svc := NewService(st, llm, timeNowStub)
 
-	_, err := svc.SendMessage(context.Background(), SendMessageParams{
+	result, err := svc.SendMessage(context.Background(), SendMessageParams{
 		SessionID: "session-1",
 		Prompt:    "hello",
 	})
 	require.NoError(t, err)
 	require.Len(t, llm.calls, 1)
+	require.Equal(t, QueryFinishReasonCompleted, result.FinishReason)
 }
 
 func TestServiceUsesMessageServiceInterface(t *testing.T) {
@@ -134,6 +136,38 @@ func TestServiceUsesMessageServiceInterface(t *testing.T) {
 		Prompt:    "hello",
 	})
 	require.NoError(t, err)
+}
+
+func TestServiceSendMessageReturnsPendingToolCalls(t *testing.T) {
+	t.Parallel()
+
+	sessions := newStubSessionService()
+	query := newStubQueryRunner()
+	query.runResult = agent.QueryResult{
+		SessionID:               "session-1",
+		UserMessageID:           "user-1",
+		FinalAssistantMessageID: "assistant-1",
+		Turns:                   1,
+		FinishReason:            agent.FinishReasonAwaitingToolExecution,
+		PendingToolCalls: []provider.ToolCall{
+			{
+				Index:     0,
+				ID:        "call_1",
+				Name:      "search",
+				Arguments: "{\"q\":\"golang\"}",
+			},
+		},
+	}
+	svc := newServiceWithDeps(sessions, &stubMessageService{}, query, timeNowStub)
+
+	result, err := svc.SendMessage(context.Background(), SendMessageParams{
+		SessionID: "session-1",
+		Prompt:    "hello",
+	})
+	require.NoError(t, err)
+	require.Equal(t, QueryFinishReasonAwaitingToolExecution, result.FinishReason)
+	require.Len(t, result.PendingToolCalls, 1)
+	require.Equal(t, "call_1", result.PendingToolCalls[0].ID)
 }
 
 func timeNowStub() time.Time {
@@ -270,11 +304,14 @@ func (s *fakeStore) Close() error {
 
 type fakeStreamingLLM struct {
 	events []provider.StreamEvent
-	calls  [][]provider.Message
+	calls  []provider.Request
 }
 
-func (f *fakeStreamingLLM) StreamChat(_ context.Context, messages []provider.Message) <-chan provider.StreamEvent {
-	copied := append([]provider.Message(nil), messages...)
+func (f *fakeStreamingLLM) StreamChat(_ context.Context, req provider.Request) <-chan provider.StreamEvent {
+	copied := provider.Request{}
+	if len(req.Messages) > 0 {
+		copied.Messages = append([]provider.Message(nil), req.Messages...)
+	}
 	f.calls = append(f.calls, copied)
 
 	ch := make(chan provider.StreamEvent, len(f.events))
@@ -330,6 +367,7 @@ func (s *stubMessageService) Events() <-chan message.Event {
 type stubQueryRunner struct {
 	bus    bus.Bus[agent.Event]
 	events <-chan agent.Event
+	runResult agent.QueryResult
 }
 
 func newStubQueryRunner() *stubQueryRunner {
@@ -337,17 +375,18 @@ func newStubQueryRunner() *stubQueryRunner {
 	return &stubQueryRunner{
 		bus:    b,
 		events: b.Subscribe(context.Background()),
+		runResult: agent.QueryResult{
+			SessionID:               "session-1",
+			UserMessageID:           "user-1",
+			FinalAssistantMessageID: "assistant-1",
+			Turns:                   1,
+			FinishReason:            agent.FinishReasonCompleted,
+		},
 	}
 }
 
 func (s *stubQueryRunner) RunQuery(_ context.Context, _ agent.QueryParams) (agent.QueryResult, error) {
-	return agent.QueryResult{
-		SessionID:               "session-1",
-		UserMessageID:           "user-1",
-		FinalAssistantMessageID: "assistant-1",
-		Turns:                   1,
-		FinishReason:            agent.FinishReasonCompleted,
-	}, nil
+	return s.runResult, nil
 }
 
 func (s *stubQueryRunner) Events() <-chan agent.Event {

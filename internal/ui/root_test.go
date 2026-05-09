@@ -178,6 +178,90 @@ func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
+	t.Parallel()
+
+	svc := newStubChatService()
+	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
+		svc.events <- app.SessionReadyEvent{
+			Session: app.Session{ID: "session-1", Title: "demo"},
+		}
+		svc.events <- app.ConversationHydratedEvent{
+			SessionID: "session-1",
+			Messages:  nil,
+		}
+		return app.Session{ID: "session-1", Title: "demo"}, nil
+	}
+
+	model := NewRootModel(svc)
+
+	bootstrapMsg := model.Init()()
+	updated, listenCmd := model.Update(bootstrapMsg)
+	model = updated.(rootModel)
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(rootModel)
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(rootModel)
+
+	model.loading = true
+	svc.events <- app.QueryFailedEvent{
+		SessionID:          "session-1",
+		UserMessageID:      "user-1",
+		AssistantMessageID: "assistant-1",
+		Err:                errors.New("query failed"),
+	}
+
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(rootModel)
+
+	if model.loading {
+		t.Fatal("expected loading to stop after query failure")
+	}
+	if model.errMessage != "query failed" {
+		t.Fatalf("expected query failure error, got %q", model.errMessage)
+	}
+}
+
+func TestQueryCompletedEventStopsLoading(t *testing.T) {
+	t.Parallel()
+
+	svc := newStubChatService()
+	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
+		svc.events <- app.SessionReadyEvent{
+			Session: app.Session{ID: "session-1", Title: "demo"},
+		}
+		svc.events <- app.ConversationHydratedEvent{
+			SessionID: "session-1",
+			Messages:  nil,
+		}
+		return app.Session{ID: "session-1", Title: "demo"}, nil
+	}
+
+	model := NewRootModel(svc)
+
+	bootstrapMsg := model.Init()()
+	updated, listenCmd := model.Update(bootstrapMsg)
+	model = updated.(rootModel)
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(rootModel)
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(rootModel)
+
+	model.loading = true
+	svc.events <- app.QueryCompletedEvent{
+		SessionID:          "session-1",
+		UserMessageID:      "user-1",
+		AssistantMessageID: "assistant-1",
+	}
+
+	updated, _ = model.Update(listenCmd())
+	model = updated.(rootModel)
+
+	if model.loading {
+		t.Fatal("expected loading to stop after query completion")
+	}
+}
+
 type stubChatService struct {
 	events          chan app.Event
 	ensureSessionFn func(ctx context.Context) (app.Session, error)

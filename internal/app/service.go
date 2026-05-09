@@ -97,12 +97,16 @@ func (s *Service) SendMessage(ctx context.Context, params SendMessageParams) (Se
 		return SendMessageResult{
 			User:      Message{ID: result.UserMessageID},
 			Assistant: Message{ID: result.FinalAssistantMessageID},
+			FinishReason:     toAppFinishReason(result.FinishReason),
+			PendingToolCalls: toAppToolCalls(result.PendingToolCalls),
 		}, err
 	}
 
 	return SendMessageResult{
 		User:      Message{ID: result.UserMessageID},
 		Assistant: Message{ID: result.FinalAssistantMessageID},
+		FinishReason:     toAppFinishReason(result.FinishReason),
+		PendingToolCalls: toAppToolCalls(result.PendingToolCalls),
 	}, nil
 }
 
@@ -139,9 +143,22 @@ func (s *Service) forwardSessionEvents(events <-chan session.Event) {
 }
 
 func (s *Service) forwardAgentEvents(events <-chan agent.Event) {
-	for range events {
-		// Query lifecycle events are intentionally not remapped to app message events.
-		// Message status changes are published by message.Service and forwarded separately.
+	for evt := range events {
+		switch event := evt.(type) {
+		case agent.QueryCompletedEvent:
+			s.bus.Publish(QueryCompletedEvent{
+				SessionID:          event.SessionID,
+				UserMessageID:      event.UserMessageID,
+				AssistantMessageID: event.AssistantMessageID,
+			})
+		case agent.QueryFailedEvent:
+			s.bus.Publish(QueryFailedEvent{
+				SessionID:          event.SessionID,
+				UserMessageID:      event.UserMessageID,
+				AssistantMessageID: event.AssistantMessageID,
+				Err:                event.Err,
+			})
+		}
 	}
 }
 
@@ -194,4 +211,34 @@ func toAppContent(msg message.Message) string {
 		}
 	}
 	return ""
+}
+
+func toAppFinishReason(reason agent.FinishReason) QueryFinishReason {
+	switch reason {
+	case agent.FinishReasonAwaitingToolExecution:
+		return QueryFinishReasonAwaitingToolExecution
+	case agent.FinishReasonCancelled:
+		return QueryFinishReasonCancelled
+	case agent.FinishReasonFailed:
+		return QueryFinishReasonFailed
+	default:
+		return QueryFinishReasonCompleted
+	}
+}
+
+func toAppToolCalls(calls []provider.ToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+
+	out := make([]ToolCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, ToolCall{
+			Index:     call.Index,
+			ID:        call.ID,
+			Name:      call.Name,
+			Arguments: call.Arguments,
+		})
+	}
+	return out
 }

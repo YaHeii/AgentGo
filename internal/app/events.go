@@ -49,3 +49,20 @@ type MessageCancelledEvent struct {
 }
 
 func (MessageCancelledEvent) isAppEvent() {}
+
+type QueryCompletedEvent struct {
+	SessionID          string
+	UserMessageID      string
+	AssistantMessageID string
+}
+
+func (QueryCompletedEvent) isAppEvent() {}
+
+type QueryFailedEvent struct {
+	SessionID          string
+	UserMessageID      string
+	AssistantMessageID string
+	Err                error
+}
+
+func (QueryFailedEvent) isAppEvent() {}

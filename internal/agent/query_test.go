@@ -43,8 +43,10 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 		},
 	}
 	depsLLM := &stubStreamingLLM{
-		events: []provider.StreamEvent{
-			{Type: provider.StreamEventDone},
+		events: [][]provider.StreamEvent{
+			{
+				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonStop},
+			},
 		},
 	}
 
@@ -66,6 +68,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	require.Len(t, depsStore.created, 2)
 	require.Len(t, originalLLM.calls, 0)
 	require.Len(t, depsLLM.calls, 1)
+	require.Equal(t, "hello", depsLLM.calls[0].Messages[0].Content)
 }
 
 func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
@@ -96,10 +99,12 @@ func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T)
 		},
 	}
 	llm := &stubStreamingLLM{
-		events: []provider.StreamEvent{
-			{Type: provider.StreamEventDelta, Delta: "hel"},
-			{Type: provider.StreamEventDelta, Delta: "lo"},
-			{Type: provider.StreamEventDone},
+		events: [][]provider.StreamEvent{
+			{
+				{Type: provider.StreamEventTextDelta, TextDelta: "hel"},
+				{Type: provider.StreamEventTextDelta, TextDelta: "lo"},
+				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonStop},
+			},
 		},
 	}
 
@@ -122,7 +127,7 @@ func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, store.created, 2)
 	require.Len(t, store.updated, 3)
-	require.Equal(t, "hello", llm.calls[0][0].Content)
+	require.Equal(t, "hello", llm.calls[0].Messages[0].Content)
 	require.Equal(t, "hello", textOf(store.updated[len(store.updated)-1]))
 	require.Equal(t, message.StatusComplete, store.updated[len(store.updated)-1].Status)
 }
@@ -137,9 +142,11 @@ func TestMessageQueryRunnerMarksAssistantFailedOnStreamError(t *testing.T) {
 		},
 	}
 	llm := &stubStreamingLLM{
-		events: []provider.StreamEvent{
-			{Type: provider.StreamEventDelta, Delta: "par"},
-			{Err: errors.New("stream failed")},
+		events: [][]provider.StreamEvent{
+			{
+				{Type: provider.StreamEventTextDelta, TextDelta: "par"},
+				{Type: provider.StreamEventProviderError, Err: errors.New("stream failed")},
+			},
 		},
 	}
 
@@ -158,6 +165,137 @@ func TestMessageQueryRunnerMarksAssistantFailedOnStreamError(t *testing.T) {
 	require.Len(t, store.updated, 2)
 	require.Equal(t, message.StatusFailed, store.updated[len(store.updated)-1].Status)
 	require.Equal(t, "par", textOf(store.updated[len(store.updated)-1]))
+}
+
+func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
+	t.Parallel()
+
+	store := &stubMessageStore{
+		listResult: []message.Message{
+			messageRecord("user-1", message.KindUser, "hello"),
+			messageRecord("assistant-1", message.KindAssistant, ""),
+		},
+	}
+	llm := &stubStreamingLLM{
+		events: [][]provider.StreamEvent{
+			{
+				{
+					Type: provider.StreamEventToolCallDelta,
+					ToolCallDelta: &provider.ToolCallDelta{
+						Index:          0,
+						ID:             "call_1",
+						NameDelta:      "search",
+						ArgumentsDelta: "{\"q\":\"golang\"}",
+					},
+				},
+				{
+					Type: provider.StreamEventToolCallCompleted,
+					ToolCall: &provider.ToolCall{
+						Index:     0,
+						ID:        "call_1",
+						Name:      "search",
+						Arguments: "{\"q\":\"golang\"}",
+					},
+				},
+				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonToolCalls},
+			},
+		},
+	}
+
+	runner := NewQueryLoop(store, llm)
+
+	result, err := runner.RunQuery(context.Background(), QueryParams{
+		SessionID: "session-1",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, FinishReasonAwaitingToolExecution, result.FinishReason)
+	require.Len(t, result.PendingToolCalls, 1)
+	require.Equal(t, "call_1", result.PendingToolCalls[0].ID)
+	require.Equal(t, "search", result.PendingToolCalls[0].Name)
+}
+
+func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
+	t.Parallel()
+
+	store := &stubMessageStore{
+		listResult: []message.Message{
+			messageRecord("user-1", message.KindUser, "hello"),
+			messageRecord("assistant-1", message.KindAssistant, ""),
+		},
+	}
+	llm := &stubStreamingLLM{
+		events: [][]provider.StreamEvent{
+			{
+				{Type: provider.StreamEventReasoningDelta, ReasoningDelta: "thinking"},
+				{Type: provider.StreamEventRefusalDelta, RefusalDelta: "decline"},
+				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonStop},
+			},
+		},
+	}
+
+	runner := NewQueryLoop(store, llm)
+
+	_, err := runner.RunQuery(context.Background(), QueryParams{
+		SessionID: "session-1",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, store.updated)
+
+	final := store.updated[len(store.updated)-1]
+	require.Equal(t, message.StatusComplete, final.Status)
+	require.NotNil(t, findThinkingPart(final.Parts))
+	require.Equal(t, "thinking", findThinkingPart(final.Parts).Content)
+	require.Equal(t, "decline", findTextPart(final.Parts))
+}
+
+func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
+	t.Parallel()
+
+	store := &stubMessageStore{
+		listResult: []message.Message{
+			messageRecord("user-1", message.KindUser, "hello"),
+			messageRecord("assistant-1", message.KindAssistant, ""),
+		},
+	}
+	llm := &stubStreamingLLM{
+		events: [][]provider.StreamEvent{
+			{
+				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonLength},
+			},
+			{
+				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonStop},
+			},
+		},
+	}
+
+	runner := NewQueryLoop(store, llm)
+	runner.config.MaxTurns = 2
+
+	result, err := runner.RunQuery(context.Background(), QueryParams{
+		SessionID: "session-1",
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, llm.calls, 2)
+	require.Equal(t, 2, result.Turns)
+	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 }
 
 func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
@@ -251,14 +389,19 @@ func (s *stubMessageStore) List(_ context.Context, _ string) ([]message.Message,
 }
 
 type stubStreamingLLM struct {
-	events []provider.StreamEvent
-	calls  [][]provider.Message
+	events [][]provider.StreamEvent
+	calls  []provider.Request
 }
 
-func (s *stubStreamingLLM) StreamChat(_ context.Context, messages []provider.Message) <-chan provider.StreamEvent {
-	s.calls = append(s.calls, append([]provider.Message(nil), messages...))
-	ch := make(chan provider.StreamEvent, len(s.events))
-	for _, event := range s.events {
+func (s *stubStreamingLLM) StreamChat(_ context.Context, req provider.Request) <-chan provider.StreamEvent {
+	s.calls = append(s.calls, cloneProviderRequest(req))
+	index := len(s.calls) - 1
+	batch := []provider.StreamEvent(nil)
+	if index < len(s.events) {
+		batch = s.events[index]
+	}
+	ch := make(chan provider.StreamEvent, len(batch))
+	for _, event := range batch {
 		ch <- event
 	}
 	close(ch)
@@ -277,4 +420,30 @@ func messageRecord(id string, kind message.Kind, text string) message.Message {
 			},
 		},
 	}
+}
+
+func cloneProviderRequest(req provider.Request) provider.Request {
+	cloned := provider.Request{}
+	if len(req.Messages) > 0 {
+		cloned.Messages = append([]provider.Message(nil), req.Messages...)
+	}
+	return cloned
+}
+
+func findThinkingPart(parts []message.Part) *message.ThinkingPart {
+	for _, part := range parts {
+		if part.Type == message.PartTypeThinking && part.Thinking != nil {
+			return part.Thinking
+		}
+	}
+	return nil
+}
+
+func findTextPart(parts []message.Part) string {
+	for _, part := range parts {
+		if part.Type == message.PartTypeText {
+			return part.Text
+		}
+	}
+	return ""
 }
