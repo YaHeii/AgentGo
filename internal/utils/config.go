@@ -6,6 +6,7 @@ import (
 
 // Config stores all configuration of the application.
 // The values are read by viper from a config file or environment variable.
+// TODO：Some necessary terminal environment variables should also be introduced here.
 type Config struct {
 	Environment string `mapstructure:"ENVIRONMENT"`
 	BaseURL     string `mapstructure:"BASE_URL"`

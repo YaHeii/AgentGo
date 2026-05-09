@@ -31,7 +31,26 @@ func NewRootModel(appSvc chatService) rootModel {
 		height: defaultHeight,
 	}
 }
-//TODO: add some Pre-security checks
+
+// TODO: add some Pre-security checks
+// At here, can mock cc approach, 
+// The purpose of delaying the rendering until after the initial rendering 
+// is to avoid blocking the appearance of the terminal interface. 
+// While the user sees the prompt and begins to think and type,
+// these background tasks are already being completed in parallel.
+// src/main.tsx:388-431
+// export function startDeferredPrefetches(): void {
+//   // This function runs after first render, so it doesn't block the initial paint.
+//   void initUser();
+//   void getUserContext();
+//   prefetchSystemContextIfSafe();
+//   void getRelevantTips();
+//   void countFilesRoundedRg(getCwd(), AbortSignal.timeout(3000), []);
+//   void initializeAnalyticsGates();
+//   void refreshModelCapabilities();
+//   void settingsChangeDetector.initialize();
+//   // ...
+// }
 func bootstrapSessionCmd(appSvc chatService) tea.Cmd {
 	return func() tea.Msg {
 		_, err := appSvc.EnsureActiveSession(context.Background())
@@ -155,6 +174,7 @@ func (m rootModel) View() tea.View {
 	return tea.NewView(strings.Join(lines, "\n"))
 }
 
+// UIlayer should only send the basic prompt, tool schema .etc will be assembled in app layer
 func sendMessageCmd(appSvc chatService, sessionID string, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		_, err := appSvc.SendMessage(context.Background(), app.SendMessageParams{
