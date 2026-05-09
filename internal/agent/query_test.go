@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMessageQueryRunnerImplementsQueryRunner(t *testing.T) {
+func TestNewQueryLoopReturnsRunner(t *testing.T) {
 	t.Parallel()
 
-	var runner Runner = NewQueryLoop(&stubMessageStore{}, &stubStreamingLLM{})
+	runner := NewQueryLoop(&stubMessageStore{}, &stubStreamingLLM{})
 	require.NotNil(t, runner)
 }
 
@@ -36,12 +36,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	originalStore := &stubMessageStore{}
 	originalLLM := &stubStreamingLLM{}
 
-	depsStore := &stubMessageStore{
-		listResult: []message.Message{
-			messageRecord("user-1", message.KindUser, "hello"),
-			messageRecord("assistant-1", message.KindAssistant, ""),
-		},
-	}
+	depsStore := &stubMessageStore{}
 	depsLLM := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -68,7 +63,9 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	require.Len(t, depsStore.created, 2)
 	require.Len(t, originalLLM.calls, 0)
 	require.Len(t, depsLLM.calls, 1)
+	require.Len(t, depsLLM.calls[0].Messages, 1)
 	require.Equal(t, "hello", depsLLM.calls[0].Messages[0].Content)
+	require.Equal(t, message.StatusComplete, depsStore.created[1].Status)
 }
 
 func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
@@ -92,12 +89,7 @@ func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
 func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{
-		listResult: []message.Message{
-			messageRecord("user-1", message.KindUser, "hello"),
-			messageRecord("assistant-1", message.KindAssistant, ""),
-		},
-	}
+	store := &stubMessageStore{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -122,12 +114,15 @@ func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T)
 	require.NoError(t, err)
 	require.Equal(t, "session-1", result.SessionID)
 	require.Equal(t, "user-1", result.UserMessageID)
-	require.Equal(t, "assistant-1", result.FinalAssistantMessageID)
 	require.Equal(t, 1, result.Turns)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, store.created, 2)
 	require.Len(t, store.updated, 3)
+	require.Len(t, llm.calls[0].Messages, 1)
 	require.Equal(t, "hello", llm.calls[0].Messages[0].Content)
+	require.Equal(t, message.StatusComplete, store.created[1].Status)
+	require.Equal(t, "hello", findTextPart(store.created[1].Parts))
+	require.Equal(t, store.persisted[1].ID, result.FinalAssistantMessageID)
 	require.Equal(t, "hello", textOf(store.updated[len(store.updated)-1]))
 	require.Equal(t, message.StatusComplete, store.updated[len(store.updated)-1].Status)
 }
@@ -135,12 +130,7 @@ func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T)
 func TestMessageQueryRunnerMarksAssistantFailedOnStreamError(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{
-		listResult: []message.Message{
-			messageRecord("user-1", message.KindUser, "hello"),
-			messageRecord("assistant-1", message.KindAssistant, ""),
-		},
-	}
+	store := &stubMessageStore{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -162,7 +152,10 @@ func TestMessageQueryRunnerMarksAssistantFailedOnStreamError(t *testing.T) {
 		},
 	})
 	require.Error(t, err)
+	require.Len(t, store.created, 2)
 	require.Len(t, store.updated, 2)
+	require.Equal(t, message.KindSystem, store.created[1].Kind)
+	require.Contains(t, findTextPart(store.created[1].Parts), "stream failed")
 	require.Equal(t, message.StatusFailed, store.updated[len(store.updated)-1].Status)
 	require.Equal(t, "par", textOf(store.updated[len(store.updated)-1]))
 }
@@ -170,12 +163,7 @@ func TestMessageQueryRunnerMarksAssistantFailedOnStreamError(t *testing.T) {
 func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{
-		listResult: []message.Message{
-			messageRecord("user-1", message.KindUser, "hello"),
-			messageRecord("assistant-1", message.KindAssistant, ""),
-		},
-	}
+	store := &stubMessageStore{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -218,17 +206,16 @@ func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 	require.Len(t, result.PendingToolCalls, 1)
 	require.Equal(t, "call_1", result.PendingToolCalls[0].ID)
 	require.Equal(t, "search", result.PendingToolCalls[0].Name)
+	require.Len(t, store.created, 2)
+	require.Equal(t, message.StatusComplete, store.created[1].Status)
+	require.NotNil(t, findToolCallPart(store.created[1].Parts))
+	require.Equal(t, "call_1", findToolCallPart(store.created[1].Parts).ID)
 }
 
 func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{
-		listResult: []message.Message{
-			messageRecord("user-1", message.KindUser, "hello"),
-			messageRecord("assistant-1", message.KindAssistant, ""),
-		},
-	}
+	store := &stubMessageStore{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -253,6 +240,11 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, store.updated)
 
+	require.Len(t, store.created, 2)
+	require.Equal(t, message.StatusComplete, store.created[1].Status)
+	require.NotNil(t, findThinkingPart(store.created[1].Parts))
+	require.Equal(t, "decline", findTextPart(store.created[1].Parts))
+
 	final := store.updated[len(store.updated)-1]
 	require.Equal(t, message.StatusComplete, final.Status)
 	require.NotNil(t, findThinkingPart(final.Parts))
@@ -263,15 +255,11 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{
-		listResult: []message.Message{
-			messageRecord("user-1", message.KindUser, "hello"),
-			messageRecord("assistant-1", message.KindAssistant, ""),
-		},
-	}
+	store := &stubMessageStore{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
+				{Type: provider.StreamEventTextDelta, TextDelta: "one"},
 				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonLength},
 			},
 			{
@@ -296,6 +284,8 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 	require.Len(t, llm.calls, 2)
 	require.Equal(t, 2, result.Turns)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
+	require.Len(t, llm.calls[1].Messages, 2)
+	require.Equal(t, "one", llm.calls[1].Messages[1].Content)
 }
 
 func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
@@ -360,22 +350,32 @@ type stubMessageStore struct {
 	created    []message.CreateMessageParams
 	updated    []message.Message
 	listResult []message.Message
+	persisted  []message.Message
 }
 
 func (s *stubMessageStore) Create(_ context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
 	s.created = append(s.created, params)
 	id := "user-1"
-	if params.Kind == message.KindAssistant {
+	switch params.Kind {
+	case message.KindAssistant:
 		id = "assistant-1"
+	case message.KindSystem:
+		id = "system-1"
 	}
-	return message.Message{
+	if params.ID != "" {
+		id = params.ID
+	}
+	msg := message.Message{
 		ID:        id,
 		SessionID: sessionID,
 		Kind:      params.Kind,
-		Origin:    params.Origin,
 		Status:    params.Status,
 		Parts:     params.Parts,
-	}, nil
+		System:    params.System,
+		Progress:  params.Progress,
+	}
+	s.persisted = append(s.persisted, msg)
+	return msg, nil
 }
 
 func (s *stubMessageStore) Update(_ context.Context, msg message.Message) error {
@@ -385,6 +385,7 @@ func (s *stubMessageStore) Update(_ context.Context, msg message.Message) error 
 
 func (s *stubMessageStore) List(_ context.Context, _ string) ([]message.Message, error) {
 	copied := append([]message.Message(nil), s.listResult...)
+	copied = append(copied, s.persisted...)
 	return copied, nil
 }
 
@@ -446,4 +447,13 @@ func findTextPart(parts []message.Part) string {
 		}
 	}
 	return ""
+}
+
+func findToolCallPart(parts []message.Part) *message.ToolCallPart {
+	for _, part := range parts {
+		if part.Type == message.PartTypeToolCall && part.ToolCall != nil {
+			return part.ToolCall
+		}
+	}
+	return nil
 }

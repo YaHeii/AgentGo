@@ -22,20 +22,30 @@ func TestStoreCreatesListsGetsUpdatesAndDeletesSessions(t *testing.T) {
 	secondAt := firstAt.Add(2 * time.Minute)
 
 	first, err := s.CreateSession(ctx, store.CreateSessionParams{
-		ID:           "session-1",
-		Title:        "first",
-		CreatedAt:    firstAt,
-		UpdatedAt:    firstAt,
-		LastActiveAt: firstAt,
+		ID:               "session-1",
+		ParentSessionID:  "",
+		Title:            "first",
+		MessageCount:     1,
+		CompletionTokens: 12,
+		CostMicros:       34,
+		SummaryMessageID: "",
+		TodosJSON:        "[]",
+		CreatedAt:        firstAt,
+		UpdatedAt:        firstAt,
 	})
 	require.NoError(t, err)
 
 	_, err = s.CreateSession(ctx, store.CreateSessionParams{
-		ID:           "session-2",
-		Title:        "second",
-		CreatedAt:    secondAt,
-		UpdatedAt:    secondAt,
-		LastActiveAt: secondAt,
+		ID:               "session-2",
+		ParentSessionID:  "session-1",
+		Title:            "second",
+		MessageCount:     2,
+		CompletionTokens: 99,
+		CostMicros:       123,
+		SummaryMessageID: "summary-1",
+		TodosJSON:        `[{"content":"ship","status":"pending"}]`,
+		CreatedAt:        secondAt,
+		UpdatedAt:        secondAt,
 	})
 	require.NoError(t, err)
 
@@ -43,19 +53,31 @@ func TestStoreCreatesListsGetsUpdatesAndDeletesSessions(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, sessions, 2)
 	require.Equal(t, "session-2", sessions[0].ID)
+	require.Equal(t, int64(99), sessions[0].CompletionTokens)
+	require.Equal(t, int64(123), sessions[0].CostMicros)
+	require.Equal(t, "summary-1", sessions[0].SummaryMessageID)
 
 	updated, err := s.UpdateSession(ctx, store.UpdateSessionParams{
-		ID:           first.ID,
-		Title:        "first renamed",
-		UpdatedAt:    secondAt.Add(time.Minute),
-		LastActiveAt: secondAt.Add(time.Minute),
+		ID:               first.ID,
+		ParentSessionID:  "",
+		Title:            "first renamed",
+		MessageCount:     3,
+		CompletionTokens: 55,
+		CostMicros:       89,
+		SummaryMessageID: "summary-2",
+		TodosJSON:        `[{"content":"done","status":"completed"}]`,
+		UpdatedAt:        secondAt.Add(time.Minute),
 	})
 	require.NoError(t, err)
 	require.Equal(t, "first renamed", updated.Title)
+	require.Equal(t, int64(3), updated.MessageCount)
+	require.Equal(t, int64(55), updated.CompletionTokens)
+	require.Equal(t, int64(89), updated.CostMicros)
 
 	loaded, err := s.GetSession(ctx, first.ID)
 	require.NoError(t, err)
 	require.Equal(t, "first renamed", loaded.Title)
+	require.Equal(t, "summary-2", loaded.SummaryMessageID)
 
 	require.NoError(t, s.DeleteSession(ctx, "session-2"))
 
@@ -72,50 +94,43 @@ func TestStoreCreatesListsUpdatesMessagesAndCascadesOnSessionDelete(t *testing.T
 	now := time.Unix(1710001000, 0).UTC()
 
 	_, err := s.CreateSession(ctx, store.CreateSessionParams{
-		ID:           "session-1",
-		Title:        "chat",
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		LastActiveAt: now,
-	})
-	require.NoError(t, err)
-
-	_, err = s.CreateMessage(ctx, store.CreateMessageParams{
-		ID:        "message-1",
-		SessionID: "session-1",
-		Role:      "user",
-		Content:   "hello",
-		Status:    store.MessageStatusComplete,
+		ID:        "session-1",
+		Title:     "chat",
+		TodosJSON: "[]",
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
 	require.NoError(t, err)
 
-	assistant, err := s.CreateMessage(ctx, store.CreateMessageParams{
-		ID:        "message-2",
-		SessionID: "session-1",
-		Role:      "assistant",
-		Content:   "hel",
-		Status:    store.MessageStatusStreaming,
-		CreatedAt: now.Add(time.Second),
-		UpdatedAt: now.Add(time.Second),
+	_, err = s.CreateMessage(ctx, store.CreateMessageParams{
+		ID:               "message-1",
+		SessionID:        "session-1",
+		Kind:             "user",
+		Provider:         "",
+		FinishedAt:       now,
+		IsCompactSummary: false,
+		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"hello"}]}`,
 	})
 	require.NoError(t, err)
 
-	updated, err := s.UpdateMessage(ctx, store.UpdateMessageParams{
-		ID:        assistant.ID,
-		Content:   "hello back",
-		Status:    store.MessageStatusComplete,
-		UpdatedAt: now.Add(2 * time.Second),
+	assistant, err := s.CreateMessage(ctx, store.CreateMessageParams{
+		ID:               "message-2",
+		SessionID:        "session-1",
+		Kind:             "assistant",
+		Provider:         "openai/gpt-4.1",
+		FinishedAt:       now.Add(time.Second),
+		IsCompactSummary: false,
+		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"hello back"}]}`,
 	})
 	require.NoError(t, err)
-	require.Equal(t, store.MessageStatusComplete, updated.Status)
+	require.Equal(t, "openai/gpt-4.1", assistant.Provider)
 
 	messages, err := s.ListMessages(ctx, "session-1")
 	require.NoError(t, err)
 	require.Len(t, messages, 2)
-	require.Equal(t, "user", messages[0].Role)
-	require.Equal(t, "hello back", messages[1].Content)
+	require.Equal(t, "user", messages[0].Kind)
+	require.Equal(t, "assistant", messages[1].Kind)
+	require.Equal(t, `{"flags":{},"parts":[{"Type":"text","Text":"hello back"}]}`, messages[1].MessageJSON)
 
 	require.NoError(t, s.DeleteSession(ctx, "session-1"))
 
@@ -133,11 +148,11 @@ func TestStoreLoadsSavesAndDeletesDrafts(t *testing.T) {
 	now := time.Unix(1710002000, 0).UTC()
 
 	_, err := s.CreateSession(ctx, store.CreateSessionParams{
-		ID:           "session-1",
-		Title:        "draft-session",
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		LastActiveAt: now,
+		ID:        "session-1",
+		Title:     "draft-session",
+		TodosJSON: "[]",
+		CreatedAt: now,
+		UpdatedAt: now,
 	})
 	require.NoError(t, err)
 
@@ -184,11 +199,11 @@ func TestStoreWithinTxRollsBackOnError(t *testing.T) {
 
 	err := s.WithinTx(ctx, func(tx store.TxStore) error {
 		_, err := tx.CreateSession(ctx, store.CreateSessionParams{
-			ID:           "session-1",
-			Title:        "tx-session",
-			CreatedAt:    now,
-			UpdatedAt:    now,
-			LastActiveAt: now,
+			ID:        "session-1",
+			Title:     "tx-session",
+			TodosJSON: "[]",
+			CreatedAt: now,
+			UpdatedAt: now,
 		})
 		require.NoError(t, err)
 

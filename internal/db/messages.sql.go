@@ -10,49 +10,49 @@ import (
 )
 
 const createMessage = `-- name: CreateMessage :one
-INSERT INTO messages (id, session_id, role, content, status, created_at, updated_at)
+INSERT INTO messages (id, session_id, kind, provider, finished_at, is_compact_summary, message_json)
 VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, session_id, role, content, status, created_at, updated_at
+RETURNING id, session_id, kind, provider, finished_at, is_compact_summary, message_json
 `
 
 type CreateMessageParams struct {
-	ID        string `json:"id"`
-	SessionID string `json:"session_id"`
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Status    string `json:"status"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	ID               string `json:"id"`
+	SessionID        string `json:"session_id"`
+	Kind             string `json:"kind"`
+	Provider         string `json:"provider"`
+	FinishedAt       int64  `json:"finished_at"`
+	IsCompactSummary int64  `json:"is_compact_summary"`
+	MessageJson      string `json:"message_json"`
 }
 
 func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
 	row := q.queryRow(ctx, q.createMessageStmt, createMessage,
 		arg.ID,
 		arg.SessionID,
-		arg.Role,
-		arg.Content,
-		arg.Status,
-		arg.CreatedAt,
-		arg.UpdatedAt,
+		arg.Kind,
+		arg.Provider,
+		arg.FinishedAt,
+		arg.IsCompactSummary,
+		arg.MessageJson,
 	)
 	var i Message
 	err := row.Scan(
 		&i.ID,
 		&i.SessionID,
-		&i.Role,
-		&i.Content,
-		&i.Status,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.Kind,
+		&i.Provider,
+		&i.FinishedAt,
+		&i.IsCompactSummary,
+		&i.MessageJson,
 	)
 	return i, err
 }
 
 const listMessages = `-- name: ListMessages :many
-SELECT id, session_id, role, content, status, created_at, updated_at
+SELECT id, session_id, kind, provider, finished_at, is_compact_summary, message_json
 FROM messages
 WHERE session_id = ?
-ORDER BY created_at ASC, id ASC
+ORDER BY finished_at ASC, id ASC
 `
 
 func (q *Queries) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
@@ -67,11 +67,11 @@ func (q *Queries) ListMessages(ctx context.Context, sessionID string) ([]Message
 		if err := rows.Scan(
 			&i.ID,
 			&i.SessionID,
-			&i.Role,
-			&i.Content,
-			&i.Status,
-			&i.CreatedAt,
-			&i.UpdatedAt,
+			&i.Kind,
+			&i.Provider,
+			&i.FinishedAt,
+			&i.IsCompactSummary,
+			&i.MessageJson,
 		); err != nil {
 			return nil, err
 		}
@@ -84,38 +84,4 @@ func (q *Queries) ListMessages(ctx context.Context, sessionID string) ([]Message
 		return nil, err
 	}
 	return items, nil
-}
-
-const updateMessage = `-- name: UpdateMessage :one
-UPDATE messages
-SET content = ?, status = ?, updated_at = ?
-WHERE id = ?
-RETURNING id, session_id, role, content, status, created_at, updated_at
-`
-
-type UpdateMessageParams struct {
-	Content   string `json:"content"`
-	Status    string `json:"status"`
-	UpdatedAt int64  `json:"updated_at"`
-	ID        string `json:"id"`
-}
-
-func (q *Queries) UpdateMessage(ctx context.Context, arg UpdateMessageParams) (Message, error) {
-	row := q.queryRow(ctx, q.updateMessageStmt, updateMessage,
-		arg.Content,
-		arg.Status,
-		arg.UpdatedAt,
-		arg.ID,
-	)
-	var i Message
-	err := row.Scan(
-		&i.ID,
-		&i.SessionID,
-		&i.Role,
-		&i.Content,
-		&i.Status,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
 }

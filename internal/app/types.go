@@ -22,8 +22,8 @@ type SendMessageParams struct {
 }
 
 type SendMessageResult struct {
-	User      Message
-	Assistant Message
+	User             Message
+	Assistant        Message
 	FinishReason     QueryFinishReason
 	PendingToolCalls []ToolCall
 }

@@ -11,19 +11,24 @@ type Draft struct {
 }
 
 type Message struct {
-	ID        string `json:"id"`
-	SessionID string `json:"session_id"`
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Status    string `json:"status"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	ID               string `json:"id"`
+	SessionID        string `json:"session_id"`
+	Kind             string `json:"kind"`
+	Provider         string `json:"provider"`
+	FinishedAt       int64  `json:"finished_at"`
+	IsCompactSummary int64  `json:"is_compact_summary"`
+	MessageJson      string `json:"message_json"`
 }
 
 type Session struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	CreatedAt    int64  `json:"created_at"`
-	UpdatedAt    int64  `json:"updated_at"`
-	LastActiveAt int64  `json:"last_active_at"`
+	ID               string `json:"id"`
+	ParentSessionID  string `json:"parent_session_id"`
+	Title            string `json:"title"`
+	MessageCount     int64  `json:"message_count"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	CostMicros       int64  `json:"cost_micros"`
+	SummaryMessageID string `json:"summary_message_id"`
+	TodosJson        string `json:"todos_json"`
+	CreatedAt        int64  `json:"created_at"`
+	UpdatedAt        int64  `json:"updated_at"`
 }

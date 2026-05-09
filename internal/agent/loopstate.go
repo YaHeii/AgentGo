@@ -30,7 +30,6 @@ func newLoopState(params QueryParams) loopState {
 			{
 				SessionID: params.SessionID,
 				Kind:      message.KindUser,
-				Origin:    message.OriginHuman,
 				Status:    message.StatusComplete,
 				Parts:     append([]message.Part(nil), params.InputParts...),
 			},
@@ -42,6 +41,12 @@ func newLoopState(params QueryParams) loopState {
 func (s loopState) withTransition(reason string) loopState {
 	next := s
 	next.transition = reason
+	return next
+}
+
+func (s loopState) withMessages(messages []message.Message) loopState {
+	next := s
+	next.messages = cloneMessages(messages)
 	return next
 }
 

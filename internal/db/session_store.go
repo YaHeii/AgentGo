@@ -58,22 +58,32 @@ type sessionQuerier interface {
 
 func createSessionWithQuerier(ctx context.Context, q sessionQuerier, params store.CreateSessionParams) (store.Session, error) {
 	row, err := q.CreateSession(ctx, CreateSessionParams{
-		ID:           params.ID,
-		Title:        params.Title,
-		CreatedAt:    params.CreatedAt.UTC().UnixMilli(),
-		UpdatedAt:    params.UpdatedAt.UTC().UnixMilli(),
-		LastActiveAt: params.LastActiveAt.UTC().UnixMilli(),
+		ID:               params.ID,
+		ParentSessionID:  params.ParentSessionID,
+		Title:            params.Title,
+		MessageCount:     params.MessageCount,
+		CompletionTokens: params.CompletionTokens,
+		CostMicros:       params.CostMicros,
+		SummaryMessageID: params.SummaryMessageID,
+		TodosJson:        params.TodosJSON,
+		CreatedAt:        params.CreatedAt.UTC().UnixMilli(),
+		UpdatedAt:        params.UpdatedAt.UTC().UnixMilli(),
 	})
 	if err != nil {
 		return store.Session{}, err
 	}
 
 	return store.Session{
-		ID:           row.ID,
-		Title:        row.Title,
-		CreatedAt:    unixMilliToTime(row.CreatedAt),
-		UpdatedAt:    unixMilliToTime(row.UpdatedAt),
-		LastActiveAt: unixMilliToTime(row.LastActiveAt),
+		ID:               row.ID,
+		ParentSessionID:  row.ParentSessionID,
+		Title:            row.Title,
+		MessageCount:     row.MessageCount,
+		CompletionTokens: row.CompletionTokens,
+		CostMicros:       row.CostMicros,
+		SummaryMessageID: row.SummaryMessageID,
+		TodosJSON:        row.TodosJson,
+		CreatedAt:        unixMilliToTime(row.CreatedAt),
+		UpdatedAt:        unixMilliToTime(row.UpdatedAt),
 	}, nil
 }
 
@@ -86,11 +96,16 @@ func listSessionsWithQuerier(ctx context.Context, q sessionQuerier) ([]store.Ses
 	sessions := make([]store.Session, 0, len(rows))
 	for _, row := range rows {
 		sessions = append(sessions, store.Session{
-			ID:           row.ID,
-			Title:        row.Title,
-			CreatedAt:    unixMilliToTime(row.CreatedAt),
-			UpdatedAt:    unixMilliToTime(row.UpdatedAt),
-			LastActiveAt: unixMilliToTime(row.LastActiveAt),
+			ID:               row.ID,
+			ParentSessionID:  row.ParentSessionID,
+			Title:            row.Title,
+			MessageCount:     row.MessageCount,
+			CompletionTokens: row.CompletionTokens,
+			CostMicros:       row.CostMicros,
+			SummaryMessageID: row.SummaryMessageID,
+			TodosJSON:        row.TodosJson,
+			CreatedAt:        unixMilliToTime(row.CreatedAt),
+			UpdatedAt:        unixMilliToTime(row.UpdatedAt),
 		})
 	}
 
@@ -107,20 +122,30 @@ func getSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) (st
 	}
 
 	return store.Session{
-		ID:           row.ID,
-		Title:        row.Title,
-		CreatedAt:    unixMilliToTime(row.CreatedAt),
-		UpdatedAt:    unixMilliToTime(row.UpdatedAt),
-		LastActiveAt: unixMilliToTime(row.LastActiveAt),
+		ID:               row.ID,
+		ParentSessionID:  row.ParentSessionID,
+		Title:            row.Title,
+		MessageCount:     row.MessageCount,
+		CompletionTokens: row.CompletionTokens,
+		CostMicros:       row.CostMicros,
+		SummaryMessageID: row.SummaryMessageID,
+		TodosJSON:        row.TodosJson,
+		CreatedAt:        unixMilliToTime(row.CreatedAt),
+		UpdatedAt:        unixMilliToTime(row.UpdatedAt),
 	}, nil
 }
 
 func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params store.UpdateSessionParams) (store.Session, error) {
 	row, err := q.UpdateSession(ctx, UpdateSessionParams{
-		Title:        params.Title,
-		UpdatedAt:    params.UpdatedAt.UTC().UnixMilli(),
-		LastActiveAt: params.LastActiveAt.UTC().UnixMilli(),
-		ID:           params.ID,
+		ParentSessionID:  params.ParentSessionID,
+		Title:            params.Title,
+		MessageCount:     params.MessageCount,
+		CompletionTokens: params.CompletionTokens,
+		CostMicros:       params.CostMicros,
+		SummaryMessageID: params.SummaryMessageID,
+		TodosJson:        params.TodosJSON,
+		UpdatedAt:        params.UpdatedAt.UTC().UnixMilli(),
+		ID:               params.ID,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Session{}, store.ErrSessionNotFound
@@ -130,11 +155,16 @@ func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params stor
 	}
 
 	return store.Session{
-		ID:           row.ID,
-		Title:        row.Title,
-		CreatedAt:    unixMilliToTime(row.CreatedAt),
-		UpdatedAt:    unixMilliToTime(row.UpdatedAt),
-		LastActiveAt: unixMilliToTime(row.LastActiveAt),
+		ID:               row.ID,
+		ParentSessionID:  row.ParentSessionID,
+		Title:            row.Title,
+		MessageCount:     row.MessageCount,
+		CompletionTokens: row.CompletionTokens,
+		CostMicros:       row.CostMicros,
+		SummaryMessageID: row.SummaryMessageID,
+		TodosJSON:        row.TodosJson,
+		CreatedAt:        unixMilliToTime(row.CreatedAt),
+		UpdatedAt:        unixMilliToTime(row.UpdatedAt),
 	}, nil
 }
 

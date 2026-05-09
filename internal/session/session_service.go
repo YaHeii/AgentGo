@@ -11,29 +11,19 @@ import (
 
 var ErrSessionNotFound = errors.New("session: not found")
 
+type SessionService struct {
+	store   sessionStore
+	bus     bus.Bus[Event]
+	events  <-chan Event
+	nowFunc func() time.Time
+}
+
 type sessionStore interface {
 	CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error)
 	ListSessions(ctx context.Context) ([]store.Session, error)
 	GetSession(ctx context.Context, id string) (store.Session, error)
 	UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error)
 	DeleteSession(ctx context.Context, id string) error
-}
-
-type Service interface {
-	Create(ctx context.Context, title string) (Session, error)
-	Get(ctx context.Context, id string) (Session, error)
-	GetLast(ctx context.Context) (Session, error)
-	List(ctx context.Context) ([]Session, error)
-	Rename(ctx context.Context, id string, title string) (Session, error)
-	Delete(ctx context.Context, id string) error
-	Events() <-chan Event
-}
-
-type SessionService struct {
-	store   sessionStore
-	bus     bus.Bus[Event]
-	events  <-chan Event
-	nowFunc func() time.Time
 }
 
 func NewSessionService(st sessionStore, nowFunc func() time.Time) *SessionService {
@@ -54,11 +44,11 @@ func (s *SessionService) Create(ctx context.Context, title string) (Session, err
 	now := s.nowFunc().UTC()
 
 	row, err := s.store.CreateSession(ctx, store.CreateSessionParams{
-		ID:           "session-" + now.Format(time.RFC3339Nano),
-		Title:        title,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		LastActiveAt: now,
+		ID:        "session-" + now.Format(time.RFC3339Nano),
+		Title:     title,
+		TodosJSON: "[]",
+		CreatedAt: now,
+		UpdatedAt: now,
 	})
 	if err != nil {
 		return Session{}, err
@@ -112,10 +102,15 @@ func (s *SessionService) Rename(ctx context.Context, id string, title string) (S
 
 	updatedAt := s.nowFunc().UTC()
 	row, err := s.store.UpdateSession(ctx, store.UpdateSessionParams{
-		ID:           id,
-		Title:        title,
-		UpdatedAt:    updatedAt,
-		LastActiveAt: current.LastActiveAt,
+		ID:               id,
+		ParentSessionID:  current.ParentSessionID,
+		Title:            title,
+		MessageCount:     current.MessageCount,
+		CompletionTokens: current.CompletionTokens,
+		CostMicros:       current.CostMicros,
+		SummaryMessageID: current.SummaryMessageID,
+		TodosJSON:        current.TodosJSON,
+		UpdatedAt:        updatedAt,
 	})
 	if err != nil {
 		return Session{}, mapError(err)
@@ -149,11 +144,16 @@ func (s *SessionService) publish(event Event) {
 
 func toSession(row store.Session) Session {
 	return Session{
-		ID:           row.ID,
-		Title:        row.Title,
-		CreatedAt:    row.CreatedAt,
-		UpdatedAt:    row.UpdatedAt,
-		LastActiveAt: row.LastActiveAt,
+		ID:               row.ID,
+		ParentSessionID:  row.ParentSessionID,
+		Title:            row.Title,
+		MessageCount:     row.MessageCount,
+		CompletionTokens: row.CompletionTokens,
+		CostMicros:       row.CostMicros,
+		SummaryMessageID: row.SummaryMessageID,
+		TodosJSON:        row.TodosJSON,
+		CreatedAt:        row.CreatedAt,
+		UpdatedAt:        row.UpdatedAt,
 	}
 }
 

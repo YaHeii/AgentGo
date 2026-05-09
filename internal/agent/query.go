@@ -3,16 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/YaHeii/agentGo/internal/bus"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 )
-
-type Runner interface {
-	RunQuery(ctx context.Context, params QueryParams) (QueryResult, error)
-	Events() <-chan Event
-}
 
 type MessagePort interface {
 	Create(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error)
@@ -21,19 +18,19 @@ type MessagePort interface {
 }
 
 type QueryLoop struct {
-	config   QueryConfig
-	deps     QueryDeps
-	bus      bus.Bus[Event]
-	events   <-chan Event
+	config QueryConfig
+	deps   QueryDeps
+	bus    bus.Bus[Event]
+	events <-chan Event
 }
 
 func NewQueryLoop(messages MessagePort, llm provider.StreamingLLM) *QueryLoop {
 	b := bus.NewBus[Event](32)
 	return &QueryLoop{
-		config:   defaultQueryConfig(),
-		deps:     defaultQueryDeps(messages, llm),
-		bus:      b,
-		events:   b.Subscribe(context.Background()),
+		config: defaultQueryConfig(),
+		deps:   defaultQueryDeps(messages, llm),
+		bus:    b,
+		events: b.Subscribe(context.Background()),
 	}
 }
 
@@ -46,7 +43,6 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 
 	userMessage, err := r.deps.Messages.Create(ctx, params.SessionID, message.CreateMessageParams{
 		Kind:   message.KindUser,
-		Origin: message.OriginHuman,
 		Status: message.StatusComplete,
 		Parts:  cloneInputParts(params.InputParts),
 	})
@@ -55,24 +51,6 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 	}
 	state = state.replaceLastMessage(userMessage).withTransition("user_message_created")
 
-	assistantMessage, err := r.deps.Messages.Create(ctx, params.SessionID, message.CreateMessageParams{
-		Kind:   message.KindAssistant,
-		Origin: message.OriginModel,
-		Status: message.StatusStreaming,
-		Parts: []message.Part{
-			{
-				Type: message.PartTypeText,
-				Text: "",
-			},
-		},
-	})
-	if err != nil {
-		return QueryResult{}, err
-	}
-	state = state.appendMessage(assistantMessage).withTransition("assistant_placeholder_created")
-
-	state = state.withTransition("history_loaded")
-
 	for turn := 1; turn <= r.config.MaxTurns; turn++ {
 		state = state.withTurnCount(turn).withTransition("turn_started")
 
@@ -80,6 +58,9 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 		if err != nil {
 			return QueryResult{}, err
 		}
+		state = state.withMessages(history).withTransition("history_loaded")
+		assistantMessage := newAssistantStreamMessage(params.SessionID, turn, r.deps.Now().UTC())
+		state = state.appendMessage(assistantMessage).withTransition("assistant_stream_initialized")
 		req := provider.Request{
 			Messages: toProviderMessages(history, ""),
 		}
@@ -213,6 +194,7 @@ func finishReasonFromError(err error) FinishReason {
 
 type turnOutcome struct {
 	assistantMessage message.Message
+	persistedMessage message.Message
 	finishReason     FinishReason
 	stopReason       provider.StopReason
 	pendingToolCalls []provider.ToolCall
@@ -232,17 +214,40 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 			if errors.Is(event.Err, context.Canceled) {
 				assistantMessage.Status = message.StatusCancelled
 			}
-			assistantMessage.UpdatedAt = r.deps.Now().UTC()
+			finishedAt := r.deps.Now().UTC()
+			assistantMessage.UpdatedAt = finishedAt
 			state = state.replaceLastMessage(assistantMessage).withTransition("stream_failed")
-			_ = r.deps.Messages.Update(ctx, assistantMessage)
+			if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
+				return turnOutcome{}, state, err
+			}
+
+			systemMessage, err := r.deps.Messages.Create(ctx, assistantMessage.SessionID, message.CreateMessageParams{
+				Kind:       message.KindSystem,
+				Status:     assistantMessage.Status,
+				FinishedAt: finishedAt,
+				Parts: []message.Part{
+					{
+						Type: message.PartTypeText,
+						Text: buildProviderErrorText(event.Err),
+					},
+				},
+				System: &message.SystemPayload{
+					Subtype: "provider_error",
+					Level:   "error",
+				},
+			})
+			if err != nil {
+				return turnOutcome{}, state, err
+			}
 			r.publish(QueryFailedEvent{
-				SessionID:          assistantMessage.SessionID,
+				SessionID:          systemMessage.SessionID,
 				UserMessageID:      firstUserMessageID(state.messages),
-				AssistantMessageID: assistantMessage.ID,
+				AssistantMessageID: systemMessage.ID,
 				Err:                event.Err,
 			})
 			return turnOutcome{
 				assistantMessage: assistantMessage,
+				persistedMessage: systemMessage,
 				finishReason:     finishReasonFromError(event.Err),
 			}, state, event.Err
 		}
@@ -275,20 +280,41 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 		case provider.StreamEventToolCallCompleted:
 			if event.ToolCall != nil {
 				pendingToolCalls = append(pendingToolCalls, *event.ToolCall)
+				appendToolCallPart(&assistantMessage, *event.ToolCall)
+				assistantMessage.Status = message.StatusStreaming
+				assistantMessage.UpdatedAt = r.deps.Now().UTC()
+				state = state.replaceLastMessage(assistantMessage)
 				state = state.withTransition("tool_call_completed")
 			}
 		case provider.StreamEventTurnFinished:
 			assistantMessage.Status = message.StatusComplete
-			assistantMessage.UpdatedAt = r.deps.Now().UTC()
+			finishedAt := r.deps.Now().UTC()
+			assistantMessage.UpdatedAt = finishedAt
 			state = state.replaceLastMessage(assistantMessage)
+
+			persistedAssistant, err := r.deps.Messages.Create(ctx, assistantMessage.SessionID, message.CreateMessageParams{
+				ID:               assistantMessage.ID,
+				Kind:             assistantMessage.Kind,
+				Status:           message.StatusComplete,
+				FinishedAt:       finishedAt,
+				IsCompactSummary: assistantMessage.Flags.IsCompactSummary,
+				Flags:            assistantMessage.Flags,
+				Parts:            cloneInputParts(assistantMessage.Parts),
+				System:           assistantMessage.System,
+				Progress:         assistantMessage.Progress,
+			})
+			if err != nil {
+				return turnOutcome{}, state, err
+			}
 
 			if event.StopReason == provider.StopReasonToolCalls {
 				state = state.withTransition("awaiting_tool_execution")
-				if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
+				if err := r.deps.Messages.Update(ctx, persistedAssistant); err != nil {
 					return turnOutcome{}, state, err
 				}
 				return turnOutcome{
 					assistantMessage: assistantMessage,
+					persistedMessage: persistedAssistant,
 					finishReason:     FinishReasonAwaitingToolExecution,
 					stopReason:       event.StopReason,
 					pendingToolCalls: append([]provider.ToolCall(nil), pendingToolCalls...),
@@ -296,11 +322,12 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 			}
 
 			state = state.withTransition("assistant_completed")
-			if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
+			if err := r.deps.Messages.Update(ctx, persistedAssistant); err != nil {
 				return turnOutcome{}, state, err
 			}
 			return turnOutcome{
 				assistantMessage: assistantMessage,
+				persistedMessage: persistedAssistant,
 				finishReason:     FinishReasonCompleted,
 				stopReason:       event.StopReason,
 				pendingToolCalls: append([]provider.ToolCall(nil), pendingToolCalls...),
@@ -346,4 +373,40 @@ func firstUserMessageID(messages []message.Message) string {
 		}
 	}
 	return ""
+}
+
+func newAssistantStreamMessage(sessionID string, turn int, now time.Time) message.Message {
+	return message.Message{
+		ID:        fmt.Sprintf("assistant-turn-%d-%d", turn, now.UnixNano()),
+		SessionID: sessionID,
+		Kind:      message.KindAssistant,
+		Status:    message.StatusStreaming,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Parts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: "",
+			},
+		},
+	}
+}
+// TODO:should be refacotr
+func appendToolCallPart(msg *message.Message, call provider.ToolCall) {
+	msg.Parts = append(msg.Parts, message.Part{
+		Type: message.PartTypeToolCall,
+		ToolCall: &message.ToolCallPart{
+			ID:     call.ID,
+			Name:   call.Name,
+			Input:  call.Arguments,
+			Status: "completed",
+		},
+	})
+}
+
+func buildProviderErrorText(err error) string {
+	if err == nil {
+		return "provider error"
+	}
+	return "provider error: " + err.Error()
 }

@@ -2,8 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 
 	"github.com/YaHeii/agentGo/internal/store"
 )
@@ -16,10 +14,6 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]store.Mes
 	return listMessagesWithQuerier(ctx, s.q, sessionID)
 }
 
-func (s *Store) UpdateMessage(ctx context.Context, params store.UpdateMessageParams) (store.Message, error) {
-	return updateMessageWithQuerier(ctx, s.q, params)
-}
-
 func (s *txStore) CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error) {
 	return createMessageWithQuerier(ctx, s.q, params)
 }
@@ -28,38 +22,33 @@ func (s *txStore) ListMessages(ctx context.Context, sessionID string) ([]store.M
 	return listMessagesWithQuerier(ctx, s.q, sessionID)
 }
 
-func (s *txStore) UpdateMessage(ctx context.Context, params store.UpdateMessageParams) (store.Message, error) {
-	return updateMessageWithQuerier(ctx, s.q, params)
-}
-
 type messageQuerier interface {
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	ListMessages(ctx context.Context, sessionID string) ([]Message, error)
-	UpdateMessage(ctx context.Context, arg UpdateMessageParams) (Message, error)
 }
 
 func createMessageWithQuerier(ctx context.Context, q messageQuerier, params store.CreateMessageParams) (store.Message, error) {
 	row, err := q.CreateMessage(ctx, CreateMessageParams{
-		ID:        params.ID,
-		SessionID: params.SessionID,
-		Role:      params.Role,
-		Content:   params.Content,
-		Status:    string(params.Status),
-		CreatedAt: params.CreatedAt.UTC().UnixMilli(),
-		UpdatedAt: params.UpdatedAt.UTC().UnixMilli(),
+		ID:               params.ID,
+		SessionID:        params.SessionID,
+		Kind:             params.Kind,
+		Provider:         params.Provider,
+		FinishedAt:       params.FinishedAt.UTC().UnixMilli(),
+		IsCompactSummary: boolToInt64(params.IsCompactSummary),
+		MessageJson:      params.MessageJSON,
 	})
 	if err != nil {
 		return store.Message{}, err
 	}
 
 	return store.Message{
-		ID:        row.ID,
-		SessionID: row.SessionID,
-		Role:      row.Role,
-		Content:   row.Content,
-		Status:    store.MessageStatus(row.Status),
-		CreatedAt: unixMilliToTime(row.CreatedAt),
-		UpdatedAt: unixMilliToTime(row.UpdatedAt),
+		ID:               row.ID,
+		SessionID:        row.SessionID,
+		Kind:             row.Kind,
+		Provider:         row.Provider,
+		FinishedAt:       unixMilliToTime(row.FinishedAt),
+		IsCompactSummary: int64ToBool(row.IsCompactSummary),
+		MessageJSON:      row.MessageJson,
 	}, nil
 }
 
@@ -72,40 +61,26 @@ func listMessagesWithQuerier(ctx context.Context, q messageQuerier, sessionID st
 	messages := make([]store.Message, 0, len(rows))
 	for _, row := range rows {
 		messages = append(messages, store.Message{
-			ID:        row.ID,
-			SessionID: row.SessionID,
-			Role:      row.Role,
-			Content:   row.Content,
-			Status:    store.MessageStatus(row.Status),
-			CreatedAt: unixMilliToTime(row.CreatedAt),
-			UpdatedAt: unixMilliToTime(row.UpdatedAt),
+			ID:               row.ID,
+			SessionID:        row.SessionID,
+			Kind:             row.Kind,
+			Provider:         row.Provider,
+			FinishedAt:       unixMilliToTime(row.FinishedAt),
+			IsCompactSummary: int64ToBool(row.IsCompactSummary),
+			MessageJSON:      row.MessageJson,
 		})
 	}
 
 	return messages, nil
 }
 
-func updateMessageWithQuerier(ctx context.Context, q messageQuerier, params store.UpdateMessageParams) (store.Message, error) {
-	row, err := q.UpdateMessage(ctx, UpdateMessageParams{
-		Content:   params.Content,
-		Status:    string(params.Status),
-		UpdatedAt: params.UpdatedAt.UTC().UnixMilli(),
-		ID:        params.ID,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return store.Message{}, store.ErrMessageNotFound
+func boolToInt64(v bool) int64 {
+	if v {
+		return 1
 	}
-	if err != nil {
-		return store.Message{}, err
-	}
+	return 0
+}
 
-	return store.Message{
-		ID:        row.ID,
-		SessionID: row.SessionID,
-		Role:      row.Role,
-		Content:   row.Content,
-		Status:    store.MessageStatus(row.Status),
-		CreatedAt: unixMilliToTime(row.CreatedAt),
-		UpdatedAt: unixMilliToTime(row.UpdatedAt),
-	}, nil
+func int64ToBool(v int64) bool {
+	return v != 0
 }

@@ -1,16 +1,23 @@
 package session
 
-import "time"
+import (
+	"time"
+)
 
 // Session describes the persisted metadata of a conversation container.
 type Session struct {
-	ID           string
-	Title        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	LastActiveAt time.Time
+	ID               string
+	ParentSessionID  string
+	Title            string
+	MessageCount     int64
+	CompletionTokens int64
+	CostMicros       int64
+	SummaryMessageID string
+	TodosJSON        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 
 	// TODO: Add ParentSessionID when parent-child session topology is implemented.
 	// TODO: Add SummaryMessageID when compact summary persistence is introduced.
-	// TODO: Add PromptTokens, CompletionTokens, and CostMicros when usage aggregation is implemented.
+	// TODO: Refine todos structure once agent-side todo orchestration is implemented.
 }

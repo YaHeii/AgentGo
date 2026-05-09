@@ -10,34 +10,60 @@ import (
 )
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO sessions (id, title, created_at, updated_at, last_active_at)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, title, created_at, updated_at, last_active_at
+INSERT INTO sessions (
+    id,
+    parent_session_id,
+    title,
+    message_count,
+    completion_tokens,
+    cost_micros,
+    summary_message_id,
+    todos_json,
+    created_at,
+    updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, parent_session_id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
 `
 
 type CreateSessionParams struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	CreatedAt    int64  `json:"created_at"`
-	UpdatedAt    int64  `json:"updated_at"`
-	LastActiveAt int64  `json:"last_active_at"`
+	ID               string `json:"id"`
+	ParentSessionID  string `json:"parent_session_id"`
+	Title            string `json:"title"`
+	MessageCount     int64  `json:"message_count"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	CostMicros       int64  `json:"cost_micros"`
+	SummaryMessageID string `json:"summary_message_id"`
+	TodosJson        string `json:"todos_json"`
+	CreatedAt        int64  `json:"created_at"`
+	UpdatedAt        int64  `json:"updated_at"`
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
 	row := q.queryRow(ctx, q.createSessionStmt, createSession,
 		arg.ID,
+		arg.ParentSessionID,
 		arg.Title,
+		arg.MessageCount,
+		arg.CompletionTokens,
+		arg.CostMicros,
+		arg.SummaryMessageID,
+		arg.TodosJson,
 		arg.CreatedAt,
 		arg.UpdatedAt,
-		arg.LastActiveAt,
 	)
 	var i Session
 	err := row.Scan(
 		&i.ID,
+		&i.ParentSessionID,
 		&i.Title,
+		&i.MessageCount,
+		&i.CompletionTokens,
+		&i.CostMicros,
+		&i.SummaryMessageID,
+		&i.TodosJson,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.LastActiveAt,
 	)
 	return i, err
 }
@@ -56,7 +82,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) (int64, error) {
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, title, created_at, updated_at, last_active_at
+SELECT id, parent_session_id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
 FROM sessions
 WHERE id = ?
 `
@@ -66,18 +92,23 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 	var i Session
 	err := row.Scan(
 		&i.ID,
+		&i.ParentSessionID,
 		&i.Title,
+		&i.MessageCount,
+		&i.CompletionTokens,
+		&i.CostMicros,
+		&i.SummaryMessageID,
+		&i.TodosJson,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.LastActiveAt,
 	)
 	return i, err
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, title, created_at, updated_at, last_active_at
+SELECT id, parent_session_id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
 FROM sessions
-ORDER BY last_active_at DESC, created_at DESC, id DESC
+ORDER BY updated_at DESC, created_at DESC, id DESC
 `
 
 func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
@@ -91,10 +122,15 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 		var i Session
 		if err := rows.Scan(
 			&i.ID,
+			&i.ParentSessionID,
 			&i.Title,
+			&i.MessageCount,
+			&i.CompletionTokens,
+			&i.CostMicros,
+			&i.SummaryMessageID,
+			&i.TodosJson,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.LastActiveAt,
 		); err != nil {
 			return nil, err
 		}
@@ -111,32 +147,54 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 
 const updateSession = `-- name: UpdateSession :one
 UPDATE sessions
-SET title = ?, updated_at = ?, last_active_at = ?
+SET parent_session_id = ?,
+    title = ?,
+    message_count = ?,
+    completion_tokens = ?,
+    cost_micros = ?,
+    summary_message_id = ?,
+    todos_json = ?,
+    updated_at = ?
 WHERE id = ?
-RETURNING id, title, created_at, updated_at, last_active_at
+RETURNING id, parent_session_id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
 `
 
 type UpdateSessionParams struct {
-	Title        string `json:"title"`
-	UpdatedAt    int64  `json:"updated_at"`
-	LastActiveAt int64  `json:"last_active_at"`
-	ID           string `json:"id"`
+	ParentSessionID  string `json:"parent_session_id"`
+	Title            string `json:"title"`
+	MessageCount     int64  `json:"message_count"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	CostMicros       int64  `json:"cost_micros"`
+	SummaryMessageID string `json:"summary_message_id"`
+	TodosJson        string `json:"todos_json"`
+	UpdatedAt        int64  `json:"updated_at"`
+	ID               string `json:"id"`
 }
 
 func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error) {
 	row := q.queryRow(ctx, q.updateSessionStmt, updateSession,
+		arg.ParentSessionID,
 		arg.Title,
+		arg.MessageCount,
+		arg.CompletionTokens,
+		arg.CostMicros,
+		arg.SummaryMessageID,
+		arg.TodosJson,
 		arg.UpdatedAt,
-		arg.LastActiveAt,
 		arg.ID,
 	)
 	var i Session
 	err := row.Scan(
 		&i.ID,
+		&i.ParentSessionID,
 		&i.Title,
+		&i.MessageCount,
+		&i.CompletionTokens,
+		&i.CostMicros,
+		&i.SummaryMessageID,
+		&i.TodosJson,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.LastActiveAt,
 	)
 	return i, err
 }

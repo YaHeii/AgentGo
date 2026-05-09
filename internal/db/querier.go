@@ -17,7 +17,6 @@ type Querier interface {
 	GetSession(ctx context.Context, id string) (Session, error)
 	ListMessages(ctx context.Context, sessionID string) ([]Message, error)
 	ListSessions(ctx context.Context) ([]Session, error)
-	UpdateMessage(ctx context.Context, arg UpdateMessageParams) (Message, error)
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
 	UpsertDraft(ctx context.Context, arg UpsertDraftParams) error
 }

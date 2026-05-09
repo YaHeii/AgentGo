@@ -27,7 +27,25 @@ type txStore struct {
 	q *Queries
 }
 
-var _ store.Store = (*Store)(nil)
+type dbStore interface {
+	CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error)
+	ListSessions(ctx context.Context) ([]store.Session, error)
+	GetSession(ctx context.Context, id string) (store.Session, error)
+	UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error)
+	DeleteSession(ctx context.Context, id string) error
+
+	CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error)
+	ListMessages(ctx context.Context, sessionID string) ([]store.Message, error)
+
+	LoadDraft(ctx context.Context, sessionID string) (string, error)
+	SaveDraft(ctx context.Context, params store.SaveDraftParams) error
+	DeleteDraft(ctx context.Context, sessionID string) error
+
+	WithinTx(ctx context.Context, fn func(tx store.TxStore) error) error
+	Close() error
+}
+
+var _ dbStore = (*Store)(nil)
 var _ store.TxStore = (*txStore)(nil)
 
 func Open(dbPath string) (*Store, error) {

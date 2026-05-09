@@ -41,18 +41,16 @@ func TestServiceEnsureActiveSessionLoadsMostRecentSessionHistory(t *testing.T) {
 	sessions := newStubSessionService()
 	sessions.listResult = []session.Session{
 		{
-			ID:           "session-2",
-			Title:        "latest",
-			CreatedAt:    time.Unix(1710000200, 0).UTC(),
-			UpdatedAt:    time.Unix(1710000200, 0).UTC(),
-			LastActiveAt: time.Unix(1710000200, 0).UTC(),
+			ID:        "session-2",
+			Title:     "latest",
+			CreatedAt: time.Unix(1710000200, 0).UTC(),
+			UpdatedAt: time.Unix(1710000200, 0).UTC(),
 		},
 		{
-			ID:           "session-1",
-			Title:        "older",
-			CreatedAt:    time.Unix(1710000000, 0).UTC(),
-			UpdatedAt:    time.Unix(1710000000, 0).UTC(),
-			LastActiveAt: time.Unix(1710000000, 0).UTC(),
+			ID:        "session-1",
+			Title:     "older",
+			CreatedAt: time.Unix(1710000000, 0).UTC(),
+			UpdatedAt: time.Unix(1710000000, 0).UTC(),
 		},
 	}
 	msgSvc := &stubMessageService{
@@ -178,7 +176,6 @@ type fakeStore struct {
 	sessions          []store.Session
 	messagesBySession map[string][]store.Message
 	createdMessages   []store.Message
-	updatedMessages   []store.Message
 	deletedDrafts     []string
 }
 
@@ -194,11 +191,16 @@ func (s *fakeStore) WithinTx(_ context.Context, fn func(tx store.TxStore) error)
 
 func (s *fakeStore) CreateSession(_ context.Context, params store.CreateSessionParams) (store.Session, error) {
 	session := store.Session{
-		ID:           params.ID,
-		Title:        params.Title,
-		CreatedAt:    params.CreatedAt,
-		UpdatedAt:    params.UpdatedAt,
-		LastActiveAt: params.LastActiveAt,
+		ID:               params.ID,
+		ParentSessionID:  params.ParentSessionID,
+		Title:            params.Title,
+		MessageCount:     params.MessageCount,
+		CompletionTokens: params.CompletionTokens,
+		CostMicros:       params.CostMicros,
+		SummaryMessageID: params.SummaryMessageID,
+		TodosJSON:        params.TodosJSON,
+		CreatedAt:        params.CreatedAt,
+		UpdatedAt:        params.UpdatedAt,
 	}
 	s.sessions = append([]store.Session{session}, s.sessions...)
 	return session, nil
@@ -225,8 +227,13 @@ func (s *fakeStore) UpdateSession(_ context.Context, params store.UpdateSessionP
 		if params.Title != "" {
 			s.sessions[i].Title = params.Title
 		}
+		s.sessions[i].ParentSessionID = params.ParentSessionID
+		s.sessions[i].MessageCount = params.MessageCount
+		s.sessions[i].CompletionTokens = params.CompletionTokens
+		s.sessions[i].CostMicros = params.CostMicros
+		s.sessions[i].SummaryMessageID = params.SummaryMessageID
+		s.sessions[i].TodosJSON = params.TodosJSON
 		s.sessions[i].UpdatedAt = params.UpdatedAt
-		s.sessions[i].LastActiveAt = params.LastActiveAt
 		return s.sessions[i], nil
 	}
 	return store.Session{}, store.ErrSessionNotFound
@@ -245,13 +252,13 @@ func (s *fakeStore) DeleteSession(_ context.Context, id string) error {
 
 func (s *fakeStore) CreateMessage(_ context.Context, params store.CreateMessageParams) (store.Message, error) {
 	msg := store.Message{
-		ID:        params.ID,
-		SessionID: params.SessionID,
-		Role:      params.Role,
-		Content:   params.Content,
-		Status:    params.Status,
-		CreatedAt: params.CreatedAt,
-		UpdatedAt: params.UpdatedAt,
+		ID:               params.ID,
+		SessionID:        params.SessionID,
+		Kind:             params.Kind,
+		Provider:         params.Provider,
+		FinishedAt:       params.FinishedAt,
+		IsCompactSummary: params.IsCompactSummary,
+		MessageJSON:      params.MessageJSON,
 	}
 	s.createdMessages = append(s.createdMessages, msg)
 	s.messagesBySession[params.SessionID] = append(s.messagesBySession[params.SessionID], msg)
@@ -262,27 +269,6 @@ func (s *fakeStore) ListMessages(_ context.Context, sessionID string) ([]store.M
 	messages := s.messagesBySession[sessionID]
 	copied := append([]store.Message(nil), messages...)
 	return copied, nil
-}
-
-func (s *fakeStore) UpdateMessage(_ context.Context, params store.UpdateMessageParams) (store.Message, error) {
-	for i := range s.createdMessages {
-		if s.createdMessages[i].ID != params.ID {
-			continue
-		}
-		s.createdMessages[i].Content = params.Content
-		s.createdMessages[i].Status = params.Status
-		s.createdMessages[i].UpdatedAt = params.UpdatedAt
-		s.updatedMessages = append(s.updatedMessages, s.createdMessages[i])
-
-		for j := range s.messagesBySession[s.createdMessages[i].SessionID] {
-			if s.messagesBySession[s.createdMessages[i].SessionID][j].ID == params.ID {
-				s.messagesBySession[s.createdMessages[i].SessionID][j] = s.createdMessages[i]
-			}
-		}
-
-		return s.createdMessages[i], nil
-	}
-	return store.Message{}, store.ErrMessageNotFound
 }
 
 func (s *fakeStore) LoadDraft(_ context.Context, _ string) (string, error) {
@@ -365,8 +351,8 @@ func (s *stubMessageService) Events() <-chan message.Event {
 }
 
 type stubQueryRunner struct {
-	bus    bus.Bus[agent.Event]
-	events <-chan agent.Event
+	bus       bus.Bus[agent.Event]
+	events    <-chan agent.Event
 	runResult agent.QueryResult
 }
 
@@ -397,7 +383,7 @@ func (s *stubQueryRunner) publish(event agent.Event) {
 	s.bus.Publish(event)
 }
 
-func newServiceWithDeps(sessionSvc session.Service, msgSvc message.Service, query agent.Runner, nowFunc func() time.Time) *Service {
+func newServiceWithDeps(sessionSvc sessionService, msgSvc messageService, query queryRunner, nowFunc func() time.Time) *Service {
 	if nowFunc == nil {
 		nowFunc = time.Now
 	}
@@ -452,11 +438,10 @@ func (s *stubSessionService) Create(_ context.Context, title string) (session.Se
 	s.createdTitles = append(s.createdTitles, title)
 
 	created := session.Session{
-		ID:           "session-created",
-		Title:        title,
-		CreatedAt:    timeNowStub(),
-		UpdatedAt:    timeNowStub(),
-		LastActiveAt: timeNowStub(),
+		ID:        "session-created",
+		Title:     title,
+		CreatedAt: timeNowStub(),
+		UpdatedAt: timeNowStub(),
 	}
 	s.listResult = append([]session.Session{created}, s.listResult...)
 	return created, nil

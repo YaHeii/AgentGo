@@ -17,7 +17,6 @@ func TestMessageServiceCreatePersistsMessageAndPublishesCreatedEvent(t *testing.
 
 	msg, err := svc.Create(context.Background(), "session-1", CreateMessageParams{
 		Kind:   KindUser,
-		Origin: OriginHuman,
 		Status: StatusComplete,
 		Parts: []Part{
 			{
@@ -35,19 +34,65 @@ func TestMessageServiceCreatePersistsMessageAndPublishesCreatedEvent(t *testing.
 	require.Equal(t, msg.ID, event.(MessageCreatedEvent).Message.ID)
 }
 
+func TestMessageServiceCreatePersistsFinalRichMessageRecord(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	svc := NewMessageService(st)
+
+	msg, err := svc.Create(context.Background(), "session-1", CreateMessageParams{
+		Kind:   KindUser,
+		Status: StatusComplete,
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, KindUser, msg.Kind)
+	require.NotEmpty(t, st.createdMessages)
+	require.NotEmpty(t, st.createdMessages[0].MessageJSON)
+	require.False(t, st.createdMessages[0].FinishedAt.IsZero())
+}
+
+func TestMessageServiceCreateUsesExplicitIDWhenProvided(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	svc := NewMessageService(st)
+
+	msg, err := svc.Create(context.Background(), "session-1", CreateMessageParams{
+		ID:     "assistant-stream-1",
+		Kind:   KindAssistant,
+		Status: StatusComplete,
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: "hello",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "assistant-stream-1", msg.ID)
+	require.Len(t, st.createdMessages, 1)
+	require.Equal(t, "assistant-stream-1", st.createdMessages[0].ID)
+}
+
 func TestMessageServiceListMapsStoredMessages(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
 	st.messagesBySession["session-1"] = []store.Message{
 		{
-			ID:        "u1",
-			SessionID: "session-1",
-			Role:      "user",
-			Content:   "hello",
-			Status:    store.MessageStatusComplete,
-			CreatedAt: time.Unix(1710000000, 0).UTC(),
-			UpdatedAt: time.Unix(1710000000, 0).UTC(),
+			ID:               "u1",
+			SessionID:        "session-1",
+			Kind:             string(KindUser),
+			Provider:         "",
+			FinishedAt:       time.Unix(1710000000, 0).UTC(),
+			IsCompactSummary: false,
+			MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"hello"}]}`,
 		},
 	}
 
@@ -65,13 +110,12 @@ func TestMessageServiceUpdateStreamingPublishesDeltaEvent(t *testing.T) {
 
 	st := newFakeStore()
 	st.createdMessages = append(st.createdMessages, store.Message{
-		ID:        "assistant-1",
-		SessionID: "session-1",
-		Role:      "assistant",
-		Content:   "",
-		Status:    store.MessageStatusStreaming,
-		CreatedAt: time.Unix(1710000000, 0).UTC(),
-		UpdatedAt: time.Unix(1710000000, 0).UTC(),
+		ID:               "assistant-1",
+		SessionID:        "session-1",
+		Kind:             string(KindAssistant),
+		FinishedAt:       time.Unix(1710000000, 0).UTC(),
+		IsCompactSummary: false,
+		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":""}]}`,
 	})
 	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
 
@@ -80,7 +124,6 @@ func TestMessageServiceUpdateStreamingPublishesDeltaEvent(t *testing.T) {
 		ID:        "assistant-1",
 		SessionID: "session-1",
 		Kind:      KindAssistant,
-		Origin:    OriginModel,
 		Status:    StatusStreaming,
 		Parts: []Part{
 			{
@@ -92,10 +135,6 @@ func TestMessageServiceUpdateStreamingPublishesDeltaEvent(t *testing.T) {
 
 	err := svc.Update(context.Background(), msg)
 	require.NoError(t, err)
-	require.Len(t, st.updatedMessages, 1)
-	require.Equal(t, "par", st.updatedMessages[0].Content)
-	require.Equal(t, store.MessageStatusStreaming, st.updatedMessages[0].Status)
-
 	event := <-svc.Events()
 	require.IsType(t, MessageDeltaEvent{}, event)
 	require.Equal(t, "assistant-1", event.(MessageDeltaEvent).Message.ID)
@@ -107,13 +146,12 @@ func TestMessageServiceUpdateCompletedPublishesCompletedEvent(t *testing.T) {
 
 	st := newFakeStore()
 	st.createdMessages = append(st.createdMessages, store.Message{
-		ID:        "assistant-1",
-		SessionID: "session-1",
-		Role:      "assistant",
-		Content:   "par",
-		Status:    store.MessageStatusStreaming,
-		CreatedAt: time.Unix(1710000000, 0).UTC(),
-		UpdatedAt: time.Unix(1710000000, 0).UTC(),
+		ID:               "assistant-1",
+		SessionID:        "session-1",
+		Kind:             string(KindAssistant),
+		FinishedAt:       time.Unix(1710000000, 0).UTC(),
+		IsCompactSummary: false,
+		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"par"}]}`,
 	})
 	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
 
@@ -122,7 +160,6 @@ func TestMessageServiceUpdateCompletedPublishesCompletedEvent(t *testing.T) {
 		ID:        "assistant-1",
 		SessionID: "session-1",
 		Kind:      KindAssistant,
-		Origin:    OriginModel,
 		Status:    StatusComplete,
 		Parts: []Part{
 			{
@@ -145,13 +182,12 @@ func TestMessageServiceUpdateFailedPublishesFailedEvent(t *testing.T) {
 
 	st := newFakeStore()
 	st.createdMessages = append(st.createdMessages, store.Message{
-		ID:        "assistant-1",
-		SessionID: "session-1",
-		Role:      "assistant",
-		Content:   "par",
-		Status:    store.MessageStatusStreaming,
-		CreatedAt: time.Unix(1710000000, 0).UTC(),
-		UpdatedAt: time.Unix(1710000000, 0).UTC(),
+		ID:               "assistant-1",
+		SessionID:        "session-1",
+		Kind:             string(KindAssistant),
+		FinishedAt:       time.Unix(1710000000, 0).UTC(),
+		IsCompactSummary: false,
+		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"par"}]}`,
 	})
 	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
 
@@ -160,7 +196,6 @@ func TestMessageServiceUpdateFailedPublishesFailedEvent(t *testing.T) {
 		ID:        "assistant-1",
 		SessionID: "session-1",
 		Kind:      KindAssistant,
-		Origin:    OriginModel,
 		Status:    StatusFailed,
 		Parts: []Part{
 			{
@@ -183,13 +218,12 @@ func TestMessageServiceUpdateCancelledPublishesCancelledEvent(t *testing.T) {
 
 	st := newFakeStore()
 	st.createdMessages = append(st.createdMessages, store.Message{
-		ID:        "assistant-1",
-		SessionID: "session-1",
-		Role:      "assistant",
-		Content:   "par",
-		Status:    store.MessageStatusStreaming,
-		CreatedAt: time.Unix(1710000000, 0).UTC(),
-		UpdatedAt: time.Unix(1710000000, 0).UTC(),
+		ID:               "assistant-1",
+		SessionID:        "session-1",
+		Kind:             string(KindAssistant),
+		FinishedAt:       time.Unix(1710000000, 0).UTC(),
+		IsCompactSummary: false,
+		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"par"}]}`,
 	})
 	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
 
@@ -198,7 +232,6 @@ func TestMessageServiceUpdateCancelledPublishesCancelledEvent(t *testing.T) {
 		ID:        "assistant-1",
 		SessionID: "session-1",
 		Kind:      KindAssistant,
-		Origin:    OriginModel,
 		Status:    StatusCancelled,
 		Parts: []Part{
 			{
@@ -235,11 +268,16 @@ func (s *fakeStore) WithinTx(_ context.Context, fn func(tx store.TxStore) error)
 
 func (s *fakeStore) CreateSession(_ context.Context, params store.CreateSessionParams) (store.Session, error) {
 	return store.Session{
-		ID:           params.ID,
-		Title:        params.Title,
-		CreatedAt:    params.CreatedAt,
-		UpdatedAt:    params.UpdatedAt,
-		LastActiveAt: params.LastActiveAt,
+		ID:               params.ID,
+		ParentSessionID:  params.ParentSessionID,
+		Title:            params.Title,
+		MessageCount:     params.MessageCount,
+		CompletionTokens: params.CompletionTokens,
+		CostMicros:       params.CostMicros,
+		SummaryMessageID: params.SummaryMessageID,
+		TodosJSON:        params.TodosJSON,
+		CreatedAt:        params.CreatedAt,
+		UpdatedAt:        params.UpdatedAt,
 	}, nil
 }
 
@@ -261,13 +299,13 @@ func (s *fakeStore) DeleteSession(_ context.Context, _ string) error {
 
 func (s *fakeStore) CreateMessage(_ context.Context, params store.CreateMessageParams) (store.Message, error) {
 	msg := store.Message{
-		ID:        params.ID,
-		SessionID: params.SessionID,
-		Role:      params.Role,
-		Content:   params.Content,
-		Status:    params.Status,
-		CreatedAt: params.CreatedAt,
-		UpdatedAt: params.UpdatedAt,
+		ID:               params.ID,
+		SessionID:        params.SessionID,
+		Kind:             params.Kind,
+		Provider:         params.Provider,
+		FinishedAt:       params.FinishedAt,
+		IsCompactSummary: params.IsCompactSummary,
+		MessageJSON:      params.MessageJSON,
 	}
 	s.createdMessages = append(s.createdMessages, msg)
 	s.messagesBySession[params.SessionID] = append(s.messagesBySession[params.SessionID], msg)
@@ -278,27 +316,6 @@ func (s *fakeStore) ListMessages(_ context.Context, sessionID string) ([]store.M
 	messages := s.messagesBySession[sessionID]
 	copied := append([]store.Message(nil), messages...)
 	return copied, nil
-}
-
-func (s *fakeStore) UpdateMessage(_ context.Context, params store.UpdateMessageParams) (store.Message, error) {
-	for i := range s.createdMessages {
-		if s.createdMessages[i].ID != params.ID {
-			continue
-		}
-		s.createdMessages[i].Content = params.Content
-		s.createdMessages[i].Status = params.Status
-		s.createdMessages[i].UpdatedAt = params.UpdatedAt
-		s.updatedMessages = append(s.updatedMessages, s.createdMessages[i])
-
-		for j := range s.messagesBySession[s.createdMessages[i].SessionID] {
-			if s.messagesBySession[s.createdMessages[i].SessionID][j].ID == params.ID {
-				s.messagesBySession[s.createdMessages[i].SessionID][j] = s.createdMessages[i]
-			}
-		}
-
-		return s.createdMessages[i], nil
-	}
-	return store.Message{}, store.ErrMessageNotFound
 }
 
 func (s *fakeStore) LoadDraft(_ context.Context, _ string) (string, error) {

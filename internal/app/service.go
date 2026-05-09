@@ -15,18 +15,61 @@ import (
 
 // WIP：as a facade to multi service
 
-type Store interface{ store.Store }
+type appStore interface {
+	sessionPersistence
+	messageStore
+}
+
+type sessionPersistence interface {
+	CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error)
+	ListSessions(ctx context.Context) ([]store.Session, error)
+	GetSession(ctx context.Context, id string) (store.Session, error)
+	UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error)
+	DeleteSession(ctx context.Context, id string) error
+}
+
+type messageStore interface {
+	CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error)
+	ListMessages(ctx context.Context, sessionID string) ([]store.Message, error)
+}
+
+type messageService interface {
+	Create(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error)
+	Update(ctx context.Context, message message.Message) error
+	Get(ctx context.Context, id string) (message.Message, error)
+	List(ctx context.Context, sessionID string) ([]message.Message, error)
+	ListUserMessages(ctx context.Context, sessionID string) ([]message.Message, error)
+	ListAllUserMessages(ctx context.Context) ([]message.Message, error)
+	Delete(ctx context.Context, id string) error
+	DeleteSessionMessages(ctx context.Context, sessionID string) error
+	Events() <-chan message.Event
+}
+
+type sessionService interface {
+	Create(ctx context.Context, title string) (session.Session, error)
+	Get(ctx context.Context, id string) (session.Session, error)
+	GetLast(ctx context.Context) (session.Session, error)
+	List(ctx context.Context) ([]session.Session, error)
+	Rename(ctx context.Context, id string, title string) (session.Session, error)
+	Delete(ctx context.Context, id string) error
+	Events() <-chan session.Event
+}
+
+type queryRunner interface {
+	RunQuery(ctx context.Context, params agent.QueryParams) (agent.QueryResult, error)
+	Events() <-chan agent.Event
+}
 
 type Service struct {
-	sessions session.Service
+	sessions sessionService
 	bus      bus.Bus[Event]
 	events   <-chan Event
-	messages message.Service
-	query    agent.Runner
+	messages messageService
+	query    queryRunner
 	nowFunc  func() time.Time
 }
 
-func NewService(st Store, llm provider.StreamingLLM, nowFunc func() time.Time) *Service {
+func NewService(st appStore, llm provider.StreamingLLM, nowFunc func() time.Time) *Service {
 	if nowFunc == nil {
 		nowFunc = time.Now
 	}
@@ -95,16 +138,16 @@ func (s *Service) SendMessage(ctx context.Context, params SendMessageParams) (Se
 	})
 	if err != nil {
 		return SendMessageResult{
-			User:      Message{ID: result.UserMessageID},
-			Assistant: Message{ID: result.FinalAssistantMessageID},
+			User:             Message{ID: result.UserMessageID},
+			Assistant:        Message{ID: result.FinalAssistantMessageID},
 			FinishReason:     toAppFinishReason(result.FinishReason),
 			PendingToolCalls: toAppToolCalls(result.PendingToolCalls),
 		}, err
 	}
 
 	return SendMessageResult{
-		User:      Message{ID: result.UserMessageID},
-		Assistant: Message{ID: result.FinalAssistantMessageID},
+		User:             Message{ID: result.UserMessageID},
+		Assistant:        Message{ID: result.FinalAssistantMessageID},
 		FinishReason:     toAppFinishReason(result.FinishReason),
 		PendingToolCalls: toAppToolCalls(result.PendingToolCalls),
 	}, nil
@@ -164,11 +207,10 @@ func (s *Service) forwardAgentEvents(events <-chan agent.Event) {
 
 func toAppSession(session session.Session) Session {
 	return Session{
-		ID:           session.ID,
-		Title:        session.Title,
-		CreatedAt:    session.CreatedAt,
-		UpdatedAt:    session.UpdatedAt,
-		LastActiveAt: session.LastActiveAt,
+		ID:        session.ID,
+		Title:     session.Title,
+		CreatedAt: session.CreatedAt,
+		UpdatedAt: session.UpdatedAt,
 	}
 }
 

@@ -11,13 +11,18 @@ import (
 
 var errTODO = errors.New("TODO: not implemented")
 
+type messageStore interface {
+	CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error)
+	ListMessages(ctx context.Context, sessionID string) ([]store.Message, error)
+}
+
 type MessageService struct {
-	store  store.Store
+	store  messageStore
 	bus    bus.Bus[Event]
 	events <-chan Event
 }
 
-func NewMessageService(st store.Store) *MessageService {
+func NewMessageService(st messageStore) *MessageService {
 	b := bus.NewBus[Event](128)
 
 	return &MessageService{
@@ -27,8 +32,7 @@ func NewMessageService(st store.Store) *MessageService {
 	}
 }
 
-var _ Service = (*MessageService)(nil)
-//TODO:Can the sessionID be passed into the ctx file? Is the ctx reset when the agent creates a single session?
+// TODO:Can the sessionID be passed into the ctx file? Is the ctx reset when the agent creates a single session?
 func (s *MessageService) Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
 	now := time.Now().UTC()
 	if len(params.Parts) == 0 {
@@ -37,27 +41,54 @@ func (s *MessageService) Create(ctx context.Context, sessionID string, params Cr
 	if params.Status == "" {
 		params.Status = StatusComplete
 	}
+	if params.FinishedAt.IsZero() {
+		params.FinishedAt = now
+	}
 
-	row, err := s.store.CreateMessage(ctx, store.CreateMessageParams{
-		ID:        buildMessageID(params.Kind, now),
+	msg := Message{
+		ID:        params.ID,
 		SessionID: sessionID,
-		Role:      toStoreRole(params.Kind),
-		Content:   textContent(params.Parts),
-		Status:    toStoreStatus(params.Status),
+		Kind:      params.Kind,
+		Status:    params.Status,
 		CreatedAt: now,
 		UpdatedAt: now,
+		Flags:     params.Flags,
+		Parts:     cloneParts(params.Parts),
+		System:    cloneSystemPayload(params.System),
+		Progress:  cloneProgressPayload(params.Progress),
+	}
+	if params.IsCompactSummary {
+		msg.Flags.IsCompactSummary = true
+	}
+	if msg.ID == "" {
+		msg.ID = buildMessageID(params.Kind, now)
+	}
+
+	messageJSON, err := marshalMessageJSON(msg)
+	if err != nil {
+		return Message{}, err
+	}
+
+	row, err := s.store.CreateMessage(ctx, store.CreateMessageParams{
+		ID:               msg.ID,
+		SessionID:        sessionID,
+		Kind:             string(params.Kind),
+		Provider:         params.Provider,
+		FinishedAt:       params.FinishedAt,
+		IsCompactSummary: params.IsCompactSummary || params.Flags.IsCompactSummary,
+		MessageJSON:      messageJSON,
 	})
 	if err != nil {
 		return Message{}, err
 	}
 
-	msg := toMessage(row)
-	msg.ParentID = params.ParentID
-	msg.Flags = params.Flags
-	msg.Parts = cloneParts(params.Parts)
-	msg.System = cloneSystemPayload(params.System)
-	msg.Progress = cloneProgressPayload(params.Progress)
+	msg, err = toMessage(row)
+	if err != nil {
+		return Message{}, err
+	}
 	msg.Status = params.Status
+	msg.CreatedAt = params.FinishedAt
+	msg.UpdatedAt = params.FinishedAt
 
 	s.publish(MessageCreatedEvent{Message: msg})
 
@@ -65,22 +96,6 @@ func (s *MessageService) Create(ctx context.Context, sessionID string, params Cr
 }
 
 func (s *MessageService) Update(ctx context.Context, message Message) error {
-	updatedAt := message.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = time.Now().UTC()
-	}
-
-	_, err := s.store.UpdateMessage(ctx, store.UpdateMessageParams{
-		ID:        message.ID,
-		Content:   textContent(message.Parts),
-		Status:    toStoreStatus(message.Status),
-		UpdatedAt: updatedAt,
-	})
-	if err != nil {
-		return err
-	}
-
-	message.UpdatedAt = updatedAt
 	switch message.Status {
 	case StatusStreaming:
 		s.publish(MessageDeltaEvent{
@@ -110,7 +125,11 @@ func (s *MessageService) List(ctx context.Context, sessionID string) ([]Message,
 
 	messages := make([]Message, 0, len(rows))
 	for _, row := range rows {
-		messages = append(messages, toMessage(row))
+		msg, err := toMessage(row)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
 	}
 
 	return messages, nil
@@ -144,81 +163,24 @@ func (s *MessageService) publish(evt Event) {
 	s.bus.Publish(evt)
 }
 
-func toMessage(msg store.Message) Message {
+func toMessage(msg store.Message) (Message, error) {
+	payload, err := unmarshalMessageJSON(msg.MessageJSON)
+	if err != nil {
+		return Message{}, err
+	}
+
 	return Message{
 		ID:        msg.ID,
 		SessionID: msg.SessionID,
-		Kind:      toKind(msg.Role),
-		Origin:    toOrigin(msg.Role),
-		Status:    toStatus(msg.Status),
-		Parts: []Part{
-			{
-				Type: PartTypeText,
-				Text: msg.Content,
-			},
-		},
-		CreatedAt: msg.CreatedAt,
-		UpdatedAt: msg.UpdatedAt,
-	}
-}
-
-func toKind(role string) Kind {
-	switch role {
-	case "user":
-		return KindUser
-	case "assistant":
-		return KindAssistant
-	default:
-		return KindSystem
-	}
-}
-
-func toOrigin(role string) Origin {
-	switch role {
-	case "user":
-		return OriginHuman
-	case "assistant":
-		return OriginModel
-	default:
-		return OriginSystem
-	}
-}
-
-func toStoreRole(kind Kind) string {
-	switch kind {
-	case KindAssistant:
-		return "assistant"
-	case KindUser:
-		return "user"
-	default:
-		return "system"
-	}
-}
-
-func toStoreStatus(status Status) store.MessageStatus {
-	switch status {
-	case StatusStreaming:
-		return store.MessageStatusStreaming
-	case StatusCancelled:
-		return store.MessageStatusCancelled
-	case StatusFailed:
-		return store.MessageStatusFailed
-	default:
-		return store.MessageStatusComplete
-	}
-}
-
-func toStatus(status store.MessageStatus) Status {
-	switch status {
-	case store.MessageStatusStreaming:
-		return StatusStreaming
-	case store.MessageStatusCancelled:
-		return StatusCancelled
-	case store.MessageStatusFailed:
-		return StatusFailed
-	default:
-		return StatusComplete
-	}
+		Kind:      Kind(msg.Kind),
+		Status:    StatusComplete,
+		CreatedAt: msg.FinishedAt,
+		UpdatedAt: msg.FinishedAt,
+		Flags:     payload.Flags,
+		Parts:     payload.Parts,
+		System:    payload.System,
+		Progress:  payload.Progress,
+	}, nil
 }
 
 func buildMessageID(kind Kind, now time.Time) string {

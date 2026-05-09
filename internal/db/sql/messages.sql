@@ -1,16 +1,10 @@
 -- name: CreateMessage :one
-INSERT INTO messages (id, session_id, role, content, status, created_at, updated_at)
+INSERT INTO messages (id, session_id, kind, provider, finished_at, is_compact_summary, message_json)
 VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, session_id, role, content, status, created_at, updated_at;
+RETURNING id, session_id, kind, provider, finished_at, is_compact_summary, message_json;
 
 -- name: ListMessages :many
-SELECT id, session_id, role, content, status, created_at, updated_at
+SELECT id, session_id, kind, provider, finished_at, is_compact_summary, message_json
 FROM messages
 WHERE session_id = ?
-ORDER BY created_at ASC, id ASC;
-
--- name: UpdateMessage :one
-UPDATE messages
-SET content = ?, status = ?, updated_at = ?
-WHERE id = ?
-RETURNING id, session_id, role, content, status, created_at, updated_at;
+ORDER BY finished_at ASC, id ASC;

@@ -2,18 +2,16 @@ package message
 
 //manage message communicate/store
 import (
-	"context"
+	"encoding/json"
 	"time"
 )
 
 // basic message struct
 type Message struct {
 	ID        string
-	ParentID  string
 	SessionID string
 
 	Kind      Kind
-	Origin    Origin
 	Status    Status
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -34,17 +32,6 @@ const (
 	KindSystem     Kind = "system"
 	KindProgress   Kind = "progress"
 	KindAttachment Kind = "attachment"
-)
-
-// the origin list define the message source
-type Origin string
-
-const (
-	OriginHuman   Origin = "human"
-	OriginModel   Origin = "model"
-	OriginSystem  Origin = "system"
-	OriginTool    Origin = "tool"
-	OriginCompact Origin = "compact"
 )
 
 // Task status
@@ -146,25 +133,50 @@ type SummaryPart struct {
 }
 
 type CreateMessageParams struct {
-	ParentID string
-	Kind     Kind
-	Origin   Origin
-	Status   Status
-	Flags    Flags
-	Parts    []Part
-	System   *SystemPayload
-	Progress *ProgressPayload
+	ID               string
+	Kind             Kind
+	Status           Status
+	Provider         string
+	FinishedAt       time.Time
+	IsCompactSummary bool
+	Flags            Flags
+	Parts            []Part
+	System           *SystemPayload
+	Progress         *ProgressPayload
 }
 
-// CRUD
-type Service interface {
-	Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error)
-	Update(ctx context.Context, message Message) error
-	Get(ctx context.Context, id string) (Message, error)
-	List(ctx context.Context, sessionID string) ([]Message, error)
-	ListUserMessages(ctx context.Context, sessionID string) ([]Message, error)
-	ListAllUserMessages(ctx context.Context) ([]Message, error)
-	Delete(ctx context.Context, id string) error
-	DeleteSessionMessages(ctx context.Context, sessionID string) error
-	Events() <-chan Event
+type persistedMessage struct {
+	Flags    Flags            `json:"flags"`
+	Parts    []Part           `json:"parts"`
+	System   *SystemPayload   `json:"system,omitempty"`
+	Progress *ProgressPayload `json:"progress,omitempty"`
+}
+
+func marshalMessageJSON(msg Message) (string, error) {
+	payload := persistedMessage{
+		Flags:    msg.Flags,
+		Parts:    cloneParts(msg.Parts),
+		System:   cloneSystemPayload(msg.System),
+		Progress: cloneProgressPayload(msg.Progress),
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	return string(data), nil
+}
+
+func unmarshalMessageJSON(data string) (persistedMessage, error) {
+	if data == "" {
+		return persistedMessage{}, nil
+	}
+
+	var payload persistedMessage
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return persistedMessage{}, err
+	}
+
+	return payload, nil
 }
