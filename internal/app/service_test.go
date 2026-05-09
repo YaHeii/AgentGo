@@ -39,7 +39,7 @@ func TestServiceEnsureActiveSessionLoadsMostRecentSessionHistory(t *testing.T) {
 	t.Parallel()
 
 	sessions := newStubSessionService()
-	sessions.listResult = []session.Session{
+	sessions.listResult = []store.Session{
 		{
 			ID:        "session-2",
 			Title:     "latest",
@@ -422,7 +422,7 @@ func messageRecord(id string, kind message.Kind, text string) message.Message {
 type stubSessionService struct {
 	bus           bus.Bus[session.Event]
 	events        <-chan session.Event
-	listResult    []session.Session
+	listResult    []store.Session
 	createdTitles []string
 }
 
@@ -434,40 +434,40 @@ func newStubSessionService() *stubSessionService {
 	}
 }
 
-func (s *stubSessionService) Create(_ context.Context, title string) (session.Session, error) {
+func (s *stubSessionService) Create(_ context.Context, title string) (store.Session, error) {
 	s.createdTitles = append(s.createdTitles, title)
 
-	created := session.Session{
+	created := store.Session{
 		ID:        "session-created",
 		Title:     title,
 		CreatedAt: timeNowStub(),
 		UpdatedAt: timeNowStub(),
 	}
-	s.listResult = append([]session.Session{created}, s.listResult...)
+	s.listResult = append([]store.Session{created}, s.listResult...)
 	return created, nil
 }
 
-func (s *stubSessionService) Get(_ context.Context, id string) (session.Session, error) {
+func (s *stubSessionService) Get(_ context.Context, id string) (store.Session, error) {
 	for _, item := range s.listResult {
 		if item.ID == id {
 			return item, nil
 		}
 	}
-	return session.Session{}, session.ErrSessionNotFound
+	return store.Session{}, session.ErrSessionNotFound
 }
 
-func (s *stubSessionService) GetLast(_ context.Context) (session.Session, error) {
+func (s *stubSessionService) GetLast(_ context.Context) (store.Session, error) {
 	if len(s.listResult) == 0 {
-		return session.Session{}, session.ErrSessionNotFound
+		return store.Session{}, session.ErrSessionNotFound
 	}
 	return s.listResult[0], nil
 }
 
-func (s *stubSessionService) List(_ context.Context) ([]session.Session, error) {
-	return append([]session.Session(nil), s.listResult...), nil
+func (s *stubSessionService) List(_ context.Context) ([]store.Session, error) {
+	return append([]store.Session(nil), s.listResult...), nil
 }
 
-func (s *stubSessionService) Rename(_ context.Context, id string, title string) (session.Session, error) {
+func (s *stubSessionService) Rename(_ context.Context, id string, title string) (store.Session, error) {
 	for i := range s.listResult {
 		if s.listResult[i].ID != id {
 			continue
@@ -475,7 +475,7 @@ func (s *stubSessionService) Rename(_ context.Context, id string, title string) 
 		s.listResult[i].Title = title
 		return s.listResult[i], nil
 	}
-	return session.Session{}, session.ErrSessionNotFound
+	return store.Session{}, session.ErrSessionNotFound
 }
 
 func (s *stubSessionService) Delete(_ context.Context, id string) error {

@@ -46,11 +46,11 @@ type messageService interface {
 }
 
 type sessionService interface {
-	Create(ctx context.Context, title string) (session.Session, error)
-	Get(ctx context.Context, id string) (session.Session, error)
-	GetLast(ctx context.Context) (session.Session, error)
-	List(ctx context.Context) ([]session.Session, error)
-	Rename(ctx context.Context, id string, title string) (session.Session, error)
+	Create(ctx context.Context, title string) (store.Session, error)
+	Get(ctx context.Context, id string) (store.Session, error)
+	GetLast(ctx context.Context) (store.Session, error)
+	List(ctx context.Context) ([]store.Session, error)
+	Rename(ctx context.Context, id string, title string) (store.Session, error)
 	Delete(ctx context.Context, id string) error
 	Events() <-chan session.Event
 }
@@ -205,7 +205,7 @@ func (s *Service) forwardAgentEvents(events <-chan agent.Event) {
 	}
 }
 
-func toAppSession(session session.Session) Session {
+func toAppSession(session store.Session) Session {
 	return Session{
 		ID:        session.ID,
 		Title:     session.Title,

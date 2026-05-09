@@ -33,6 +33,7 @@ func ProviderConfigFromAppConfig(cfg utils.Config) (provideropenai.Config, error
 	}, nil
 }
 
+//TODO: initialize the state.go
 func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runtime, error) {
 	cfg, err := utils.LoadConfig(configDir)
 	if err != nil {

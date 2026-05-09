@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -10,11 +11,6 @@ import (
 )
 
 var errTODO = errors.New("TODO: not implemented")
-
-type messageStore interface {
-	CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error)
-	ListMessages(ctx context.Context, sessionID string) ([]store.Message, error)
-}
 
 type MessageService struct {
 	store  messageStore
@@ -163,6 +159,8 @@ func (s *MessageService) publish(evt Event) {
 	s.bus.Publish(evt)
 }
 
+// NOTE:necessary, because Some fields in the business layer message
+// need to be converted to JSON and stored in the store layer.
 func toMessage(msg store.Message) (Message, error) {
 	payload, err := unmarshalMessageJSON(msg.MessageJSON)
 	if err != nil {
@@ -228,4 +226,32 @@ func cloneProgressPayload(payload *ProgressPayload) *ProgressPayload {
 	}
 	copied := *payload
 	return &copied
+}
+func marshalMessageJSON(msg Message) (string, error) {
+	payload := persistedMessage{
+		Flags:    msg.Flags,
+		Parts:    cloneParts(msg.Parts),
+		System:   cloneSystemPayload(msg.System),
+		Progress: cloneProgressPayload(msg.Progress),
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	return string(data), nil
+}
+
+func unmarshalMessageJSON(data string) (persistedMessage, error) {
+	if data == "" {
+		return persistedMessage{}, nil
+	}
+
+	var payload persistedMessage
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return persistedMessage{}, err
+	}
+
+	return payload, nil
 }

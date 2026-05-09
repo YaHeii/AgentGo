@@ -9,7 +9,7 @@ var (
 	ErrSessionNotFound = errors.New("store: session not found")
 	ErrMessageNotFound = errors.New("store: message not found")
 )
-
+// Session describes the persisted metadata of a conversation container.
 type Session struct {
 	ID               string
 	ParentSessionID  string
@@ -21,8 +21,11 @@ type Session struct {
 	TodosJSON        string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
-}
 
+	// TODO: Add ParentSessionID when parent-child session topology is implemented.
+	// TODO: Add SummaryMessageID when compact summary persistence is introduced.
+	// TODO: Refine todos structure once agent-side todo orchestration is implemented.
+}
 type Message struct {
 	ID               string
 	SessionID        string
@@ -45,7 +48,7 @@ type CreateSessionParams struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
-
+// main for CostMicros&CompletionTokens
 type UpdateSessionParams struct {
 	ID               string
 	ParentSessionID  string

@@ -10,7 +10,11 @@ import (
 )
 
 var ErrSessionNotFound = errors.New("session: not found")
-
+// NOTE: The session business logic is not complex enough at present,
+//  so only a simple wrapper is applied to the store layer.
+// TODO: The next implementation is the token calculation.
+// use event to notify the UI layer
+// define interface to manage messages
 type SessionService struct {
 	store   sessionStore
 	bus     bus.Bus[Event]
@@ -40,7 +44,7 @@ func NewSessionService(st sessionStore, nowFunc func() time.Time) *SessionServic
 	}
 }
 
-func (s *SessionService) Create(ctx context.Context, title string) (Session, error) {
+func (s *SessionService) Create(ctx context.Context, title string) (store.Session, error) {
 	now := s.nowFunc().UTC()
 
 	row, err := s.store.CreateSession(ctx, store.CreateSessionParams{
@@ -51,53 +55,47 @@ func (s *SessionService) Create(ctx context.Context, title string) (Session, err
 		UpdatedAt: now,
 	})
 	if err != nil {
-		return Session{}, err
+		return store.Session{}, err
 	}
 
-	session := toSession(row)
-	s.publish(SessionCreatedEvent{Session: session})
-	return session, nil
+	s.publish(SessionCreatedEvent{Session: row})
+	return row, nil
 }
 
-func (s *SessionService) Get(ctx context.Context, id string) (Session, error) {
+func (s *SessionService) Get(ctx context.Context, id string) (store.Session, error) {
 	row, err := s.store.GetSession(ctx, id)
 	if err != nil {
-		return Session{}, mapError(err)
+		return store.Session{}, mapError(err)
 	}
 
-	return toSession(row), nil
+	return row, nil
 }
 
-func (s *SessionService) GetLast(ctx context.Context) (Session, error) {
+func (s *SessionService) GetLast(ctx context.Context) (store.Session, error) {
 	rows, err := s.store.ListSessions(ctx)
 	if err != nil {
-		return Session{}, err
+		return store.Session{}, err
 	}
 	if len(rows) == 0 {
-		return Session{}, ErrSessionNotFound
+		return store.Session{}, ErrSessionNotFound
 	}
 
-	return toSession(rows[0]), nil
+	return rows[0], nil
 }
 
-func (s *SessionService) List(ctx context.Context) ([]Session, error) {
+func (s *SessionService) List(ctx context.Context) ([]store.Session, error) {
 	rows, err := s.store.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]Session, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, toSession(row))
-	}
-
-	return out, nil
+	return rows, nil
 }
 
-func (s *SessionService) Rename(ctx context.Context, id string, title string) (Session, error) {
+func (s *SessionService) Rename(ctx context.Context, id string, title string) (store.Session, error) {
 	current, err := s.store.GetSession(ctx, id)
 	if err != nil {
-		return Session{}, mapError(err)
+		return store.Session{}, mapError(err)
 	}
 
 	updatedAt := s.nowFunc().UTC()
@@ -113,12 +111,11 @@ func (s *SessionService) Rename(ctx context.Context, id string, title string) (S
 		UpdatedAt:        updatedAt,
 	})
 	if err != nil {
-		return Session{}, mapError(err)
+		return store.Session{}, mapError(err)
 	}
 
-	session := toSession(row)
-	s.publish(SessionUpdatedEvent{Session: session})
-	return session, nil
+	s.publish(SessionUpdatedEvent{Session: row})
+	return row, nil
 }
 
 func (s *SessionService) Delete(ctx context.Context, id string) error {
@@ -140,21 +137,6 @@ func (s *SessionService) publish(event Event) {
 	}
 
 	s.bus.Publish(event)
-}
-
-func toSession(row store.Session) Session {
-	return Session{
-		ID:               row.ID,
-		ParentSessionID:  row.ParentSessionID,
-		Title:            row.Title,
-		MessageCount:     row.MessageCount,
-		CompletionTokens: row.CompletionTokens,
-		CostMicros:       row.CostMicros,
-		SummaryMessageID: row.SummaryMessageID,
-		TodosJSON:        row.TodosJSON,
-		CreatedAt:        row.CreatedAt,
-		UpdatedAt:        row.UpdatedAt,
-	}
 }
 
 func mapError(err error) error {

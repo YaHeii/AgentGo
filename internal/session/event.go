@@ -1,17 +1,19 @@
 package session
 
+import "github.com/YaHeii/agentGo/internal/store"
+
 type Event interface {
 	isSessionEvent()
 }
 
 type SessionCreatedEvent struct {
-	Session Session
+	Session store.Session
 }
 
 func (SessionCreatedEvent) isSessionEvent() {}
 
 type SessionUpdatedEvent struct {
-	Session Session
+	Session store.Session
 }
 
 func (SessionUpdatedEvent) isSessionEvent() {}

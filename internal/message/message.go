@@ -2,8 +2,10 @@ package message
 
 //manage message communicate/store
 import (
-	"encoding/json"
+	"context"
 	"time"
+
+	"github.com/YaHeii/agentGo/internal/store"
 )
 
 // basic message struct
@@ -152,31 +154,7 @@ type persistedMessage struct {
 	Progress *ProgressPayload `json:"progress,omitempty"`
 }
 
-func marshalMessageJSON(msg Message) (string, error) {
-	payload := persistedMessage{
-		Flags:    msg.Flags,
-		Parts:    cloneParts(msg.Parts),
-		System:   cloneSystemPayload(msg.System),
-		Progress: cloneProgressPayload(msg.Progress),
-	}
-
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-
-	return string(data), nil
-}
-
-func unmarshalMessageJSON(data string) (persistedMessage, error) {
-	if data == "" {
-		return persistedMessage{}, nil
-	}
-
-	var payload persistedMessage
-	if err := json.Unmarshal([]byte(data), &payload); err != nil {
-		return persistedMessage{}, err
-	}
-
-	return payload, nil
+type messageStore interface {
+	CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error)
+	ListMessages(ctx context.Context, sessionID string) ([]store.Message, error)
 }
