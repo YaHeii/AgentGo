@@ -1,6 +1,9 @@
 package agent
 
+import "github.com/YaHeii/agentGo/internal/app"
+
 type Event interface {
+	app.Event
 	isAgentEvent()
 }
 
@@ -12,6 +15,8 @@ type QueryCompletedEvent struct {
 
 func (QueryCompletedEvent) isAgentEvent() {}
 
+func (QueryCompletedEvent) Type() app.EventType { return app.EventTypeAgent }
+
 type QueryFailedEvent struct {
 	SessionID          string
 	UserMessageID      string
@@ -20,3 +25,5 @@ type QueryFailedEvent struct {
 }
 
 func (QueryFailedEvent) isAgentEvent() {}
+
+func (QueryFailedEvent) Type() app.EventType { return app.EventTypeAgent }

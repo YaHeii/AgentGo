@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/stretchr/testify/require"
@@ -13,30 +14,30 @@ import (
 func TestNewQueryLoopReturnsRunner(t *testing.T) {
 	t.Parallel()
 
-	runner := NewQueryLoop(&stubMessageStore{}, &stubStreamingLLM{})
+	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubStreamingLLM{})
 	require.NotNil(t, runner)
 }
 
-func TestNewMessageQueryRunnerSeedsConfigAndDeps(t *testing.T) {
+func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{}
+	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{}
 
 	runner := NewQueryLoop(store, llm)
 
 	require.Equal(t, 1, runner.config.MaxTurns)
-	require.Same(t, store, runner.deps.Messages)
+	require.Same(t, store, runner.deps.Conversation)
 	require.Same(t, llm, runner.deps.LLM)
 }
 
 func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	t.Parallel()
 
-	originalStore := &stubMessageStore{}
+	originalStore := &stubSessionConversationPort{}
 	originalLLM := &stubStreamingLLM{}
 
-	depsStore := &stubMessageStore{}
+	depsStore := &stubSessionConversationPort{}
 	depsLLM := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -46,7 +47,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(originalStore, originalLLM)
-	runner.deps.Messages = depsStore
+	runner.deps.Conversation = depsStore
 	runner.deps.LLM = depsLLM
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
@@ -71,7 +72,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
 	t.Parallel()
 
-	runner := NewQueryLoop(&stubMessageStore{}, &stubStreamingLLM{})
+	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubStreamingLLM{})
 	runner.config.MaxTurns = 0
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
@@ -86,10 +87,10 @@ func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
 	require.EqualError(t, err, "agent: max turns must be greater than 0")
 }
 
-func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
+func TestQueryLoopCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{}
+	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -118,6 +119,8 @@ func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, store.created, 2)
 	require.Len(t, store.updated, 3)
+	require.Equal(t, []string{"session-1"}, store.hydratedSessionIDs)
+	require.Equal(t, []string{"session-1", "session-1", "session-1"}, store.updatedSessionIDs)
 	require.Len(t, llm.calls[0].Messages, 1)
 	require.Equal(t, "hello", llm.calls[0].Messages[0].Content)
 	require.Equal(t, message.StatusComplete, store.created[1].Status)
@@ -127,10 +130,10 @@ func TestMessageQueryRunnerCreatesMessagesAndStreamsAssistantReply(t *testing.T)
 	require.Equal(t, message.StatusComplete, store.updated[len(store.updated)-1].Status)
 }
 
-func TestMessageQueryRunnerMarksAssistantFailedOnStreamError(t *testing.T) {
+func TestQueryLoopMarksAssistantFailedOnStreamError(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{}
+	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -163,7 +166,7 @@ func TestMessageQueryRunnerMarksAssistantFailedOnStreamError(t *testing.T) {
 func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{}
+	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -215,7 +218,7 @@ func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{}
+	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -255,7 +258,7 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 	t.Parallel()
 
-	store := &stubMessageStore{}
+	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
@@ -306,6 +309,33 @@ func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
 	require.Equal(t, "hello", textOf(state.messages[0]))
 }
 
+func TestQueryCompletedEventImplementsAppEvent(t *testing.T) {
+	t.Parallel()
+
+	var evt app.Event = QueryCompletedEvent{}
+	require.Equal(t, app.EventTypeAgent, evt.Type())
+}
+
+func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
+	t.Parallel()
+
+	store := &stubSessionConversationPort{}
+	llm := &stubStreamingLLM{
+		events: [][]provider.StreamEvent{
+			{
+				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonStop},
+			},
+		},
+	}
+
+	runner := NewQueryLoop(store, llm)
+
+	err := runner.RunPrompt(context.Background(), "session-1", "hello")
+	require.NoError(t, err)
+	require.Len(t, store.created, 2)
+	require.Equal(t, "hello", findTextPart(store.created[0].Parts))
+}
+
 func TestLoopStateWithTransitionReturnsNewSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -346,14 +376,16 @@ func TestLoopStateAppendMessageDoesNotMutateOriginalSnapshot(t *testing.T) {
 	require.Equal(t, "world", textOf(next.messages[1]))
 }
 
-type stubMessageStore struct {
-	created    []message.CreateMessageParams
-	updated    []message.Message
-	listResult []message.Message
-	persisted  []message.Message
+type stubSessionConversationPort struct {
+	created            []message.CreateMessageParams
+	updated            []message.Message
+	hydratedSessionIDs []string
+	updatedSessionIDs  []string
+	listResult         []message.Message
+	persisted          []message.Message
 }
 
-func (s *stubMessageStore) Create(_ context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
+func (s *stubSessionConversationPort) CreateMessage(_ context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
 	s.created = append(s.created, params)
 	id := "user-1"
 	switch params.Kind {
@@ -378,12 +410,14 @@ func (s *stubMessageStore) Create(_ context.Context, sessionID string, params me
 	return msg, nil
 }
 
-func (s *stubMessageStore) Update(_ context.Context, msg message.Message) error {
+func (s *stubSessionConversationPort) UpdateMessage(_ context.Context, sessionID string, msg message.Message) error {
+	s.updatedSessionIDs = append(s.updatedSessionIDs, sessionID)
 	s.updated = append(s.updated, msg)
 	return nil
 }
 
-func (s *stubMessageStore) List(_ context.Context, _ string) ([]message.Message, error) {
+func (s *stubSessionConversationPort) ListHistory(_ context.Context, sessionID string) ([]message.Message, error) {
+	s.hydratedSessionIDs = append(s.hydratedSessionIDs, sessionID)
 	copied := append([]message.Message(nil), s.listResult...)
 	copied = append(copied, s.persisted...)
 	return copied, nil

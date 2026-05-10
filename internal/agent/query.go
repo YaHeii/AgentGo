@@ -11,10 +11,10 @@ import (
 	"github.com/YaHeii/agentGo/internal/provider"
 )
 
-type MessagePort interface {
-	Create(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error)
-	Update(ctx context.Context, message message.Message) error
-	List(ctx context.Context, sessionID string) ([]message.Message, error)
+type ConversationPort interface {
+	ListHistory(ctx context.Context, sessionID string) ([]message.Message, error)
+	CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error)
+	UpdateMessage(ctx context.Context, sessionID string, msg message.Message) error
 }
 
 type QueryLoop struct {
@@ -24,11 +24,11 @@ type QueryLoop struct {
 	events <-chan Event
 }
 
-func NewQueryLoop(messages MessagePort, llm provider.StreamingLLM) *QueryLoop {
+func NewQueryLoop(conversation ConversationPort, llm provider.StreamingLLM) *QueryLoop {
 	b := bus.NewBus[Event](32)
 	return &QueryLoop{
 		config: defaultQueryConfig(),
-		deps:   defaultQueryDeps(messages, llm),
+		deps:   defaultQueryDeps(conversation, llm),
 		bus:    b,
 		events: b.Subscribe(context.Background()),
 	}
@@ -41,7 +41,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 
 	state := newLoopState(params).withTransition("state_initialized")
 
-	userMessage, err := r.deps.Messages.Create(ctx, params.SessionID, message.CreateMessageParams{
+	userMessage, err := r.deps.Conversation.CreateMessage(ctx, params.SessionID, message.CreateMessageParams{
 		Kind:   message.KindUser,
 		Status: message.StatusComplete,
 		Parts:  cloneInputParts(params.InputParts),
@@ -54,7 +54,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 	for turn := 1; turn <= r.config.MaxTurns; turn++ {
 		state = state.withTurnCount(turn).withTransition("turn_started")
 
-		history, err := r.deps.Messages.List(ctx, params.SessionID)
+		history, err := r.deps.Conversation.ListHistory(ctx, params.SessionID)
 		if err != nil {
 			return QueryResult{}, err
 		}
@@ -112,6 +112,19 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 		Turns:                   state.turnCount,
 		FinishReason:            FinishReasonCompleted,
 	}, nil
+}
+
+func (r *QueryLoop) RunPrompt(ctx context.Context, sessionID string, prompt string) error {
+	_, err := r.RunQuery(ctx, QueryParams{
+		SessionID: sessionID,
+		InputParts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: prompt,
+			},
+		},
+	})
+	return err
 }
 
 func (r *QueryLoop) Events() <-chan Event {
@@ -217,11 +230,11 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 			finishedAt := r.deps.Now().UTC()
 			assistantMessage.UpdatedAt = finishedAt
 			state = state.replaceLastMessage(assistantMessage).withTransition("stream_failed")
-			if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
+			if err := r.deps.Conversation.UpdateMessage(ctx, assistantMessage.SessionID, assistantMessage); err != nil {
 				return turnOutcome{}, state, err
 			}
 
-			systemMessage, err := r.deps.Messages.Create(ctx, assistantMessage.SessionID, message.CreateMessageParams{
+			systemMessage, err := r.deps.Conversation.CreateMessage(ctx, assistantMessage.SessionID, message.CreateMessageParams{
 				Kind:       message.KindSystem,
 				Status:     assistantMessage.Status,
 				FinishedAt: finishedAt,
@@ -258,7 +271,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 			assistantMessage.Status = message.StatusStreaming
 			assistantMessage.UpdatedAt = r.deps.Now().UTC()
 			state = state.replaceLastMessage(assistantMessage).withTransition("assistant_delta_received")
-			if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
+			if err := r.deps.Conversation.UpdateMessage(ctx, assistantMessage.SessionID, assistantMessage); err != nil {
 				return turnOutcome{}, state, err
 			}
 		case provider.StreamEventReasoningDelta:
@@ -266,7 +279,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 			assistantMessage.Status = message.StatusStreaming
 			assistantMessage.UpdatedAt = r.deps.Now().UTC()
 			state = state.replaceLastMessage(assistantMessage).withTransition("assistant_reasoning_received")
-			if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
+			if err := r.deps.Conversation.UpdateMessage(ctx, assistantMessage.SessionID, assistantMessage); err != nil {
 				return turnOutcome{}, state, err
 			}
 		case provider.StreamEventRefusalDelta:
@@ -274,7 +287,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 			assistantMessage.Status = message.StatusStreaming
 			assistantMessage.UpdatedAt = r.deps.Now().UTC()
 			state = state.replaceLastMessage(assistantMessage).withTransition("assistant_refusal_received")
-			if err := r.deps.Messages.Update(ctx, assistantMessage); err != nil {
+			if err := r.deps.Conversation.UpdateMessage(ctx, assistantMessage.SessionID, assistantMessage); err != nil {
 				return turnOutcome{}, state, err
 			}
 		case provider.StreamEventToolCallCompleted:
@@ -292,7 +305,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 			assistantMessage.UpdatedAt = finishedAt
 			state = state.replaceLastMessage(assistantMessage)
 
-			persistedAssistant, err := r.deps.Messages.Create(ctx, assistantMessage.SessionID, message.CreateMessageParams{
+			persistedAssistant, err := r.deps.Conversation.CreateMessage(ctx, assistantMessage.SessionID, message.CreateMessageParams{
 				ID:               assistantMessage.ID,
 				Kind:             assistantMessage.Kind,
 				Status:           message.StatusComplete,
@@ -309,7 +322,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 
 			if event.StopReason == provider.StopReasonToolCalls {
 				state = state.withTransition("awaiting_tool_execution")
-				if err := r.deps.Messages.Update(ctx, persistedAssistant); err != nil {
+				if err := r.deps.Conversation.UpdateMessage(ctx, persistedAssistant.SessionID, persistedAssistant); err != nil {
 					return turnOutcome{}, state, err
 				}
 				return turnOutcome{
@@ -322,7 +335,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 			}
 
 			state = state.withTransition("assistant_completed")
-			if err := r.deps.Messages.Update(ctx, persistedAssistant); err != nil {
+			if err := r.deps.Conversation.UpdateMessage(ctx, persistedAssistant.SessionID, persistedAssistant); err != nil {
 				return turnOutcome{}, state, err
 			}
 			return turnOutcome{
@@ -391,6 +404,7 @@ func newAssistantStreamMessage(sessionID string, turn int, now time.Time) messag
 		},
 	}
 }
+
 // TODO:should be refacotr
 func appendToolCallPart(msg *message.Message, call provider.ToolCall) {
 	msg.Parts = append(msg.Parts, message.Part{

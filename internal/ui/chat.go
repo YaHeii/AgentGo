@@ -13,7 +13,6 @@ const (
 	defaultHeight = 24
 )
 
-
 type sendMessageDoneMsg struct {
 	err error
 }
@@ -23,7 +22,7 @@ type appEventMsg struct {
 }
 
 type chatService interface {
-	EnsureActiveSession(ctx context.Context) (app.Session, error)
-	SendMessage(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error)
+	EnsureActiveSession(ctx context.Context) error
+	SendMessage(ctx context.Context, sessionID string, prompt string) error
 	Events() <-chan app.Event
 }

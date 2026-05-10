@@ -10,6 +10,28 @@ import (
 	"github.com/YaHeii/agentGo/internal/utils"
 )
 
+func TestGlobalStateExposesConversationSeedFields(t *testing.T) {
+	t.Parallel()
+
+	state := &GlobalState{}
+	state.SetCurrentCWD("/tmp/project")
+	state.SetProjectRoot("/tmp/project")
+	state.SetSessionSeed("session-1", "parent-1")
+
+	if got := state.CurrentCWD(); got != "/tmp/project" {
+		t.Fatalf("expected current cwd /tmp/project, got %q", got)
+	}
+	if got := state.ProjectRoot(); got != "/tmp/project" {
+		t.Fatalf("expected project root /tmp/project, got %q", got)
+	}
+	if got := state.SessionID(); got != "session-1" {
+		t.Fatalf("expected session id session-1, got %q", got)
+	}
+	if got := state.ParentSessionID(); got != "parent-1" {
+		t.Fatalf("expected parent session id parent-1, got %q", got)
+	}
+}
+
 func TestProviderConfigFromAppConfigRequiresAPIKeyAndModel(t *testing.T) {
 	t.Parallel()
 
@@ -76,6 +98,18 @@ func TestBootstrapReturnsRuntimeWithAppAndCloser(t *testing.T) {
 	}
 	if runtime.App == nil {
 		t.Fatal("expected app service")
+	}
+	if runtime.Bus == nil {
+		t.Fatal("expected unified app event bus")
+	}
+	if Global == nil {
+		t.Fatal("expected global state to be initialized")
+	}
+	if Global.CurrentCWD() == "" {
+		t.Fatal("expected current cwd to be initialized")
+	}
+	if Global.ProjectRoot() == "" {
+		t.Fatal("expected project root to be initialized")
 	}
 	if err := runtime.GracefulShutdown(context.Background()); err != nil {
 		t.Fatalf("close runtime: %v", err)

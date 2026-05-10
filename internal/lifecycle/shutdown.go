@@ -12,8 +12,7 @@ import "context"
 // Ensure terminal status is restored
 // Empty the buffer zone
 // Shutdown LSP server
-// shutdown MCP server 
-// shutdown ALL sessions
+// shutdown MCP server
 
 func (r Runtime) GracefulShutdown(ctx context.Context) error {
 	if r.closeFn == nil {

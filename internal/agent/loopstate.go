@@ -80,11 +80,11 @@ func defaultQueryConfig() QueryConfig {
 	}
 }
 
-func defaultQueryDeps(messages MessagePort, llm provider.StreamingLLM) QueryDeps {
+func defaultQueryDeps(conversation ConversationPort, llm provider.StreamingLLM) QueryDeps {
 	return QueryDeps{
-		Messages: messages,
-		LLM:      llm,
-		Now:      time.Now,
+		Conversation: conversation,
+		LLM:          llm,
+		Now:          time.Now,
 	}
 }
 

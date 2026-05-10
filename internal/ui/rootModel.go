@@ -6,13 +6,16 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/message"
+	"github.com/YaHeii/agentGo/internal/session"
 )
 
 type rootModel struct {
 	app        chatService
 	sessionID  string
-	messages   []app.Message //save the redering snapshot
+	messages   []message.Message
 	input      string
 	errMessage string
 	loading    bool
@@ -33,27 +36,28 @@ func NewRootModel(appSvc chatService) rootModel {
 }
 
 // TODO: add some Pre-security checks
-// At here, can mock cc approach, 
-// The purpose of delaying the rendering until after the initial rendering 
-// is to avoid blocking the appearance of the terminal interface. 
+// At here, can mock cc approach,
+// The purpose of delaying the rendering until after the initial rendering
+// is to avoid blocking the appearance of the terminal interface.
 // While the user sees the prompt and begins to think and type,
 // these background tasks are already being completed in parallel.
 // src/main.tsx:388-431
-// export function startDeferredPrefetches(): void {
-//   // This function runs after first render, so it doesn't block the initial paint.
-//   void initUser();
-//   void getUserContext();
-//   prefetchSystemContextIfSafe();
-//   void getRelevantTips();
-//   void countFilesRoundedRg(getCwd(), AbortSignal.timeout(3000), []);
-//   void initializeAnalyticsGates();
-//   void refreshModelCapabilities();
-//   void settingsChangeDetector.initialize();
-//   // ...
-// }
+//
+//	export function startDeferredPrefetches(): void {
+//	  // This function runs after first render, so it doesn't block the initial paint.
+//	  void initUser();
+//	  void getUserContext();
+//	  prefetchSystemContextIfSafe();
+//	  void getRelevantTips();
+//	  void countFilesRoundedRg(getCwd(), AbortSignal.timeout(3000), []);
+//	  void initializeAnalyticsGates();
+//	  void refreshModelCapabilities();
+//	  void settingsChangeDetector.initialize();
+//	  // ...
+//	}
 func bootstrapSessionCmd(appSvc chatService) tea.Cmd {
 	return func() tea.Msg {
-		_, err := appSvc.EnsureActiveSession(context.Background())
+		err := appSvc.EnsureActiveSession(context.Background())
 		return bootstrapDoneMsg{
 			err: err,
 		}
@@ -82,32 +86,33 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case appEventMsg:
 		switch event := msg.event.(type) {
-		case app.SessionReadyEvent:
+		case session.SessionRestoredEvent:
 			m.sessionID = event.Session.ID
-		case app.ConversationHydratedEvent:
-			m.messages = append([]app.Message(nil), event.Messages...)
-		case app.MessageCreatedEvent:
+			m.messages = append([]message.Message(nil), event.Messages...)
+		case session.SessionSwitchedEvent:
+			m.sessionID = event.SessionID
+		case message.MessageCreatedEvent:
 			m.upsertMessage(event.Message)
-		case app.MessageDeltaEvent:
+		case message.MessageDeltaEvent:
 			m.upsertMessage(event.Message)
-		case app.MessageCompletedEvent:
+		case message.MessageCompletedEvent:
 			m.upsertMessage(event.Message)
 			m.loading = false
-		case app.MessageFailedEvent:
+		case message.MessageFailedEvent:
 			m.upsertMessage(event.Message)
 			if event.Err != nil {
 				m.errMessage = event.Err.Error()
 			}
 			m.loading = false
-		case app.MessageCancelledEvent:
+		case message.MessageCancelledEvent:
 			m.upsertMessage(event.Message)
 			if event.Err != nil {
 				m.errMessage = event.Err.Error()
 			}
 			m.loading = false
-		case app.QueryCompletedEvent:
+		case agent.QueryCompletedEvent:
 			m.loading = false
-		case app.QueryFailedEvent:
+		case agent.QueryFailedEvent:
 			if event.Err != nil {
 				m.errMessage = event.Err.Error()
 			}
@@ -151,7 +156,7 @@ func (m rootModel) View() tea.View {
 	lines = append(lines, "agentGo", "")
 
 	for _, msg := range m.messages {
-		lines = append(lines, fmt.Sprintf("%s %s", roleLabel(msg.Role), msg.Content))
+		lines = append(lines, fmt.Sprintf("%s %s", kindLabel(msg.Kind), textContent(msg.Parts)))
 	}
 
 	if m.errMessage != "" {
@@ -177,10 +182,7 @@ func (m rootModel) View() tea.View {
 // UIlayer should only send the basic prompt, tool schema .etc will be assembled in app layer
 func sendMessageCmd(appSvc chatService, sessionID string, prompt string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := appSvc.SendMessage(context.Background(), app.SendMessageParams{
-			SessionID: sessionID,
-			Prompt:    prompt,
-		})
+		err := appSvc.SendMessage(context.Background(), sessionID, prompt)
 		return sendMessageDoneMsg{err: err}
 	}
 }
@@ -192,7 +194,7 @@ func waitAppEventCmd(events <-chan app.Event) tea.Cmd {
 	}
 }
 
-func (m *rootModel) upsertMessage(msg app.Message) {
+func (m *rootModel) upsertMessage(msg message.Message) {
 	for i := range m.messages {
 		if m.messages[i].ID == msg.ID {
 			m.messages[i] = msg
@@ -203,13 +205,22 @@ func (m *rootModel) upsertMessage(msg app.Message) {
 	m.messages = append(m.messages, msg)
 }
 
-func roleLabel(role string) string {
-	switch role {
-	case roleAssistant:
+func kindLabel(kind message.Kind) string {
+	switch kind {
+	case message.KindAssistant:
 		return "ai:"
 	default:
 		return "you:"
 	}
+}
+
+func textContent(parts []message.Part) string {
+	for _, part := range parts {
+		if part.Type == message.PartTypeText {
+			return part.Text
+		}
+	}
+	return ""
 }
 
 func isControlKey(text string) bool {

@@ -13,18 +13,18 @@ import (
 var errTODO = errors.New("TODO: not implemented")
 
 type MessageService struct {
-	store  messageStore
-	bus    bus.Bus[Event]
-	events <-chan Event
+	messageStore messageStore
+	bus          bus.Bus[Event]
+	events       <-chan Event
 }
 
 func NewMessageService(st messageStore) *MessageService {
 	b := bus.NewBus[Event](128)
 
 	return &MessageService{
-		store:  st,
-		bus:    b,
-		events: b.Subscribe(context.Background()),
+		messageStore: st,
+		bus:          b,
+		events:       b.Subscribe(context.Background()),
 	}
 }
 
@@ -65,7 +65,7 @@ func (s *MessageService) Create(ctx context.Context, sessionID string, params Cr
 		return Message{}, err
 	}
 
-	row, err := s.store.CreateMessage(ctx, store.CreateMessageParams{
+	row, err := s.messageStore.CreateMessage(ctx, store.CreateMessageParams{
 		ID:               msg.ID,
 		SessionID:        sessionID,
 		Kind:             string(params.Kind),
@@ -114,7 +114,7 @@ func (s *MessageService) Get(_ context.Context, _ string) (Message, error) {
 }
 
 func (s *MessageService) List(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.store.ListMessages(ctx, sessionID)
+	rows, err := s.messageStore.ListMessages(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -129,6 +129,22 @@ func (s *MessageService) List(ctx context.Context, sessionID string) ([]Message,
 	}
 
 	return messages, nil
+}
+
+func (s *MessageService) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
+	return s.List(ctx, sessionID)
+}
+
+func (s *MessageService) CreateMessage(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
+	return s.Create(ctx, sessionID, params)
+}
+
+func (s *MessageService) UpdateMessage(ctx context.Context, sessionID string, msg Message) error {
+	if msg.SessionID == "" {
+		msg.SessionID = sessionID
+	}
+
+	return s.Update(ctx, msg)
 }
 
 func (s *MessageService) ListUserMessages(_ context.Context, _ string) ([]Message, error) {

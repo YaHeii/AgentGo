@@ -6,25 +6,26 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/message"
+	"github.com/YaHeii/agentGo/internal/session"
+	"github.com/YaHeii/agentGo/internal/store"
 )
 
 func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
-	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
-		svc.events <- app.SessionReadyEvent{
-			Session: app.Session{ID: "session-1", Title: "demo"},
-		}
-		svc.events <- app.ConversationHydratedEvent{
-			SessionID: "session-1",
-			Messages: []app.Message{
-				{ID: "u1", SessionID: "session-1", Role: roleUser, Content: "hello"},
-				{ID: "a1", SessionID: "session-1", Role: roleAssistant, Content: "world"},
+	svc.ensureSessionFn = func(_ context.Context) error {
+		svc.events <- session.SessionRestoredEvent{
+			Session: store.Session{ID: "session-1", Title: "demo"},
+			Messages: []message.Message{
+				messageRecord("u1", message.KindUser, "hello"),
+				messageRecord("a1", message.KindAssistant, "world"),
 			},
 		}
-		return app.Session{ID: "session-1", Title: "demo"}, nil
+		return nil
 	}
 
 	model := NewRootModel(svc)
@@ -32,9 +33,6 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	initMsg := model.Init()()
 	updated, listenCmd := model.Update(initMsg)
 	next := updated.(rootModel)
-
-	updated, listenCmd = next.Update(listenCmd())
-	next = updated.(rootModel)
 
 	updated, _ = next.Update(listenCmd())
 	next = updated.(rootModel)
@@ -51,39 +49,66 @@ func TestEnterDispatchesSendAndAppliesStreamEvents(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
-	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
-		svc.events <- app.SessionReadyEvent{
-			Session: app.Session{ID: "session-1", Title: "demo"},
+	svc.ensureSessionFn = func(_ context.Context) error {
+		svc.events <- session.SessionRestoredEvent{
+			Session:  store.Session{ID: "session-1", Title: "demo"},
+			Messages: nil,
 		}
-		svc.events <- app.ConversationHydratedEvent{
-			SessionID: "session-1",
-			Messages:  nil,
-		}
-		return app.Session{ID: "session-1", Title: "demo"}, nil
+		return nil
 	}
-	svc.sendMessageFn = func(_ context.Context, params app.SendMessageParams) (app.SendMessageResult, error) {
-		svc.events <- app.MessageCreatedEvent{
-			Message: app.Message{ID: "user-1", SessionID: params.SessionID, Role: roleUser, Content: params.Prompt},
+	svc.sendMessageFn = func(_ context.Context, sessionID string, prompt string) error {
+		svc.events <- message.MessageCreatedEvent{
+			Message: message.Message{
+				ID:        "user-1",
+				SessionID: sessionID,
+				Kind:      message.KindUser,
+				Status:    message.StatusComplete,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: prompt},
+				},
+			},
 		}
-		svc.events <- app.MessageCreatedEvent{
-			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "", Status: app.MessageStatusStreaming},
+		svc.events <- message.MessageCreatedEvent{
+			Message: message.Message{
+				ID:        "assistant-1",
+				SessionID: sessionID,
+				Kind:      message.KindAssistant,
+				Status:    message.StatusStreaming,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: ""},
+				},
+			},
 		}
-		svc.events <- app.MessageDeltaEvent{
-			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "hel", Status: app.MessageStatusStreaming},
-			Delta:   "hel",
+		svc.events <- message.MessageDeltaEvent{
+			Message: message.Message{
+				ID:        "assistant-1",
+				SessionID: sessionID,
+				Kind:      message.KindAssistant,
+				Status:    message.StatusStreaming,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: "hel"},
+				},
+			},
+			Delta: "hel",
 		}
-		svc.events <- app.MessageCompletedEvent{
-			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "hello", Status: app.MessageStatusComplete},
+		svc.events <- message.MessageCompletedEvent{
+			Message: message.Message{
+				ID:        "assistant-1",
+				SessionID: sessionID,
+				Kind:      message.KindAssistant,
+				Status:    message.StatusComplete,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: "hello"},
+				},
+			},
 		}
-		return app.SendMessageResult{}, nil
+		return nil
 	}
 
 	model := NewRootModel(svc)
 
 	bootstrapMsg := model.Init()()
 	updated, listenCmd := model.Update(bootstrapMsg)
-	model = updated.(rootModel)
-	updated, listenCmd = model.Update(listenCmd())
 	model = updated.(rootModel)
 	updated, listenCmd = model.Update(listenCmd())
 	model = updated.(rootModel)
@@ -110,8 +135,8 @@ func TestEnterDispatchesSendAndAppliesStreamEvents(t *testing.T) {
 	if len(model.messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(model.messages))
 	}
-	if model.messages[1].Content != "hello" {
-		t.Fatalf("expected streamed assistant content, got %q", model.messages[1].Content)
+	if textContent(model.messages[1].Parts) != "hello" {
+		t.Fatalf("expected streamed assistant content, got %q", textContent(model.messages[1].Parts))
 	}
 }
 
@@ -119,40 +144,67 @@ func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
-	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
-		svc.events <- app.SessionReadyEvent{
-			Session: app.Session{ID: "session-1", Title: "demo"},
+	svc.ensureSessionFn = func(_ context.Context) error {
+		svc.events <- session.SessionRestoredEvent{
+			Session:  store.Session{ID: "session-1", Title: "demo"},
+			Messages: nil,
 		}
-		svc.events <- app.ConversationHydratedEvent{
-			SessionID: "session-1",
-			Messages:  nil,
-		}
-		return app.Session{ID: "session-1", Title: "demo"}, nil
+		return nil
 	}
-	svc.sendMessageFn = func(_ context.Context, params app.SendMessageParams) (app.SendMessageResult, error) {
-		svc.events <- app.MessageCreatedEvent{
-			Message: app.Message{ID: "user-1", SessionID: params.SessionID, Role: roleUser, Content: params.Prompt},
+	svc.sendMessageFn = func(_ context.Context, sessionID string, prompt string) error {
+		svc.events <- message.MessageCreatedEvent{
+			Message: message.Message{
+				ID:        "user-1",
+				SessionID: sessionID,
+				Kind:      message.KindUser,
+				Status:    message.StatusComplete,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: prompt},
+				},
+			},
 		}
-		svc.events <- app.MessageCreatedEvent{
-			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "", Status: app.MessageStatusStreaming},
+		svc.events <- message.MessageCreatedEvent{
+			Message: message.Message{
+				ID:        "assistant-1",
+				SessionID: sessionID,
+				Kind:      message.KindAssistant,
+				Status:    message.StatusStreaming,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: ""},
+				},
+			},
 		}
-		svc.events <- app.MessageDeltaEvent{
-			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "par", Status: app.MessageStatusStreaming},
-			Delta:   "par",
+		svc.events <- message.MessageDeltaEvent{
+			Message: message.Message{
+				ID:        "assistant-1",
+				SessionID: sessionID,
+				Kind:      message.KindAssistant,
+				Status:    message.StatusStreaming,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: "par"},
+				},
+			},
+			Delta: "par",
 		}
-		svc.events <- app.MessageFailedEvent{
-			Message: app.Message{ID: "assistant-1", SessionID: params.SessionID, Role: roleAssistant, Content: "par", Status: app.MessageStatusFailed},
-			Err:     errors.New("stream failed"),
+		svc.events <- message.MessageFailedEvent{
+			Message: message.Message{
+				ID:        "assistant-1",
+				SessionID: sessionID,
+				Kind:      message.KindAssistant,
+				Status:    message.StatusFailed,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: "par"},
+				},
+			},
+			Err: errors.New("stream failed"),
 		}
-		return app.SendMessageResult{}, errors.New("stream failed")
+		return errors.New("stream failed")
 	}
 
 	model := NewRootModel(svc)
 
 	bootstrapMsg := model.Init()()
 	updated, listenCmd := model.Update(bootstrapMsg)
-	model = updated.(rootModel)
-	updated, listenCmd = model.Update(listenCmd())
 	model = updated.(rootModel)
 	updated, listenCmd = model.Update(listenCmd())
 	model = updated.(rootModel)
@@ -173,8 +225,8 @@ func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 	if model.errMessage == "" {
 		t.Fatal("expected error message")
 	}
-	if model.messages[1].Content != "par" {
-		t.Fatalf("expected partial reply, got %q", model.messages[1].Content)
+	if textContent(model.messages[1].Parts) != "par" {
+		t.Fatalf("expected partial reply, got %q", textContent(model.messages[1].Parts))
 	}
 }
 
@@ -182,15 +234,12 @@ func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
-	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
-		svc.events <- app.SessionReadyEvent{
-			Session: app.Session{ID: "session-1", Title: "demo"},
+	svc.ensureSessionFn = func(_ context.Context) error {
+		svc.events <- session.SessionRestoredEvent{
+			Session:  store.Session{ID: "session-1", Title: "demo"},
+			Messages: nil,
 		}
-		svc.events <- app.ConversationHydratedEvent{
-			SessionID: "session-1",
-			Messages:  nil,
-		}
-		return app.Session{ID: "session-1", Title: "demo"}, nil
+		return nil
 	}
 
 	model := NewRootModel(svc)
@@ -200,18 +249,16 @@ func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
 	model = updated.(rootModel)
 	updated, listenCmd = model.Update(listenCmd())
 	model = updated.(rootModel)
-	updated, listenCmd = model.Update(listenCmd())
-	model = updated.(rootModel)
 
 	model.loading = true
-	svc.events <- app.QueryFailedEvent{
+	svc.events <- agent.QueryFailedEvent{
 		SessionID:          "session-1",
 		UserMessageID:      "user-1",
 		AssistantMessageID: "assistant-1",
 		Err:                errors.New("query failed"),
 	}
 
-	updated, listenCmd = model.Update(listenCmd())
+	updated, _ = model.Update(listenCmd())
 	model = updated.(rootModel)
 
 	if model.loading {
@@ -226,15 +273,12 @@ func TestQueryCompletedEventStopsLoading(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
-	svc.ensureSessionFn = func(_ context.Context) (app.Session, error) {
-		svc.events <- app.SessionReadyEvent{
-			Session: app.Session{ID: "session-1", Title: "demo"},
+	svc.ensureSessionFn = func(_ context.Context) error {
+		svc.events <- session.SessionRestoredEvent{
+			Session:  store.Session{ID: "session-1", Title: "demo"},
+			Messages: nil,
 		}
-		svc.events <- app.ConversationHydratedEvent{
-			SessionID: "session-1",
-			Messages:  nil,
-		}
-		return app.Session{ID: "session-1", Title: "demo"}, nil
+		return nil
 	}
 
 	model := NewRootModel(svc)
@@ -244,11 +288,9 @@ func TestQueryCompletedEventStopsLoading(t *testing.T) {
 	model = updated.(rootModel)
 	updated, listenCmd = model.Update(listenCmd())
 	model = updated.(rootModel)
-	updated, listenCmd = model.Update(listenCmd())
-	model = updated.(rootModel)
 
 	model.loading = true
-	svc.events <- app.QueryCompletedEvent{
+	svc.events <- agent.QueryCompletedEvent{
 		SessionID:          "session-1",
 		UserMessageID:      "user-1",
 		AssistantMessageID: "assistant-1",
@@ -264,8 +306,8 @@ func TestQueryCompletedEventStopsLoading(t *testing.T) {
 
 type stubChatService struct {
 	events          chan app.Event
-	ensureSessionFn func(ctx context.Context) (app.Session, error)
-	sendMessageFn   func(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error)
+	ensureSessionFn func(ctx context.Context) error
+	sendMessageFn   func(ctx context.Context, sessionID string, prompt string) error
 }
 
 func newStubChatService() *stubChatService {
@@ -274,18 +316,18 @@ func newStubChatService() *stubChatService {
 	}
 }
 
-func (s *stubChatService) EnsureActiveSession(ctx context.Context) (app.Session, error) {
+func (s *stubChatService) EnsureActiveSession(ctx context.Context) error {
 	if s.ensureSessionFn == nil {
-		return app.Session{}, nil
+		return nil
 	}
 	return s.ensureSessionFn(ctx)
 }
 
-func (s *stubChatService) SendMessage(ctx context.Context, params app.SendMessageParams) (app.SendMessageResult, error) {
+func (s *stubChatService) SendMessage(ctx context.Context, sessionID string, prompt string) error {
 	if s.sendMessageFn == nil {
-		return app.SendMessageResult{}, nil
+		return nil
 	}
-	return s.sendMessageFn(ctx, params)
+	return s.sendMessageFn(ctx, sessionID, prompt)
 }
 
 func (s *stubChatService) Events() <-chan app.Event {
@@ -294,4 +336,19 @@ func (s *stubChatService) Events() <-chan app.Event {
 
 func enterKey() tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
+}
+
+func messageRecord(id string, kind message.Kind, text string) message.Message {
+	return message.Message{
+		ID:        id,
+		SessionID: "session-1",
+		Kind:      kind,
+		Status:    message.StatusComplete,
+		Parts: []message.Part{
+			{
+				Type: message.PartTypeText,
+				Text: text,
+			},
+		},
+	}
 }

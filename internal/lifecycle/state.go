@@ -6,14 +6,15 @@ import (
 
 // GlobalState global
 type GlobalState struct {
-	AppVersion  string
-	StartTime   string
-	DebugMode   bool
-	cwd         string  // dynamic: can change via cd-like operations
-	projectRoot string  // stable: set once at startup, used for project identity
+	AppVersion      string
+	StartTime       string
+	DebugMode       bool
+	cwd             string // dynamic: can change via cd-like operations
+	projectRoot     string // stable: set once at startup, used for project identity
+	sessionID       string
+	parentSessionID string
 
 	RuntimeConfig map[string]interface{}
-
 
 	// NOTE: copy from Claudecode Uncomment when using a field
 	// originalCwd: string
@@ -148,4 +149,33 @@ func SetRuntimeConfig(key string, value interface{}) {
 	mu.Lock()
 	defer mu.Unlock()
 	Global.RuntimeConfig[key] = value
+}
+
+func (s *GlobalState) SetCurrentCWD(cwd string) {
+	s.cwd = cwd
+}
+
+func (s *GlobalState) CurrentCWD() string {
+	return s.cwd
+}
+
+func (s *GlobalState) SetProjectRoot(root string) {
+	s.projectRoot = root
+}
+
+func (s *GlobalState) ProjectRoot() string {
+	return s.projectRoot
+}
+
+func (s *GlobalState) SetSessionSeed(sessionID string, parentSessionID string) {
+	s.sessionID = sessionID
+	s.parentSessionID = parentSessionID
+}
+
+func (s *GlobalState) SessionID() string {
+	return s.sessionID
+}
+
+func (s *GlobalState) ParentSessionID() string {
+	return s.parentSessionID
 }

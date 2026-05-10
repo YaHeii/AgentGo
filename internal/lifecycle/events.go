@@ -1,0 +1,5 @@
+
+
+type Event interface{
+	Type{}
+}

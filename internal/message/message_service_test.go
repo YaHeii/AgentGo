@@ -249,6 +249,30 @@ func TestMessageServiceUpdateCancelledPublishesCancelledEvent(t *testing.T) {
 	require.Equal(t, "assistant-1", event.(MessageCancelledEvent).Message.ID)
 }
 
+func TestMessageServiceUpdateMessageUsesProvidedSessionIDWhenMessageLacksOne(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	svc := NewMessageService(st)
+
+	msg, err := svc.CreateMessage(context.Background(), "session-1", CreateMessageParams{
+		Kind:  KindUser,
+		Parts: []Part{{Type: PartTypeText, Text: "hello"}},
+	})
+	require.NoError(t, err)
+	msg.SessionID = ""
+
+	err = svc.UpdateMessage(context.Background(), "session-1", msg)
+	require.NoError(t, err)
+
+	event := <-svc.Events()
+	require.IsType(t, MessageCreatedEvent{}, event)
+
+	event = <-svc.Events()
+	require.IsType(t, MessageCompletedEvent{}, event)
+	require.Equal(t, "session-1", event.(MessageCompletedEvent).Message.SessionID)
+}
+
 type fakeStore struct {
 	messagesBySession map[string][]store.Message
 	createdMessages   []store.Message

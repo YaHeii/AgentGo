@@ -25,9 +25,9 @@ type QueryConfig struct {
 
 // QueryDeps groups the concrete collaborators required by the query runner.
 type QueryDeps struct {
-	Messages MessagePort
-	LLM      provider.StreamingLLM
-	Now      func() time.Time
+	Conversation ConversationPort
+	LLM          provider.StreamingLLM
+	Now          func() time.Time
 }
 
 // QueryResult is the terminal snapshot returned when a query finishes successfully.
