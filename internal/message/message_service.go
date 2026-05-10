@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/bus"
+	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/store"
 )
 
@@ -14,28 +14,21 @@ var errTODO = errors.New("TODO: not implemented")
 
 type MessageService struct {
 	messageStore messageStore
-	bus          bus.Bus[Event]
-	events       <-chan Event
+	dispatcher   app.Dispatcher
 }
 
-func NewMessageService(st messageStore) *MessageService {
-	b := bus.NewBus[Event](128)
-
+func NewMessageService(st messageStore, d app.Dispatcher) *MessageService {
 	return &MessageService{
 		messageStore: st,
-		bus:          b,
-		events:       b.Subscribe(context.Background()),
+		dispatcher:   d,
 	}
 }
 
 // TODO:Can the sessionID be passed into the ctx file? Is the ctx reset when the agent creates a single session?
-func (s *MessageService) Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
+func (s *MessageService) CreateMessage(ctx context.Context, sessionID string, params CreateMessageParams, d app.Dispatcher) (Message, error) {
 	now := time.Now().UTC()
 	if len(params.Parts) == 0 {
 		params.Parts = []Part{{Type: PartTypeText}}
-	}
-	if params.Status == "" {
-		params.Status = StatusComplete
 	}
 	if params.FinishedAt.IsZero() {
 		params.FinishedAt = now
@@ -45,7 +38,6 @@ func (s *MessageService) Create(ctx context.Context, sessionID string, params Cr
 		ID:        params.ID,
 		SessionID: sessionID,
 		Kind:      params.Kind,
-		Status:    params.Status,
 		CreatedAt: now,
 		UpdatedAt: now,
 		Flags:     params.Flags,
@@ -82,38 +74,21 @@ func (s *MessageService) Create(ctx context.Context, sessionID string, params Cr
 	if err != nil {
 		return Message{}, err
 	}
-	msg.Status = params.Status
 	msg.CreatedAt = params.FinishedAt
 	msg.UpdatedAt = params.FinishedAt
 
-	s.publish(MessageCreatedEvent{Message: msg})
+	d.Dispatch(app.BaseEvent{
+		T: "message",
+		Payload: MessageEvent{
+			Status:  StatusPending,
+			Message: &msg,
+		},
+	})
 
 	return msg, nil
 }
 
-func (s *MessageService) Update(ctx context.Context, message Message) error {
-	switch message.Status {
-	case StatusStreaming:
-		s.publish(MessageDeltaEvent{
-			Message: message,
-			Delta:   textContent(message.Parts),
-		})
-	case StatusFailed:
-		s.publish(MessageFailedEvent{Message: message})
-	case StatusCancelled:
-		s.publish(MessageCancelledEvent{Message: message})
-	default:
-		s.publish(MessageCompletedEvent{Message: message})
-	}
-
-	return nil
-}
-
-func (s *MessageService) Get(_ context.Context, _ string) (Message, error) {
-	return Message{}, errTODO
-}
-
-func (s *MessageService) List(ctx context.Context, sessionID string) ([]Message, error) {
+func (s *MessageService) ListMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]Message, error) {
 	rows, err := s.messageStore.ListMessages(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -131,50 +106,6 @@ func (s *MessageService) List(ctx context.Context, sessionID string) ([]Message,
 	return messages, nil
 }
 
-func (s *MessageService) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	return s.List(ctx, sessionID)
-}
-
-func (s *MessageService) CreateMessage(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
-	return s.Create(ctx, sessionID, params)
-}
-
-func (s *MessageService) UpdateMessage(ctx context.Context, sessionID string, msg Message) error {
-	if msg.SessionID == "" {
-		msg.SessionID = sessionID
-	}
-
-	return s.Update(ctx, msg)
-}
-
-func (s *MessageService) ListUserMessages(_ context.Context, _ string) ([]Message, error) {
-	return nil, errTODO
-}
-
-func (s *MessageService) ListAllUserMessages(_ context.Context) ([]Message, error) {
-	return nil, errTODO
-}
-
-func (s *MessageService) Delete(_ context.Context, _ string) error {
-	return errTODO
-}
-
-func (s *MessageService) DeleteSessionMessages(_ context.Context, _ string) error {
-	return errTODO
-}
-
-func (s *MessageService) Events() <-chan Event {
-	return s.events
-}
-
-func (s *MessageService) publish(evt Event) {
-	if s.bus == nil {
-		return
-	}
-
-	s.bus.Publish(evt)
-}
-
 // NOTE:necessary, because Some fields in the business layer message
 // need to be converted to JSON and stored in the store layer.
 func toMessage(msg store.Message) (Message, error) {
@@ -187,7 +118,6 @@ func toMessage(msg store.Message) (Message, error) {
 		ID:        msg.ID,
 		SessionID: msg.SessionID,
 		Kind:      Kind(msg.Kind),
-		Status:    StatusComplete,
 		CreatedAt: msg.FinishedAt,
 		UpdatedAt: msg.FinishedAt,
 		Flags:     payload.Flags,
@@ -270,4 +200,24 @@ func unmarshalMessageJSON(data string) (persistedMessage, error) {
 	}
 
 	return payload, nil
+}
+
+func (s *MessageService) ListUserMessages(_ context.Context, _ string) ([]Message, error) {
+	return nil, errTODO
+}
+
+func (s *MessageService) ListAllUserMessages(_ context.Context) ([]Message, error) {
+	return nil, errTODO
+}
+
+func (s *MessageService) Delete(_ context.Context, _ string) error {
+	return errTODO
+}
+
+func (s *MessageService) DeleteSessionMessages(_ context.Context, _ string) error {
+	return errTODO
+}
+
+func (s *MessageService) Get(_ context.Context, _ string) (Message, error) {
+	return Message{}, errTODO
 }

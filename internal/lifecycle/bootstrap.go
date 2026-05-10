@@ -7,25 +7,28 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/bus"
 	"github.com/YaHeii/agentGo/internal/db"
 	"github.com/YaHeii/agentGo/internal/message"
 	provideropenai "github.com/YaHeii/agentGo/internal/provider/openai"
 	"github.com/YaHeii/agentGo/internal/session"
-	"github.com/YaHeii/agentGo/internal/utils"
+	"github.com/segmentio/ksuid"
+	"github.com/spf13/viper"
+)
+
+var (
+	State *GlobalState
 )
 
 type Runtime struct {
-	App *app.APPService
-	Bus bus.Bus[app.Event]
-
+	App     *app.APPService
 	closeFn func(context.Context) error
 }
 
-func ProviderConfigFromAppConfig(cfg utils.Config) (provideropenai.Config, error) {
+func ProviderConfigFromAppConfig(cfg Config) (provideropenai.Config, error) {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return provideropenai.Config{}, errors.New("API_KEY is required")
 	}
@@ -40,22 +43,20 @@ func ProviderConfigFromAppConfig(cfg utils.Config) (provideropenai.Config, error
 	}, nil
 }
 func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runtime, error) {
-	cfg, err := utils.LoadConfig(configDir)
+	cfg, err := LoadConfig(configDir)
 	if err != nil {
 		return Runtime{}, fmt.Errorf("load config: %w", err)
 	}
-
 	providerCfg, err := ProviderConfigFromAppConfig(cfg)
 	if err != nil {
 		return Runtime{}, fmt.Errorf("invalid config: %w", err)
 	}
-
-	runtimeState, err := newBootstrapState()
+	state, err := LoadState()
 	if err != nil {
 		return Runtime{}, fmt.Errorf("init lifecycle state: %w", err)
 	}
-	Global = runtimeState
-
+	State = &state
+	dispatcher := app.NewDispatcher(128)
 	// TODO: Detect local runtime environment and workspace prerequisites during bootstrap.
 	// TODO: Assemble tool registry during bootstrap.
 	// TODO: Assemble MCP clients or connectors during bootstrap.
@@ -71,62 +72,80 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 		return Runtime{}, fmt.Errorf("open store: %w", err)
 	}
 
-	appBus := bus.NewBus[app.Event](128)
-	messageSvc := message.NewMessageService(st)
-	sessionSvc := session.NewSessionService(st, messageSvc, nil)
-	agentSvc := agent.NewQueryLoop(sessionSvc, llm)
+	messageSvc := message.NewMessageService(st, dispatcher)
+	sessionSvc := session.NewSessionService(st, messageSvc, dispatcher)
+	agentSvc := agent.NewQueryLoop(sessionSvc, llm, dispatcher)
 
-	go func() {
-		for evt := range sessionSvc.Events() {
-			appBus.Publish(evt)
-		}
-	}()
-	go func() {
-		for evt := range messageSvc.Events() {
-			appBus.Publish(evt)
-		}
-	}()
-	go func() {
-		for evt := range agentSvc.Events() {
-			appBus.Publish(evt)
-		}
-	}()
-
+	dispatcher.Dispatch(app.BaseEvent{
+		T: "lifecycle",
+		Payload: BootstrapDoneEvent{
+			time:      state.StartTime,
+			sessionID: state.SessionID,
+		},
+	})
 	return Runtime{
-		App: app.NewService(app.Dependencies{
-			Sessions: sessionSvc,
-			Agent:    agentSvc,
-			Bus:      appBus,
-		}),
-		Bus: appBus,
+		App: app.NewService(
+			sessionSvc,
+			agentSvc,
+			dispatcher,
+		),
 		closeFn: func(context.Context) error {
 			return st.Close()
 		},
 	}, nil
 }
 
-func newBootstrapState() (*GlobalState, error) {
+type Config struct {
+	Environment string `mapstructure:"ENVIRONMENT"`
+	BaseURL     string `mapstructure:"BASE_URL"`
+	APIKey      string `mapstructure:"API_KEY"`
+	Model       string `mapstructure:"MODEL"`
+}
+
+// LoadConfig reads configuration from file or environment variables.
+func LoadConfig(path string) (config Config, err error) {
+	v := viper.New()
+	v.AddConfigPath(path)
+	v.SetConfigName("app")
+	v.SetConfigType("env")
+
+	v.AutomaticEnv()
+
+	err = v.ReadInConfig()
+	if err != nil {
+		return
+	}
+
+	err = v.Unmarshal(&config)
+	return
+}
+
+// XXX: Optimize error handling
+// XXX: Enriched fields
+func LoadState() (state GlobalState, err error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, err
+		return GlobalState{}, err
 	}
 
 	projectRoot, err := filepath.Abs(cwd)
 	if err != nil {
-		return nil, err
+		return GlobalState{}, err
 	}
 
-	state := &GlobalState{
-		RuntimeConfig: map[string]interface{}{},
+	startTime := time.Now().UTC()
+	sessionID, err := ksuid.NewRandomWithTime(startTime) //Ksuid uses time information for easy sorting.
+	if err != nil {
+		return GlobalState{}, fmt.Errorf("generate session id: %w", err)
 	}
-	state.SetCurrentCWD(cwd)
-	state.SetProjectRoot(projectRoot)
-	state.SetSessionSeed("", "")
+
+	state = GlobalState{
+		AppVersion:  "0.0.1",
+		StartTime:   startTime.Format(time.RFC3339Nano),
+		Cwd:         cwd,
+		ProjectRoot: projectRoot,
+		SessionID:   sessionID.String(),
+	}
 
 	return state, nil
 }
-
-// TODO: Detect local runtime environment and workspace prerequisites during bootstrap.
-// TODO: Assemble tool registry during bootstrap.
-// TODO: Assemble MCP clients or connectors during bootstrap.
-// TODO: Assemble skill registry or skill loader during bootstrap.

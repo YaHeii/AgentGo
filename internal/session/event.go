@@ -1,53 +1,39 @@
 package session
 
 import (
-	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
+	"fmt"
+
 	"github.com/YaHeii/agentGo/internal/store"
 )
 
-type Event interface {
-	app.Event
-	isSessionEvent()
+type SessionStatus int
+
+const (
+	StatusCreated  SessionStatus = iota // 0
+	StatusUpdated                       // 1
+	StatusDeleted                       // 2
+	StatusSwitched                      // 3
+	StatusRestored                      // 4
+)
+
+func (s SessionStatus) String() string {
+	switch s {
+	case StatusCreated:
+		return "CREATED"
+	case StatusUpdated:
+		return "UPDATED"
+	case StatusDeleted:
+		return "DELETED"
+	case StatusSwitched:
+		return "SWITCHED"
+	case StatusRestored:
+		return "RESTORED"
+	default:
+		return fmt.Sprintf("UNKNOWN_STATUS(%d)", s)
+	}
 }
 
-type SessionCreatedEvent struct {
-	Session store.Session
+type SessionEvent struct {
+	Status  SessionStatus 
+	Session *store.Session 
 }
-
-func (SessionCreatedEvent) isSessionEvent() {}
-
-func (SessionCreatedEvent) Type() app.EventType { return app.EventTypeSession }
-
-type SessionUpdatedEvent struct {
-	Session store.Session
-}
-
-func (SessionUpdatedEvent) isSessionEvent() {}
-
-func (SessionUpdatedEvent) Type() app.EventType { return app.EventTypeSession }
-
-type SessionDeletedEvent struct {
-	SessionID string
-}
-
-func (SessionDeletedEvent) isSessionEvent() {}
-
-func (SessionDeletedEvent) Type() app.EventType { return app.EventTypeSession }
-
-type SessionSwitchedEvent struct {
-	SessionID string
-}
-
-func (SessionSwitchedEvent) isSessionEvent() {}
-
-func (SessionSwitchedEvent) Type() app.EventType { return app.EventTypeSession }
-
-type SessionRestoredEvent struct {
-	Session  store.Session
-	Messages []message.Message
-}
-
-func (SessionRestoredEvent) isSessionEvent() {}
-
-func (SessionRestoredEvent) Type() app.EventType { return app.EventTypeSession }

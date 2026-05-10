@@ -2,7 +2,10 @@ module github.com/YaHeii/agentGo
 
 go 1.25.9
 
-require charm.land/bubbletea/v2 v2.0.6
+require (
+	charm.land/bubbletea/v2 v2.0.6
+	github.com/segmentio/ksuid v1.0.4
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect

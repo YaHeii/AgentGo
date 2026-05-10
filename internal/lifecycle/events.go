@@ -1,5 +1,6 @@
+package lifecycle
 
-
-type Event interface{
-	Type{}
+type BootstrapDoneEvent struct {
+	time      string
+	sessionID string
 }

@@ -4,64 +4,47 @@ import (
 	"context"
 	"errors"
 
-	"github.com/YaHeii/agentGo/internal/bus"
 	"github.com/YaHeii/agentGo/internal/store"
 )
 
-type Dependencies struct {
-	Sessions sessionStore
-	Agent    agentStore
-	Bus      bus.Bus[Event]
-}
-
 type APPService struct {
-	sessions sessionStore
-	agent    agentStore
-	bus      bus.Bus[Event]
-	events   <-chan Event
+	sessions   sessionStore
+	agent      agentStore
+	dispatcher Dispatcher
 }
 
-func NewService(deps Dependencies) *APPService {
-	eventBus := deps.Bus
-	if eventBus == nil {
-		eventBus = bus.NewBus[Event](128)
-	}
+func NewService(sessions sessionStore, agent agentStore, dispatcher Dispatcher) *APPService {
 
 	return &APPService{
-		sessions: deps.Sessions,
-		agent:    deps.Agent,
-		bus:      eventBus,
-		events:   eventBus.Subscribe(context.Background()),
+		sessions: sessions,
+		agent:    agent,
+		dispatcher: dispatcher,
 	}
-}
-
-func (s *APPService) Events() <-chan Event {
-	return s.events
 }
 
 func (s *APPService) EnsureActiveSession(ctx context.Context) error {
-	current, err := s.sessions.GetLast(ctx)
+	sessionID, err := s.sessions.GetLast(ctx)
 	if err != nil {
 		if !errors.Is(err, store.ErrSessionNotFound) {
 			return err
 		}
-
-		current, err = s.sessions.Create(ctx, "New Session")
+		//TODO: title should from AI
+		sessionID, err = s.sessions.Create(ctx, "New Session",s.dispatcher)
 		if err != nil {
 			return err
 		}
 	}
 
-	return s.sessions.Restore(ctx, current.ID)
+	return s.sessions.Restore(ctx, sessionID, s.dispatcher)
 }
 
-func (s *APPService) CreateSession(ctx context.Context, title string) error {
-	_, err := s.sessions.Create(ctx, title)
-	return err
+func (s *APPService) CreateSession(ctx context.Context, title string) (string, error) {
+	sessionID, err := s.sessions.Create(ctx, title, s.dispatcher)
+	return sessionID, err
 }
 
 func (s *APPService) DeleteSession(ctx context.Context, sessionID string) error {
-	return s.sessions.Delete(ctx, sessionID)
+	return s.sessions.Delete(ctx, sessionID, s.dispatcher)
 }
 
 func (s *APPService) SendMessage(ctx context.Context, sessionID string, prompt string) error {

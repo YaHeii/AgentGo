@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"context"
 	"time"
 
+	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 )
@@ -25,9 +27,10 @@ type QueryConfig struct {
 
 // QueryDeps groups the concrete collaborators required by the query runner.
 type QueryDeps struct {
-	Conversation ConversationPort
+	Conversation sessionStore
 	LLM          provider.StreamingLLM
 	Now          func() time.Time
+	dispatcher   app.Dispatcher
 }
 
 // QueryResult is the terminal snapshot returned when a query finishes successfully.
@@ -53,3 +56,9 @@ const (
 type autoCompactTracking struct{}
 
 type pendingToolUseSummary struct{}
+
+type sessionStore interface {
+	ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error)
+	CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error)
+	// UpdateMessage(ctx context.Context, sessionID string, msg message.Message) error
+}

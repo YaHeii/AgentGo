@@ -6,31 +6,20 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/bus"
+	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 )
 
-type ConversationPort interface {
-	ListHistory(ctx context.Context, sessionID string) ([]message.Message, error)
-	CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error)
-	UpdateMessage(ctx context.Context, sessionID string, msg message.Message) error
-}
-
 type QueryLoop struct {
 	config QueryConfig
 	deps   QueryDeps
-	bus    bus.Bus[Event]
-	events <-chan Event
 }
 
-func NewQueryLoop(conversation ConversationPort, llm provider.StreamingLLM) *QueryLoop {
-	b := bus.NewBus[Event](32)
+func NewQueryLoop(conversation sessionStore, llm provider.StreamingLLM, d app.Dispatcher) *QueryLoop {
 	return &QueryLoop{
 		config: defaultQueryConfig(),
-		deps:   defaultQueryDeps(conversation, llm),
-		bus:    b,
-		events: b.Subscribe(context.Background()),
+		deps:   defaultQueryDeps(conversation, llm, d),
 	}
 }
 
@@ -42,9 +31,8 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 	state := newLoopState(params).withTransition("state_initialized")
 
 	userMessage, err := r.deps.Conversation.CreateMessage(ctx, params.SessionID, message.CreateMessageParams{
-		Kind:   message.KindUser,
-		Status: message.StatusComplete,
-		Parts:  cloneInputParts(params.InputParts),
+		Kind:  message.KindUser,
+		Parts: cloneInputParts(params.InputParts),
 	})
 	if err != nil {
 		return QueryResult{}, err
@@ -86,11 +74,13 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 			if outcome.stopReason == provider.StopReasonLength && turn < r.config.MaxTurns {
 				continue
 			}
-
-			r.publish(QueryCompletedEvent{
-				SessionID:          params.SessionID,
-				UserMessageID:      userMessage.ID,
-				AssistantMessageID: outcome.assistantMessage.ID,
+			r.deps.dispatcher.Dispatch(app.BaseEvent{
+				T: "agent",
+				Payload: QueryCompletedEvent{
+					SessionID:          params.SessionID,
+					UserMessageID:      userMessage.ID,
+					AssistantMessageID: outcome.assistantMessage.ID,
+				},
 			})
 
 			return QueryResult{
@@ -125,18 +115,6 @@ func (r *QueryLoop) RunPrompt(ctx context.Context, sessionID string, prompt stri
 		},
 	})
 	return err
-}
-
-func (r *QueryLoop) Events() <-chan Event {
-	return r.events
-}
-
-func (r *QueryLoop) publish(event Event) {
-	if r.bus == nil {
-		return
-	}
-
-	r.bus.Publish(event)
 }
 
 func toProviderMessages(messages []message.Message, skipID string) []provider.Message {
@@ -393,7 +371,6 @@ func newAssistantStreamMessage(sessionID string, turn int, now time.Time) messag
 		ID:        fmt.Sprintf("assistant-turn-%d-%d", turn, now.UnixNano()),
 		SessionID: sessionID,
 		Kind:      message.KindAssistant,
-		Status:    message.StatusStreaming,
 		CreatedAt: now,
 		UpdatedAt: now,
 		Parts: []message.Part{

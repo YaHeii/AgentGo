@@ -1,7 +1,7 @@
 package store
 
 import "context"
-
+// XXX: maybe toDELETE
 type TxStore interface {
 	CreateSession(ctx context.Context, params CreateSessionParams) (Session, error)
 	ListSessions(ctx context.Context) ([]Session, error)

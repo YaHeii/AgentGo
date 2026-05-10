@@ -14,7 +14,6 @@ type Message struct {
 	SessionID string
 
 	Kind      Kind
-	Status    Status
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
@@ -34,16 +33,6 @@ const (
 	KindSystem     Kind = "system"
 	KindProgress   Kind = "progress"
 	KindAttachment Kind = "attachment"
-)
-
-// Task status
-type Status string
-
-const (
-	StatusComplete  Status = "complete"
-	StatusStreaming Status = "streaming"
-	StatusCancelled Status = "cancelled"
-	StatusFailed    Status = "failed"
 )
 
 type Flags struct {
@@ -137,7 +126,6 @@ type SummaryPart struct {
 type CreateMessageParams struct {
 	ID               string
 	Kind             Kind
-	Status           Status
 	Provider         string
 	FinishedAt       time.Time
 	IsCompactSummary bool

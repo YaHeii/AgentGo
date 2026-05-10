@@ -1,20 +1,14 @@
 package lifecycle
 
-import (
-	"sync"
-)
-
 // GlobalState global
 type GlobalState struct {
-	AppVersion      string
-	StartTime       string
-	DebugMode       bool
-	cwd             string // dynamic: can change via cd-like operations
-	projectRoot     string // stable: set once at startup, used for project identity
-	sessionID       string
-	parentSessionID string
+	AppVersion      string // 0.0.1
+	StartTime       string // runtime start
+	DebugMode       bool 	 // The default value is false.
+	Cwd             string // dynamic: can change via cd-like operations
+	ProjectRoot     string // stable: set once at startup, used for project identity
+	SessionID       string // Changes made by restarting the program or by the user explicitly opening a new session.
 
-	RuntimeConfig map[string]interface{}
 
 	// NOTE: copy from Claudecode Uncomment when using a field
 	// originalCwd: string
@@ -138,44 +132,3 @@ type GlobalState struct {
 
 }
 
-var (
-	Global *GlobalState
-
-	mu sync.RWMutex
-)
-
-// Concurrent modification method
-func SetRuntimeConfig(key string, value interface{}) {
-	mu.Lock()
-	defer mu.Unlock()
-	Global.RuntimeConfig[key] = value
-}
-
-func (s *GlobalState) SetCurrentCWD(cwd string) {
-	s.cwd = cwd
-}
-
-func (s *GlobalState) CurrentCWD() string {
-	return s.cwd
-}
-
-func (s *GlobalState) SetProjectRoot(root string) {
-	s.projectRoot = root
-}
-
-func (s *GlobalState) ProjectRoot() string {
-	return s.projectRoot
-}
-
-func (s *GlobalState) SetSessionSeed(sessionID string, parentSessionID string) {
-	s.sessionID = sessionID
-	s.parentSessionID = parentSessionID
-}
-
-func (s *GlobalState) SessionID() string {
-	return s.sessionID
-}
-
-func (s *GlobalState) ParentSessionID() string {
-	return s.parentSessionID
-}

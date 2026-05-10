@@ -3,6 +3,7 @@ package agent
 import (
 	"time"
 
+	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 )
@@ -30,7 +31,6 @@ func newLoopState(params QueryParams) loopState {
 			{
 				SessionID: params.SessionID,
 				Kind:      message.KindUser,
-				Status:    message.StatusComplete,
 				Parts:     append([]message.Part(nil), params.InputParts...),
 			},
 		},
@@ -38,6 +38,7 @@ func newLoopState(params QueryParams) loopState {
 	}
 }
 
+// TODO: Maybe these func should be delete
 func (s loopState) withTransition(reason string) loopState {
 	next := s
 	next.transition = reason
@@ -80,7 +81,7 @@ func defaultQueryConfig() QueryConfig {
 	}
 }
 
-func defaultQueryDeps(conversation ConversationPort, llm provider.StreamingLLM) QueryDeps {
+func defaultQueryDeps(conversation sessionStore, llm provider.StreamingLLM, d app.Dispatcher) QueryDeps {
 	return QueryDeps{
 		Conversation: conversation,
 		LLM:          llm,

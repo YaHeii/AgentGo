@@ -5,9 +5,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/bus"
+	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/store"
+	"github.com/segmentio/ksuid"
 )
 
 var ErrSessionNotFound = store.ErrSessionNotFound
@@ -15,8 +16,7 @@ var ErrSessionNotFound = store.ErrSessionNotFound
 type SessionService struct {
 	sessionStore    sessionStore
 	messageStore    messageStore
-	bus             bus.Bus[Event]
-	events          <-chan Event
+	dispatcher      app.Dispatcher
 	nowFunc         func() time.Time
 	activeSessionID string
 	parentSessionID string
@@ -26,39 +26,43 @@ type RestoreResult struct {
 	Messages []message.Message
 }
 
-func NewSessionService(st sessionStore, msgs messageStore, nowFunc func() time.Time) *SessionService {
-	if nowFunc == nil {
-		nowFunc = time.Now
-	}
+func NewSessionService(st sessionStore, msgs messageStore, d app.Dispatcher) *SessionService {
 
-	b := bus.NewBus[Event](64)
 	return &SessionService{
 		sessionStore:    st,
 		messageStore:    msgs,
-		bus:             b,
-		events:          b.Subscribe(context.Background()),
-		nowFunc:         nowFunc,
+		dispatcher:      d,
+		nowFunc:         time.Now,
 		activeSessionID: "",
 		parentSessionID: "",
 	}
 }
 
-func (s *SessionService) Create(ctx context.Context, title string) (store.Session, error) {
+func (s *SessionService) Create(ctx context.Context, title string, d app.Dispatcher) (string ,error) {
 	now := s.nowFunc().UTC()
-
+	sessionID, err := ksuid.NewRandomWithTime(now)
+	if err != nil {
+		return "", err
+	}
 	row, err := s.sessionStore.CreateSession(ctx, store.CreateSessionParams{
-		ID:        "session-" + now.Format(time.RFC3339Nano),
+		ID:        sessionID.String(),
 		Title:     title,
 		TodosJSON: "[]",
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
 	if err != nil {
-		return store.Session{}, err
+		return "", err
 	}
 
-	s.publish(SessionCreatedEvent{Session: row})
-	return row, nil
+	d.Dispatch(app.BaseEvent{
+		T: "session",
+		Payload: SessionEvent{
+			Status:  StatusCreated,
+			Session: &row,
+		},
+	})
+	return row.ID, nil
 }
 
 func (s *SessionService) Get(ctx context.Context, id string) (store.Session, error) {
@@ -70,16 +74,16 @@ func (s *SessionService) Get(ctx context.Context, id string) (store.Session, err
 	return row, nil
 }
 
-func (s *SessionService) GetLast(ctx context.Context) (store.Session, error) {
+func (s *SessionService) GetLast(ctx context.Context) (string, error) {
 	rows, err := s.sessionStore.ListSessions(ctx)
 	if err != nil {
-		return store.Session{}, err
+		return "", err
 	}
 	if len(rows) == 0 {
-		return store.Session{}, ErrSessionNotFound
+		return "", ErrSessionNotFound
 	}
 
-	return rows[0], nil
+	return rows[0].ID, nil
 }
 
 func (s *SessionService) List(ctx context.Context) ([]store.Session, error) {
@@ -91,7 +95,7 @@ func (s *SessionService) List(ctx context.Context) ([]store.Session, error) {
 	return rows, nil
 }
 
-func (s *SessionService) Rename(ctx context.Context, id string, title string) (store.Session, error) {
+func (s *SessionService) Rename(ctx context.Context, id string, title string, d app.Dispatcher) (store.Session, error) {
 	current, err := s.sessionStore.GetSession(ctx, id)
 	if err != nil {
 		return store.Session{}, mapError(err)
@@ -112,39 +116,32 @@ func (s *SessionService) Rename(ctx context.Context, id string, title string) (s
 	if err != nil {
 		return store.Session{}, mapError(err)
 	}
-
-	s.publish(SessionUpdatedEvent{Session: row})
+	d.Dispatch(app.BaseEvent{
+		T: "session",
+		Payload: SessionEvent{
+			Status:  StatusUpdated,
+			Session: &row,
+		},
+	})
 	return row, nil
 }
 
-func (s *SessionService) Delete(ctx context.Context, id string) error {
+func (s *SessionService) Delete(ctx context.Context, id string, d app.Dispatcher) error {
 	if err := s.sessionStore.DeleteSession(ctx, id); err != nil {
 		return mapError(err)
 	}
 
-	s.publish(SessionDeletedEvent{SessionID: id})
+	d.Dispatch(app.BaseEvent{
+		T: "session",
+		Payload: SessionEvent{
+			Status:  StatusUpdated,
+			Session: nil,
+		},
+	})
 	return nil
 }
 
-func (s *SessionService) Events() <-chan Event {
-	return s.events
-}
-
-func (s *SessionService) GetSessionID() string {
-	return s.activeSessionID
-}
-
-func (s *SessionService) RegenerateSessionID() string {
-	now := s.nowFunc().UTC()
-	s.activeSessionID = "session-" + now.Format(time.RFC3339Nano)
-	return s.activeSessionID
-}
-
-func (s *SessionService) GetParentSessionID() string {
-	return s.parentSessionID
-}
-
-func (s *SessionService) SwitchSession(ctx context.Context, sessionID string) error {
+func (s *SessionService) SwitchSession(ctx context.Context, sessionID string, d app.Dispatcher) error {
 	sessionRow, err := s.sessionStore.GetSession(ctx, sessionID)
 	if err != nil {
 		return mapError(err)
@@ -152,38 +149,44 @@ func (s *SessionService) SwitchSession(ctx context.Context, sessionID string) er
 
 	s.activeSessionID = sessionID
 	s.parentSessionID = sessionRow.ParentSessionID
-	s.publish(SessionSwitchedEvent{SessionID: sessionID})
+	d.Dispatch(app.BaseEvent{
+		T: "session",
+		Payload: SessionEvent{
+			Status:  StatusUpdated,
+			Session: &sessionRow,
+		},
+	})
 	return nil
 }
 
-func (s *SessionService) CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
-	return s.messageStore.CreateMessage(ctx, sessionID, params)
+func (s *SessionService) GetSessionID() string {
+	return s.activeSessionID
 }
 
-func (s *SessionService) ListHistory(ctx context.Context, sessionID string) ([]message.Message, error) {
-	return s.listMessages(ctx, sessionID)
+func (s *SessionService) GetParentSessionID() string {
+	return s.parentSessionID
 }
 
-func (s *SessionService) UpdateMessage(ctx context.Context, sessionID string, msg message.Message) error {
-	return s.messageStore.UpdateMessage(ctx, sessionID, msg)
+func (s *SessionService) CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error) {
+	return s.messageStore.CreateMessage(ctx, sessionID, params, d)
 }
 
-func (s *SessionService) RestoreSession(ctx context.Context, sessionID string) (RestoreResult, error) {
-	return s.restoreSession(ctx, sessionID)
+func (s *SessionService) ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error) {
+	return s.listMessages(ctx, sessionID, d)
 }
 
-func (s *SessionService) Restore(ctx context.Context, sessionID string) error {
-	_, err := s.restoreSession(ctx, sessionID)
+func (s *SessionService) Restore(ctx context.Context, sessionID string, d app.Dispatcher) error {
+	_, err := s.restoreSession(ctx, sessionID, d)
 	return err
 }
 
-func (s *SessionService) restoreSession(ctx context.Context, sessionID string) (RestoreResult, error) {
+func (s *SessionService) restoreSession(ctx context.Context, sessionID string, d app.Dispatcher) (RestoreResult, error) {
 	sessionRow, err := s.sessionStore.GetSession(ctx, sessionID)
 	if err != nil {
 		return RestoreResult{}, mapError(err)
 	}
 
-	msgs, err := s.listMessages(ctx, sessionID)
+	msgs, err := s.listMessages(ctx, sessionID, d)
 	if err != nil {
 		return RestoreResult{}, err
 	}
@@ -194,24 +197,19 @@ func (s *SessionService) restoreSession(ctx context.Context, sessionID string) (
 	}
 	s.activeSessionID = sessionID
 	s.parentSessionID = sessionRow.ParentSessionID
-	s.publish(SessionRestoredEvent{
-		Session:  sessionRow,
-		Messages: msgs,
-	})
 
+	d.Dispatch(app.BaseEvent{
+		T: "session",
+		Payload: SessionEvent{
+			Status:  StatusRestored,
+			Session: &sessionRow,
+		},
+	})
 	return result, nil
 }
 
-func (s *SessionService) listMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	return s.messageStore.ListMessages(ctx, sessionID)
-}
-
-func (s *SessionService) publish(event Event) {
-	if s.bus == nil {
-		return
-	}
-
-	s.bus.Publish(event)
+func (s *SessionService) listMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error) {
+	return s.messageStore.ListMessages(ctx, sessionID, d)
 }
 
 func mapError(err error) error {
