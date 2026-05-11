@@ -14,7 +14,7 @@ import (
 func TestNewQueryLoopReturnsRunner(t *testing.T) {
 	t.Parallel()
 
-	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubStreamingLLM{}, app.NewDispatcher(16))
+	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubProvider{}, app.NewDispatcher(16))
 	require.NotNil(t, runner)
 }
 
@@ -22,14 +22,14 @@ func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
 	t.Parallel()
 
 	store := &stubSessionConversationPort{}
-	llm := &stubStreamingLLM{}
+	providerSvc := &stubProvider{}
 	dispatcher := app.NewDispatcher(16)
 
-	runner := NewQueryLoop(store, llm, dispatcher)
+	runner := NewQueryLoop(store, providerSvc, dispatcher)
 
 	require.Equal(t, 1, runner.config.MaxTurns)
 	require.Same(t, store, runner.deps.Conversation)
-	require.Same(t, llm, runner.deps.LLM)
+	require.Same(t, providerSvc, runner.deps.Provider)
 	require.Same(t, dispatcher, runner.deps.dispatcher)
 }
 
@@ -40,10 +40,10 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	events := dispatcher.Subscribe(context.Background())
 
 	originalStore := &stubSessionConversationPort{}
-	originalLLM := &stubStreamingLLM{}
+	originalProvider := &stubProvider{}
 
 	depsStore := &stubSessionConversationPort{}
-	depsLLM := &stubStreamingLLM{
+	depsProvider := &stubProvider{
 		events: [][]provider.StreamEvent{
 			{
 				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonStop},
@@ -51,9 +51,9 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(originalStore, originalLLM, dispatcher)
+	runner := NewQueryLoop(originalStore, originalProvider, dispatcher)
 	runner.deps.Conversation = depsStore
-	runner.deps.LLM = depsLLM
+	runner.deps.Provider = depsProvider
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -67,9 +67,9 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, originalStore.created, 0)
 	require.Len(t, depsStore.created, 2)
-	require.Len(t, originalLLM.calls, 0)
-	require.Len(t, depsLLM.calls, 1)
-	require.Equal(t, "session-1", depsLLM.calls[0].SessionID)
+	require.Len(t, originalProvider.calls, 0)
+	require.Len(t, depsProvider.calls, 1)
+	require.Equal(t, "session-1", depsProvider.calls[0].SessionID)
 
 	gotStarted := <-events
 	require.Equal(t, app.EventAgent, gotStarted.Type())
@@ -81,7 +81,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
 	t.Parallel()
 
-	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubStreamingLLM{}, app.NewDispatcher(16))
+	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubProvider{}, app.NewDispatcher(16))
 	runner.config.MaxTurns = 0
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
@@ -102,7 +102,7 @@ func TestQueryLoopCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 	dispatcher := app.NewDispatcher(16)
 	events := dispatcher.Subscribe(context.Background())
 	store := &stubSessionConversationPort{}
-	llm := &stubStreamingLLM{
+	providerSvc := &stubProvider{
 		events: [][]provider.StreamEvent{
 			{
 				{Type: provider.StreamEventTextDelta, TextDelta: "hel"},
@@ -112,7 +112,7 @@ func TestQueryLoopCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm, dispatcher)
+	runner := NewQueryLoop(store, providerSvc, dispatcher)
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -130,7 +130,7 @@ func TestQueryLoopCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, store.created, 2)
 	require.Equal(t, []string{"session-1"}, store.hydratedSessionIDs)
-	require.Equal(t, "session-1", llm.calls[0].SessionID)
+	require.Equal(t, "session-1", providerSvc.calls[0].SessionID)
 	require.Equal(t, "hello", findTextPart(store.created[1].Parts))
 	require.Equal(t, store.persisted[1].ID, result.FinalAssistantMessageID)
 
@@ -156,7 +156,7 @@ func TestQueryLoopMarksAssistantFailedOnStreamError(t *testing.T) {
 	dispatcher := app.NewDispatcher(16)
 	events := dispatcher.Subscribe(context.Background())
 	store := &stubSessionConversationPort{}
-	llm := &stubStreamingLLM{
+	providerSvc := &stubProvider{
 		events: [][]provider.StreamEvent{
 			{
 				{Type: provider.StreamEventTextDelta, TextDelta: "par"},
@@ -165,7 +165,7 @@ func TestQueryLoopMarksAssistantFailedOnStreamError(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm, dispatcher)
+	runner := NewQueryLoop(store, providerSvc, dispatcher)
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -202,7 +202,7 @@ func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 
 	dispatcher := app.NewDispatcher(16)
 	store := &stubSessionConversationPort{}
-	llm := &stubStreamingLLM{
+	providerSvc := &stubProvider{
 		events: [][]provider.StreamEvent{
 			{
 				{
@@ -219,7 +219,7 @@ func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm, dispatcher)
+	runner := NewQueryLoop(store, providerSvc, dispatcher)
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -244,7 +244,7 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 	t.Parallel()
 
 	store := &stubSessionConversationPort{}
-	llm := &stubStreamingLLM{
+	providerSvc := &stubProvider{
 		events: [][]provider.StreamEvent{
 			{
 				{Type: provider.StreamEventReasoningDelta, ReasoningDelta: "thinking"},
@@ -254,7 +254,7 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm, app.NewDispatcher(16))
+	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -277,7 +277,7 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 	t.Parallel()
 
 	store := &stubSessionConversationPort{}
-	llm := &stubStreamingLLM{
+	providerSvc := &stubProvider{
 		events: [][]provider.StreamEvent{
 			{
 				{Type: provider.StreamEventTextDelta, TextDelta: "one"},
@@ -289,7 +289,7 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm, app.NewDispatcher(16))
+	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
 	runner.config.MaxTurns = 2
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
@@ -302,10 +302,10 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, llm.calls, 2)
+	require.Len(t, providerSvc.calls, 2)
 	require.Equal(t, 2, result.Turns)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
-	require.Equal(t, "session-1", llm.calls[1].SessionID)
+	require.Equal(t, "session-1", providerSvc.calls[1].SessionID)
 }
 
 func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
@@ -345,7 +345,7 @@ func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
 	t.Parallel()
 
 	store := &stubSessionConversationPort{}
-	llm := &stubStreamingLLM{
+	providerSvc := &stubProvider{
 		events: [][]provider.StreamEvent{
 			{
 				{Type: provider.StreamEventTurnFinished, StopReason: provider.StopReasonStop},
@@ -353,7 +353,7 @@ func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm, app.NewDispatcher(16))
+	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
 
 	err := runner.RunPrompt(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
@@ -383,20 +383,36 @@ func TestCopyLoopStateDeepCopiesMessages(t *testing.T) {
 				},
 			},
 		},
-		TurnCount:  2,
-		Transition: "assistant_delta_received",
+		TurnCount:          2,
+		Transition:         "assistant_delta_received",
+		AssistantMessageID: "assistant-1",
+		FinishReason:       FinishReasonAwaitingToolExecution,
+		StopReason:         provider.StopReasonToolCalls,
+		PendingToolCalls: []provider.ToolCall{
+			{
+				ID:        "call-1",
+				Name:      "search",
+				Arguments: "{\"q\":\"go\"}",
+			},
+		},
 	}
 
 	copied := copyLoopState(state)
 	copied.Messages[0].Parts[0].Text = "changed"
 	copied.Messages[0].Parts[1].Thinking.Content = "changed-plan"
+	copied.PendingToolCalls[0].Arguments = "{\"q\":\"changed\"}"
 	copied.Transition = "completed"
 
 	require.Equal(t, "hello", state.Messages[0].Parts[0].Text)
 	require.Equal(t, "plan", state.Messages[0].Parts[1].Thinking.Content)
+	require.Equal(t, "{\"q\":\"go\"}", state.PendingToolCalls[0].Arguments)
 	require.Equal(t, "assistant_delta_received", state.Transition)
+	require.Equal(t, "assistant-1", state.AssistantMessageID)
+	require.Equal(t, FinishReasonAwaitingToolExecution, state.FinishReason)
+	require.Equal(t, provider.StopReasonToolCalls, state.StopReason)
 	require.Equal(t, "changed", copied.Messages[0].Parts[0].Text)
 	require.Equal(t, "changed-plan", copied.Messages[0].Parts[1].Thinking.Content)
+	require.Equal(t, "{\"q\":\"changed\"}", copied.PendingToolCalls[0].Arguments)
 	require.Equal(t, "completed", copied.Transition)
 }
 
@@ -452,12 +468,12 @@ func (s *stubSessionConversationPort) ListHistory(_ context.Context, sessionID s
 	return copied, nil
 }
 
-type stubStreamingLLM struct {
+type stubProvider struct {
 	events [][]provider.StreamEvent
 	calls  []provider.Request
 }
 
-func (s *stubStreamingLLM) StreamChat(_ context.Context, req provider.Request) <-chan provider.StreamEvent {
+func (s *stubProvider) StreamChat(_ context.Context, req provider.Request) <-chan provider.StreamEvent {
 	s.calls = append(s.calls, cloneProviderRequest(req))
 	index := len(s.calls) - 1
 	batch := []provider.StreamEvent(nil)

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"github.com/YaHeii/agentGo/internal/message"
+	"github.com/YaHeii/agentGo/internal/provider"
 )
 
 // LoopState stores the minimal mutable state required to continue a query loop.
@@ -16,6 +17,10 @@ type LoopState struct {
 	TurnCount                    int
 	PendingToolUseSummary        *pendingToolUseSummary
 	Transition                   string // Transition records the latest control-flow transition inside the query loop.
+	AssistantMessageID           string
+	FinishReason                 FinishReason
+	StopReason                   provider.StopReason
+	PendingToolCalls             []provider.ToolCall
 
 	// TODO: Add toolUseContext once tool loop ownership is finalized.
 	// TODO: Add richer transition metadata after recovery and compact paths exist.
@@ -38,6 +43,7 @@ func newLoopState(params QueryParams) LoopState {
 // TO Deep copy loopstate
 func copyLoopState(state LoopState) LoopState {
 	copied := state
+	copied.PendingToolCalls = append([]provider.ToolCall(nil), state.PendingToolCalls...)
 	if len(state.Messages) == 0 {
 		copied.Messages = nil
 		return copied

@@ -39,7 +39,7 @@ type QueryConfig struct {
 // QueryDeps groups the concrete collaborators required by the query runner.
 type QueryDeps struct {
 	Conversation sessionStore
-	LLM          provider.StreamingLLM
+	Provider     providerStore
 	Now          func() time.Time
 	dispatcher   app.Dispatcher
 }
@@ -64,20 +64,6 @@ type sessionStore interface {
 	// UpdateMessage(ctx context.Context, sessionID string, msg message.Message) error
 }
 
-type messageStore interface {
-	ListMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error)
-	CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error)
-}
-
 type providerStore interface {
-	StopReason() string
-}
-
-// TODO: Todelete
-type turnOutcome struct {
-	assistantMessage message.Message
-	persistedMessage message.Message
-	finishReason     FinishReason
-	stopReason       provider.StopReason
-	pendingToolCalls []provider.ToolCall
+	StreamChat(ctx context.Context, req provider.Request) <-chan provider.StreamEvent
 }

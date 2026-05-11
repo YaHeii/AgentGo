@@ -16,14 +16,14 @@ type QueryLoop struct {
 	deps   QueryDeps
 }
 
-func NewQueryLoop(conversation sessionStore, llm provider.StreamingLLM, d app.Dispatcher) *QueryLoop {
+func NewQueryLoop(conversation sessionStore, providerSvc providerStore, d app.Dispatcher) *QueryLoop {
 	return &QueryLoop{
 		config: QueryConfig{
 			MaxTurns: 1,
 		},
 		deps: QueryDeps{
 			Conversation: conversation,
-			LLM:          llm,
+			Provider:     providerSvc,
 			Now:          time.Now,
 			dispatcher:   d,
 		},
@@ -127,8 +127,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 			SessionID: params.SessionID,
 		}
 
-		outcome, nextState, err := r.runTurn(ctx, state, req)
-		state = nextState
+		state, err = r.runTurn(ctx, state, req)
 		if err != nil {
 			if r.deps.dispatcher != nil {
 				r.deps.dispatcher.Dispatch(app.BaseEvent{
@@ -143,18 +142,18 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 			return QueryResult{}, err
 		}
 
-		switch outcome.finishReason {
+		switch state.FinishReason {
 		case FinishReasonAwaitingToolExecution:
 			return QueryResult{
 				SessionID:               params.SessionID,
 				UserMessageID:           userMessage.ID,
-				FinalAssistantMessageID: outcome.assistantMessage.ID,
+				FinalAssistantMessageID: state.AssistantMessageID,
 				Turns:                   state.TurnCount,
-				FinishReason:            outcome.finishReason,
-				PendingToolCalls:        append([]provider.ToolCall(nil), outcome.pendingToolCalls...),
+				FinishReason:            state.FinishReason,
+				PendingToolCalls:        append([]provider.ToolCall(nil), state.PendingToolCalls...),
 			}, nil
 		case FinishReasonCompleted:
-			if outcome.stopReason == provider.StopReasonLength && state.TurnCount < r.config.MaxTurns {
+			if state.StopReason == provider.StopReasonLength && state.TurnCount < r.config.MaxTurns {
 				state = copyLoopState(state)
 				state.TurnCount++
 				continue
@@ -173,10 +172,10 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 			return QueryResult{
 				SessionID:               params.SessionID,
 				UserMessageID:           userMessage.ID,
-				FinalAssistantMessageID: outcome.assistantMessage.ID,
+				FinalAssistantMessageID: state.AssistantMessageID,
 				Turns:                   state.TurnCount,
 				FinishReason:            FinishReasonCompleted,
-				PendingToolCalls:        append([]provider.ToolCall(nil), outcome.pendingToolCalls...),
+				PendingToolCalls:        append([]provider.ToolCall(nil), state.PendingToolCalls...),
 			}, nil
 		}
 	}
@@ -207,7 +206,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 	}, nil
 }
 
-func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.Request) (turnOutcome, LoopState, error) {
+func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.Request) (LoopState, error) {
 	state = copyLoopState(state)
 
 	assistantIndex := -1
@@ -218,13 +217,13 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.R
 		}
 	}
 	if assistantIndex < 0 {
-		return turnOutcome{}, state, errors.New("agent: assistant message not found")
+		return state, errors.New("agent: assistant message not found")
 	}
 	assistantMessage := state.Messages[assistantIndex]
 
 	pendingToolCalls := make([]provider.ToolCall, 0)
-	stream := r.deps.LLM.StreamChat(ctx, req)
-	
+	stream := r.deps.Provider.StreamChat(ctx, req)
+
 	for event := range stream {
 		if event.Type == provider.StreamEventProviderError {
 			finishedAt := r.deps.Now().UTC()
@@ -263,21 +262,18 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.R
 				},
 			}, r.deps.dispatcher)
 			if err != nil {
-				return turnOutcome{}, state, err
+				return state, err
 			}
 
 			state = copyLoopState(state)
 			state.Messages = append(state.Messages, systemMessage)
 			state.Transition = "provider_error_recorded"
-			finishReason := FinishReasonFailed
+			state.AssistantMessageID = assistantMessage.ID
+			state.FinishReason = FinishReasonFailed
 			if errors.Is(event.Err, context.Canceled) {
-				finishReason = FinishReasonCancelled
+				state.FinishReason = FinishReasonCancelled
 			}
-			return turnOutcome{
-				assistantMessage: assistantMessage,
-				persistedMessage: systemMessage,
-				finishReason:     finishReason,
-			}, state, event.Err
+			return state, event.Err
 		}
 
 		switch event.Type {
@@ -446,13 +442,17 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.R
 				Progress:         assistantMessage.Progress,
 			}, r.deps.dispatcher)
 			if err != nil {
-				return turnOutcome{}, state, err
+				return state, err
 			}
 
 			state = copyLoopState(state)
 			state.Messages[assistantIndex] = persistedAssistant
+			state.AssistantMessageID = persistedAssistant.ID
+			state.StopReason = event.StopReason
+			state.PendingToolCalls = append([]provider.ToolCall(nil), pendingToolCalls...)
 			if event.StopReason == provider.StopReasonToolCalls {
 				state.Transition = "awaiting_tool_execution"
+				state.FinishReason = FinishReasonAwaitingToolExecution
 				if r.deps.dispatcher != nil {
 					r.deps.dispatcher.Dispatch(app.BaseEvent{
 						T: app.EventAgent,
@@ -463,16 +463,11 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.R
 						},
 					})
 				}
-				return turnOutcome{
-					assistantMessage: persistedAssistant,
-					persistedMessage: persistedAssistant,
-					finishReason:     FinishReasonAwaitingToolExecution,
-					stopReason:       event.StopReason,
-					pendingToolCalls: append([]provider.ToolCall(nil), pendingToolCalls...),
-				}, state, nil
+				return state, nil
 			}
 
 			state.Transition = "assistant_completed"
+			state.FinishReason = FinishReasonCompleted
 			if r.deps.dispatcher != nil {
 				r.deps.dispatcher.Dispatch(app.BaseEvent{
 					T: app.EventAgent,
@@ -483,18 +478,12 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.R
 					},
 				})
 			}
-			return turnOutcome{
-				assistantMessage: persistedAssistant,
-				persistedMessage: persistedAssistant,
-				finishReason:     FinishReasonCompleted,
-				stopReason:       event.StopReason,
-				pendingToolCalls: append([]provider.ToolCall(nil), pendingToolCalls...),
-			}, state, nil
+			return state, nil
 		}
 	}
 
-	return turnOutcome{
-		assistantMessage: assistantMessage,
-		finishReason:     FinishReasonCompleted,
-	}, state, nil
+	state.AssistantMessageID = assistantMessage.ID
+	state.FinishReason = FinishReasonCompleted
+	state.PendingToolCalls = append([]provider.ToolCall(nil), pendingToolCalls...)
+	return state, nil
 }

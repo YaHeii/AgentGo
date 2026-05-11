@@ -1,5 +1,11 @@
 package agent
 
+type QueryEvent struct {
+	Status QueryStatus
+	State  LoopState
+	Err    error
+}
+
 type QueryStatus string
 
 const (
@@ -8,9 +14,3 @@ const (
 	QueryStatusCompleted QueryStatus = "completed"
 	QueryStatusFailed    QueryStatus = "failed"
 )
-
-type QueryEvent struct {
-	Status QueryStatus
-	State  LoopState
-	Err    error
-}

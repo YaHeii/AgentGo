@@ -286,7 +286,7 @@ func toStopReason(reason openai.FinishReason) StopReason {
 		return StopReasonUnknown
 	}
 }
-// TODO: seperate Tool service
+// TODO: seperate to Tool service
 func toToolCallDelta(toolCall openai.ToolCall) ToolCallDelta {
 	index := 0
 	if toolCall.Index != nil {
