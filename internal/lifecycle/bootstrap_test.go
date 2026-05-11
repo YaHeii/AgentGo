@@ -126,9 +126,6 @@ func TestBootstrapReturnsRuntimeWithAppAndCloser(t *testing.T) {
 	if runtime.App == nil {
 		t.Fatal("expected app service")
 	}
-	if runtime.Bus == nil {
-		t.Fatal("expected unified app event bus")
-	}
 	if State == nil {
 		t.Fatal("expected global state to be initialized")
 	}

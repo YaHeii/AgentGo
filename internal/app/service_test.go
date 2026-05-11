@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/YaHeii/agentGo/internal/bus"
 	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -25,10 +24,7 @@ func TestServiceEnsureActiveSessionRestoresMostRecentSession(t *testing.T) {
 	t.Parallel()
 
 	sessions := newStubSessionService()
-	sessions.lastSession = store.Session{
-		ID:    "session-2",
-		Title: "latest",
-	}
+	sessions.lastSessionID = "session-2"
 	svc := newServiceWithDeps(sessions, newStubAgentService(), nil)
 
 	err := svc.EnsureActiveSession(context.Background())
@@ -43,8 +39,9 @@ func TestServiceCreateSessionDelegatesToSessionService(t *testing.T) {
 	sessions := newStubSessionService()
 	svc := newServiceWithDeps(sessions, newStubAgentService(), nil)
 
-	err := svc.CreateSession(context.Background(), "demo")
+	sessionID, err := svc.CreateSession(context.Background(), "demo")
 	require.NoError(t, err)
+	require.Equal(t, "session-created", sessionID)
 	require.Equal(t, []string{"demo"}, sessions.createdTitles)
 }
 
@@ -71,21 +68,21 @@ func TestServiceSendMessageDelegatesPromptToAgent(t *testing.T) {
 	require.Equal(t, "hello", agentSvc.lastPrompt)
 }
 
-func TestServiceExposesUnifiedEventStream(t *testing.T) {
+func TestDispatcherPublishesEventsToSubscribers(t *testing.T) {
 	t.Parallel()
 
-	events := bus.NewBus[Event](4)
-	svc := newServiceWithDeps(newStubSessionService(), newStubAgentService(), events)
+	dispatcher := NewDispatcher(4)
+	events := dispatcher.Subscribe(context.Background())
 
-	want := fakeEvent{name: EventTypeSession}
-	events.Publish(want)
+	want := fakeEvent{name: EventSession, payload: "session-created"}
+	dispatcher.Dispatch(want)
 
-	got := <-svc.Events()
+	got := <-events
 	require.Equal(t, want, got)
 }
 
 type stubSessionService struct {
-	lastSession       store.Session
+	lastSessionID     string
 	getLastErr        error
 	createErr         error
 	restoreErr        error
@@ -99,36 +96,32 @@ func newStubSessionService() *stubSessionService {
 	return &stubSessionService{}
 }
 
-func (s *stubSessionService) Create(_ context.Context, title string) (store.Session, error) {
+func (s *stubSessionService) Create(_ context.Context, title string, _ Dispatcher) (string, error) {
 	s.createdTitles = append(s.createdTitles, title)
 	if s.createErr != nil {
-		return store.Session{}, s.createErr
+		return "", s.createErr
 	}
 
-	created := store.Session{
-		ID:    "session-created",
-		Title: title,
-	}
-	s.lastSession = created
-	return created, nil
+	s.lastSessionID = "session-created"
+	return s.lastSessionID, nil
 }
 
-func (s *stubSessionService) GetLast(_ context.Context) (store.Session, error) {
+func (s *stubSessionService) GetLast(_ context.Context) (string, error) {
 	if s.getLastErr != nil {
-		return store.Session{}, s.getLastErr
+		return "", s.getLastErr
 	}
-	if s.lastSession.ID == "" {
-		return store.Session{}, store.ErrSessionNotFound
+	if s.lastSessionID == "" {
+		return "", store.ErrSessionNotFound
 	}
-	return s.lastSession, nil
+	return s.lastSessionID, nil
 }
 
-func (s *stubSessionService) Restore(_ context.Context, sessionID string) error {
+func (s *stubSessionService) Restore(_ context.Context, sessionID string, _ Dispatcher) error {
 	s.restoredSessionID = sessionID
 	return s.restoreErr
 }
 
-func (s *stubSessionService) Delete(_ context.Context, sessionID string) error {
+func (s *stubSessionService) Delete(_ context.Context, sessionID string, _ Dispatcher) error {
 	s.deletedSessionIDs = append(s.deletedSessionIDs, sessionID)
 	return s.deleteErr
 }
@@ -150,22 +143,26 @@ func (s *stubAgentService) RunPrompt(_ context.Context, sessionID string, prompt
 }
 
 type fakeEvent struct {
-	name EventType
+	name    EventType
+	payload any
 }
 
 func (e fakeEvent) Type() EventType {
 	return e.name
 }
 
-func newServiceWithDeps(sessions sessionStore, agent agentStore, eventBus bus.Bus[Event]) *APPService {
-	if eventBus == nil {
-		eventBus = bus.NewBus[Event](16)
+func (e fakeEvent) Data() any {
+	return e.payload
+}
+
+func newServiceWithDeps(sessions sessionStore, agent agentStore, dispatcher Dispatcher) *APPService {
+	if dispatcher == nil {
+		dispatcher = NewDispatcher(16)
 	}
 
 	return &APPService{
-		sessions: sessions,
-		agent:    agent,
-		bus:      eventBus,
-		events:   eventBus.Subscribe(context.Background()),
+		sessions:   sessions,
+		agent:      agent,
+		dispatcher: dispatcher,
 	}
 }

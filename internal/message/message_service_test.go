@@ -5,51 +5,87 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
-func TestMessageServiceCreatePersistsMessageAndPublishesCreatedEvent(t *testing.T) {
+func TestMessageServiceCreateMessagePersistsMessageAndDispatchesEvent(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	svc := NewMessageService(st)
+	dispatcher := newStubDispatcher()
+	svc := NewMessageService(st, dispatcher)
 
-	msg, err := svc.Create(context.Background(), "session-1", CreateMessageParams{
-		Kind:   KindUser,
-		Status: StatusComplete,
+	msg, err := svc.CreateMessage(context.Background(), "session-1", CreateMessageParams{
+		Kind: KindUser,
 		Parts: []Part{
 			{
 				Type: PartTypeText,
 				Text: "hello",
 			},
 		},
-	})
+	}, dispatcher)
 	require.NoError(t, err)
 	require.Equal(t, "session-1", msg.SessionID)
 	require.Equal(t, "hello", msg.Parts[0].Text)
+	require.NotEmpty(t, msg.ID)
 
-	event := <-svc.Events()
-	require.IsType(t, MessageCreatedEvent{}, event)
-	require.Equal(t, msg.ID, event.(MessageCreatedEvent).Message.ID)
+	require.Len(t, st.createdMessages, 1)
+	require.Equal(t, "session-1", st.createdMessages[0].SessionID)
+	require.Equal(t, string(KindUser), st.createdMessages[0].Kind)
+	require.NotEmpty(t, st.createdMessages[0].MessageJSON)
+
+	event := dispatcher.lastEvent
+	require.NotNil(t, event)
+	require.Equal(t, app.EventMessage, event.Type())
+
+	payload, ok := event.Data().(MessageEvent)
+	require.True(t, ok)
+	require.Equal(t, StatusPending, payload.Status)
+	require.NotNil(t, payload.Message)
+	require.Equal(t, msg.ID, payload.Message.ID)
 }
 
-func TestMessageServiceCreatePersistsFinalRichMessageRecord(t *testing.T) {
+func TestMessageServiceCreateMessageUsesExplicitIDWhenProvided(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	svc := NewMessageService(st)
+	dispatcher := newStubDispatcher()
+	svc := NewMessageService(st, dispatcher)
 
-	msg, err := svc.Create(context.Background(), "session-1", CreateMessageParams{
-		Kind:   KindUser,
-		Status: StatusComplete,
+	msg, err := svc.CreateMessage(context.Background(), "session-1", CreateMessageParams{
+		ID:   "assistant-stream-1",
+		Kind: KindAssistant,
 		Parts: []Part{
 			{
 				Type: PartTypeText,
 				Text: "hello",
 			},
 		},
-	})
+	}, dispatcher)
+	require.NoError(t, err)
+	require.Equal(t, "assistant-stream-1", msg.ID)
+	require.Len(t, st.createdMessages, 1)
+	require.Equal(t, "assistant-stream-1", st.createdMessages[0].ID)
+}
+
+func TestMessageServiceCreateMessagePersistsFinalRichMessageRecord(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	dispatcher := newStubDispatcher()
+	svc := NewMessageService(st, dispatcher)
+
+	msg, err := svc.CreateMessage(context.Background(), "session-1", CreateMessageParams{
+		Kind: KindUser,
+		Parts: []Part{
+			{
+				Type: PartTypeText,
+				Text: "hello",
+			},
+		},
+	}, dispatcher)
 	require.NoError(t, err)
 	require.Equal(t, KindUser, msg.Kind)
 	require.NotEmpty(t, st.createdMessages)
@@ -57,33 +93,11 @@ func TestMessageServiceCreatePersistsFinalRichMessageRecord(t *testing.T) {
 	require.False(t, st.createdMessages[0].FinishedAt.IsZero())
 }
 
-func TestMessageServiceCreateUsesExplicitIDWhenProvided(t *testing.T) {
+func TestMessageServiceListMessagesMapsStoredMessages(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	svc := NewMessageService(st)
-
-	msg, err := svc.Create(context.Background(), "session-1", CreateMessageParams{
-		ID:     "assistant-stream-1",
-		Kind:   KindAssistant,
-		Status: StatusComplete,
-		Parts: []Part{
-			{
-				Type: PartTypeText,
-				Text: "hello",
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.Equal(t, "assistant-stream-1", msg.ID)
-	require.Len(t, st.createdMessages, 1)
-	require.Equal(t, "assistant-stream-1", st.createdMessages[0].ID)
-}
-
-func TestMessageServiceListMapsStoredMessages(t *testing.T) {
-	t.Parallel()
-
-	st := newFakeStore()
+	dispatcher := newStubDispatcher()
 	st.messagesBySession["session-1"] = []store.Message{
 		{
 			ID:               "u1",
@@ -96,229 +110,24 @@ func TestMessageServiceListMapsStoredMessages(t *testing.T) {
 		},
 	}
 
-	svc := NewMessageService(st)
+	svc := NewMessageService(st, dispatcher)
 
-	messages, err := svc.List(context.Background(), "session-1")
+	messages, err := svc.ListMessages(context.Background(), "session-1", dispatcher)
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
 	require.Equal(t, KindUser, messages[0].Kind)
 	require.Equal(t, "hello", messages[0].Parts[0].Text)
 }
 
-func TestMessageServiceUpdateStreamingPublishesDeltaEvent(t *testing.T) {
-	t.Parallel()
-
-	st := newFakeStore()
-	st.createdMessages = append(st.createdMessages, store.Message{
-		ID:               "assistant-1",
-		SessionID:        "session-1",
-		Kind:             string(KindAssistant),
-		FinishedAt:       time.Unix(1710000000, 0).UTC(),
-		IsCompactSummary: false,
-		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":""}]}`,
-	})
-	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
-
-	svc := NewMessageService(st)
-	msg := Message{
-		ID:        "assistant-1",
-		SessionID: "session-1",
-		Kind:      KindAssistant,
-		Status:    StatusStreaming,
-		Parts: []Part{
-			{
-				Type: PartTypeText,
-				Text: "par",
-			},
-		},
-	}
-
-	err := svc.Update(context.Background(), msg)
-	require.NoError(t, err)
-	event := <-svc.Events()
-	require.IsType(t, MessageDeltaEvent{}, event)
-	require.Equal(t, "assistant-1", event.(MessageDeltaEvent).Message.ID)
-	require.Equal(t, "par", event.(MessageDeltaEvent).Delta)
-}
-
-func TestMessageServiceUpdateCompletedPublishesCompletedEvent(t *testing.T) {
-	t.Parallel()
-
-	st := newFakeStore()
-	st.createdMessages = append(st.createdMessages, store.Message{
-		ID:               "assistant-1",
-		SessionID:        "session-1",
-		Kind:             string(KindAssistant),
-		FinishedAt:       time.Unix(1710000000, 0).UTC(),
-		IsCompactSummary: false,
-		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"par"}]}`,
-	})
-	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
-
-	svc := NewMessageService(st)
-	msg := Message{
-		ID:        "assistant-1",
-		SessionID: "session-1",
-		Kind:      KindAssistant,
-		Status:    StatusComplete,
-		Parts: []Part{
-			{
-				Type: PartTypeText,
-				Text: "done",
-			},
-		},
-	}
-
-	err := svc.Update(context.Background(), msg)
-	require.NoError(t, err)
-
-	event := <-svc.Events()
-	require.IsType(t, MessageCompletedEvent{}, event)
-	require.Equal(t, "assistant-1", event.(MessageCompletedEvent).Message.ID)
-}
-
-func TestMessageServiceUpdateFailedPublishesFailedEvent(t *testing.T) {
-	t.Parallel()
-
-	st := newFakeStore()
-	st.createdMessages = append(st.createdMessages, store.Message{
-		ID:               "assistant-1",
-		SessionID:        "session-1",
-		Kind:             string(KindAssistant),
-		FinishedAt:       time.Unix(1710000000, 0).UTC(),
-		IsCompactSummary: false,
-		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"par"}]}`,
-	})
-	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
-
-	svc := NewMessageService(st)
-	msg := Message{
-		ID:        "assistant-1",
-		SessionID: "session-1",
-		Kind:      KindAssistant,
-		Status:    StatusFailed,
-		Parts: []Part{
-			{
-				Type: PartTypeText,
-				Text: "par",
-			},
-		},
-	}
-
-	err := svc.Update(context.Background(), msg)
-	require.NoError(t, err)
-
-	event := <-svc.Events()
-	require.IsType(t, MessageFailedEvent{}, event)
-	require.Equal(t, "assistant-1", event.(MessageFailedEvent).Message.ID)
-}
-
-func TestMessageServiceUpdateCancelledPublishesCancelledEvent(t *testing.T) {
-	t.Parallel()
-
-	st := newFakeStore()
-	st.createdMessages = append(st.createdMessages, store.Message{
-		ID:               "assistant-1",
-		SessionID:        "session-1",
-		Kind:             string(KindAssistant),
-		FinishedAt:       time.Unix(1710000000, 0).UTC(),
-		IsCompactSummary: false,
-		MessageJSON:      `{"flags":{},"parts":[{"Type":"text","Text":"par"}]}`,
-	})
-	st.messagesBySession["session-1"] = append(st.messagesBySession["session-1"], st.createdMessages[0])
-
-	svc := NewMessageService(st)
-	msg := Message{
-		ID:        "assistant-1",
-		SessionID: "session-1",
-		Kind:      KindAssistant,
-		Status:    StatusCancelled,
-		Parts: []Part{
-			{
-				Type: PartTypeText,
-				Text: "par",
-			},
-		},
-	}
-
-	err := svc.Update(context.Background(), msg)
-	require.NoError(t, err)
-
-	event := <-svc.Events()
-	require.IsType(t, MessageCancelledEvent{}, event)
-	require.Equal(t, "assistant-1", event.(MessageCancelledEvent).Message.ID)
-}
-
-func TestMessageServiceUpdateMessageUsesProvidedSessionIDWhenMessageLacksOne(t *testing.T) {
-	t.Parallel()
-
-	st := newFakeStore()
-	svc := NewMessageService(st)
-
-	msg, err := svc.CreateMessage(context.Background(), "session-1", CreateMessageParams{
-		Kind:  KindUser,
-		Parts: []Part{{Type: PartTypeText, Text: "hello"}},
-	})
-	require.NoError(t, err)
-	msg.SessionID = ""
-
-	err = svc.UpdateMessage(context.Background(), "session-1", msg)
-	require.NoError(t, err)
-
-	event := <-svc.Events()
-	require.IsType(t, MessageCreatedEvent{}, event)
-
-	event = <-svc.Events()
-	require.IsType(t, MessageCompletedEvent{}, event)
-	require.Equal(t, "session-1", event.(MessageCompletedEvent).Message.SessionID)
-}
-
 type fakeStore struct {
 	messagesBySession map[string][]store.Message
 	createdMessages   []store.Message
-	updatedMessages   []store.Message
-	deletedDrafts     []string
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		messagesBySession: make(map[string][]store.Message),
 	}
-}
-
-func (s *fakeStore) WithinTx(_ context.Context, fn func(tx store.TxStore) error) error {
-	return fn(s)
-}
-
-func (s *fakeStore) CreateSession(_ context.Context, params store.CreateSessionParams) (store.Session, error) {
-	return store.Session{
-		ID:               params.ID,
-		ParentSessionID:  params.ParentSessionID,
-		Title:            params.Title,
-		MessageCount:     params.MessageCount,
-		CompletionTokens: params.CompletionTokens,
-		CostMicros:       params.CostMicros,
-		SummaryMessageID: params.SummaryMessageID,
-		TodosJSON:        params.TodosJSON,
-		CreatedAt:        params.CreatedAt,
-		UpdatedAt:        params.UpdatedAt,
-	}, nil
-}
-
-func (s *fakeStore) ListSessions(_ context.Context) ([]store.Session, error) {
-	return nil, nil
-}
-
-func (s *fakeStore) GetSession(_ context.Context, _ string) (store.Session, error) {
-	return store.Session{}, nil
-}
-
-func (s *fakeStore) UpdateSession(_ context.Context, _ store.UpdateSessionParams) (store.Session, error) {
-	return store.Session{}, nil
-}
-
-func (s *fakeStore) DeleteSession(_ context.Context, _ string) error {
-	return nil
 }
 
 func (s *fakeStore) CreateMessage(_ context.Context, params store.CreateMessageParams) (store.Message, error) {
@@ -338,23 +147,21 @@ func (s *fakeStore) CreateMessage(_ context.Context, params store.CreateMessageP
 
 func (s *fakeStore) ListMessages(_ context.Context, sessionID string) ([]store.Message, error) {
 	messages := s.messagesBySession[sessionID]
-	copied := append([]store.Message(nil), messages...)
-	return copied, nil
+	return append([]store.Message(nil), messages...), nil
 }
 
-func (s *fakeStore) LoadDraft(_ context.Context, _ string) (string, error) {
-	return "", nil
+type stubDispatcher struct {
+	lastEvent app.Event
 }
 
-func (s *fakeStore) SaveDraft(_ context.Context, _ store.SaveDraftParams) error {
-	return nil
+func newStubDispatcher() *stubDispatcher {
+	return &stubDispatcher{}
 }
 
-func (s *fakeStore) DeleteDraft(_ context.Context, sessionID string) error {
-	s.deletedDrafts = append(s.deletedDrafts, sessionID)
-	return nil
+func (d *stubDispatcher) Dispatch(evt app.Event) {
+	d.lastEvent = evt
 }
 
-func (s *fakeStore) Close() error {
-	return nil
+func (d *stubDispatcher) Subscribe(context.Context) <-chan app.Event {
+	return make(chan app.Event)
 }
