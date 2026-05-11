@@ -1,5 +1,13 @@
 package provider
 
+import "context"
+
+
+type StreamingLLM interface {
+	StreamChat(ctx context.Context, req Request) <-chan StreamEvent
+}
+
+
 // Message is the provider-agnostic chat message format.
 type Message struct {
 	Role    string

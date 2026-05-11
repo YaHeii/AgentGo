@@ -11,9 +11,9 @@
 ## Workflow
 
 - For architecture changes, boundary refactors, or non-trivial feature work,
-  write a Chinese spec first under `docs/superpowers/specs/`.
-- After the spec is approved, write an implementation plan under
-  `docs/superpowers/plans/` before changing code.
+  write a Chinese Markdown design note under `docs/` first.
+- After the design is approved, write an implementation plan under `docs/`
+  before changing code.
 - Once the user approves the plan, move directly into implementation instead of
   reopening the same design discussion.
 
@@ -29,7 +29,9 @@
 
 - Use `docs/Crush_AGENTS.md` as a reference source, not as a template to copy
   blindly.
+- Use [docs/struct.md](/root/agentGo/docs/struct.md)
+  for current project overview, layering, and runtime structure.
 - Use [docs/development-conventions.md](/root/agentGo/docs/development-conventions.md)
-  for current layering, interface, persistence, and event-boundary rules.
+  for current service/interface/event/wiring conventions.
 - When discussion converges, persist the result as a Markdown document instead
   of leaving the decision only in chat history.

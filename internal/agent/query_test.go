@@ -14,7 +14,7 @@ import (
 func TestNewQueryLoopReturnsRunner(t *testing.T) {
 	t.Parallel()
 
-	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubStreamingLLM{})
+	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubStreamingLLM{}, app.NewDispatcher(16))
 	require.NotNil(t, runner)
 }
 
@@ -23,16 +23,21 @@ func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
 
 	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{}
+	dispatcher := app.NewDispatcher(16)
 
-	runner := NewQueryLoop(store, llm)
+	runner := NewQueryLoop(store, llm, dispatcher)
 
 	require.Equal(t, 1, runner.config.MaxTurns)
 	require.Same(t, store, runner.deps.Conversation)
 	require.Same(t, llm, runner.deps.LLM)
+	require.Same(t, dispatcher, runner.deps.dispatcher)
 }
 
 func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	t.Parallel()
+
+	dispatcher := app.NewDispatcher(16)
+	events := dispatcher.Subscribe(context.Background())
 
 	originalStore := &stubSessionConversationPort{}
 	originalLLM := &stubStreamingLLM{}
@@ -46,7 +51,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(originalStore, originalLLM)
+	runner := NewQueryLoop(originalStore, originalLLM, dispatcher)
 	runner.deps.Conversation = depsStore
 	runner.deps.LLM = depsLLM
 
@@ -66,13 +71,18 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	require.Len(t, depsLLM.calls, 1)
 	require.Len(t, depsLLM.calls[0].Messages, 1)
 	require.Equal(t, "hello", depsLLM.calls[0].Messages[0].Content)
-	require.Equal(t, message.StatusComplete, depsStore.created[1].Status)
+
+	gotStarted := <-events
+	require.Equal(t, app.EventAgent, gotStarted.Type())
+	started, ok := gotStarted.Data().(QueryEvent)
+	require.True(t, ok)
+	require.Equal(t, QueryStatusStarted, started.Status)
 }
 
 func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
 	t.Parallel()
 
-	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubStreamingLLM{})
+	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubStreamingLLM{}, app.NewDispatcher(16))
 	runner.config.MaxTurns = 0
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
@@ -90,6 +100,8 @@ func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
 func TestQueryLoopCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 	t.Parallel()
 
+	dispatcher := app.NewDispatcher(16)
+	events := dispatcher.Subscribe(context.Background())
 	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
@@ -101,7 +113,7 @@ func TestQueryLoopCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm)
+	runner := NewQueryLoop(store, llm, dispatcher)
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -118,21 +130,33 @@ func TestQueryLoopCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 	require.Equal(t, 1, result.Turns)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, store.created, 2)
-	require.Len(t, store.updated, 3)
 	require.Equal(t, []string{"session-1"}, store.hydratedSessionIDs)
-	require.Equal(t, []string{"session-1", "session-1", "session-1"}, store.updatedSessionIDs)
 	require.Len(t, llm.calls[0].Messages, 1)
 	require.Equal(t, "hello", llm.calls[0].Messages[0].Content)
-	require.Equal(t, message.StatusComplete, store.created[1].Status)
 	require.Equal(t, "hello", findTextPart(store.created[1].Parts))
 	require.Equal(t, store.persisted[1].ID, result.FinalAssistantMessageID)
-	require.Equal(t, "hello", textOf(store.updated[len(store.updated)-1]))
-	require.Equal(t, message.StatusComplete, store.updated[len(store.updated)-1].Status)
+
+	var sawCompleted bool
+	for i := 0; i < 6; i++ {
+		got := <-events
+		require.Equal(t, app.EventAgent, got.Type())
+		evt, ok := got.Data().(QueryEvent)
+		require.True(t, ok)
+		if evt.Status == QueryStatusCompleted {
+			sawCompleted = true
+			require.Equal(t, "assistant_completed", evt.State.Transition)
+			require.Equal(t, "hello", findTextPart(evt.State.Messages[len(evt.State.Messages)-1].Parts))
+			break
+		}
+	}
+	require.True(t, sawCompleted)
 }
 
 func TestQueryLoopMarksAssistantFailedOnStreamError(t *testing.T) {
 	t.Parallel()
 
+	dispatcher := app.NewDispatcher(16)
+	events := dispatcher.Subscribe(context.Background())
 	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
@@ -143,7 +167,7 @@ func TestQueryLoopMarksAssistantFailedOnStreamError(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm)
+	runner := NewQueryLoop(store, llm, dispatcher)
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -154,31 +178,35 @@ func TestQueryLoopMarksAssistantFailedOnStreamError(t *testing.T) {
 			},
 		},
 	})
-	require.Error(t, err)
+	require.EqualError(t, err, "stream failed")
 	require.Len(t, store.created, 2)
-	require.Len(t, store.updated, 2)
 	require.Equal(t, message.KindSystem, store.created[1].Kind)
 	require.Contains(t, findTextPart(store.created[1].Parts), "stream failed")
-	require.Equal(t, message.StatusFailed, store.updated[len(store.updated)-1].Status)
-	require.Equal(t, "par", textOf(store.updated[len(store.updated)-1]))
+
+	var sawFailed bool
+	for i := 0; i < 6; i++ {
+		got := <-events
+		evt, ok := got.Data().(QueryEvent)
+		require.True(t, ok)
+		if evt.Status == QueryStatusFailed {
+			sawFailed = true
+			require.Equal(t, "stream_failed", evt.State.Transition)
+			require.EqualError(t, evt.Err, "stream failed")
+			require.Equal(t, "par", findTextPart(evt.State.Messages[len(evt.State.Messages)-1].Parts))
+			break
+		}
+	}
+	require.True(t, sawFailed)
 }
 
 func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 	t.Parallel()
 
+	dispatcher := app.NewDispatcher(16)
 	store := &stubSessionConversationPort{}
 	llm := &stubStreamingLLM{
 		events: [][]provider.StreamEvent{
 			{
-				{
-					Type: provider.StreamEventToolCallDelta,
-					ToolCallDelta: &provider.ToolCallDelta{
-						Index:          0,
-						ID:             "call_1",
-						NameDelta:      "search",
-						ArgumentsDelta: "{\"q\":\"golang\"}",
-					},
-				},
 				{
 					Type: provider.StreamEventToolCallCompleted,
 					ToolCall: &provider.ToolCall{
@@ -193,7 +221,7 @@ func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm)
+	runner := NewQueryLoop(store, llm, dispatcher)
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -210,7 +238,6 @@ func TestQueryLoopMapsToolCallStopReasonToAwaitingExecution(t *testing.T) {
 	require.Equal(t, "call_1", result.PendingToolCalls[0].ID)
 	require.Equal(t, "search", result.PendingToolCalls[0].Name)
 	require.Len(t, store.created, 2)
-	require.Equal(t, message.StatusComplete, store.created[1].Status)
 	require.NotNil(t, findToolCallPart(store.created[1].Parts))
 	require.Equal(t, "call_1", findToolCallPart(store.created[1].Parts).ID)
 }
@@ -229,7 +256,7 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm)
+	runner := NewQueryLoop(store, llm, app.NewDispatcher(16))
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -241,18 +268,11 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.NotEmpty(t, store.updated)
 
 	require.Len(t, store.created, 2)
-	require.Equal(t, message.StatusComplete, store.created[1].Status)
 	require.NotNil(t, findThinkingPart(store.created[1].Parts))
 	require.Equal(t, "decline", findTextPart(store.created[1].Parts))
-
-	final := store.updated[len(store.updated)-1]
-	require.Equal(t, message.StatusComplete, final.Status)
-	require.NotNil(t, findThinkingPart(final.Parts))
-	require.Equal(t, "thinking", findThinkingPart(final.Parts).Content)
-	require.Equal(t, "decline", findTextPart(final.Parts))
+	require.Equal(t, "thinking", findThinkingPart(store.created[1].Parts).Content)
 }
 
 func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
@@ -271,7 +291,7 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm)
+	runner := NewQueryLoop(store, llm, app.NewDispatcher(16))
 	runner.config.MaxTurns = 2
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
@@ -304,16 +324,24 @@ func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
 		},
 	})
 
-	require.Len(t, state.messages, 1)
-	require.Equal(t, 1, state.turnCount)
-	require.Equal(t, "hello", textOf(state.messages[0]))
+	require.Len(t, state.Messages, 1)
+	require.Equal(t, 1, state.TurnCount)
+	require.Equal(t, "hello", findTextPart(state.Messages[0].Parts))
 }
 
-func TestQueryCompletedEventImplementsAppEvent(t *testing.T) {
+func TestQueryEventCarriesLoopState(t *testing.T) {
 	t.Parallel()
 
-	var evt app.Event = QueryCompletedEvent{}
-	require.Equal(t, app.EventTypeAgent, evt.Type())
+	event := QueryEvent{
+		Status: QueryStatusCompleted,
+		State: LoopState{
+			TurnCount:  2,
+			Transition: "assistant_completed",
+		},
+	}
+
+	require.Equal(t, QueryStatusCompleted, event.Status)
+	require.Equal(t, 2, event.State.TurnCount)
 }
 
 func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
@@ -328,7 +356,7 @@ func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, llm)
+	runner := NewQueryLoop(store, llm, app.NewDispatcher(16))
 
 	err := runner.RunPrompt(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
@@ -336,56 +364,52 @@ func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
 	require.Equal(t, "hello", findTextPart(store.created[0].Parts))
 }
 
-func TestLoopStateWithTransitionReturnsNewSnapshot(t *testing.T) {
+func TestCopyLoopStateDeepCopiesMessages(t *testing.T) {
 	t.Parallel()
 
-	state := newLoopState(QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
+	state := LoopState{
+		Messages: []message.Message{
 			{
-				Type: message.PartTypeText,
-				Text: "hello",
+				ID:   "assistant-1",
+				Kind: message.KindAssistant,
+				Parts: []message.Part{
+					{
+						Type: message.PartTypeText,
+						Text: "hello",
+					},
+					{
+						Type: message.PartTypeThinking,
+						Thinking: &message.ThinkingPart{
+							Content: "plan",
+						},
+					},
+				},
 			},
 		},
-	})
+		TurnCount:  2,
+		Transition: "assistant_delta_received",
+	}
 
-	next := state.withTransition("assistant_delta")
+	copied := copyLoopState(state)
+	copied.Messages[0].Parts[0].Text = "changed"
+	copied.Messages[0].Parts[1].Thinking.Content = "changed-plan"
+	copied.Transition = "completed"
 
-	require.Empty(t, state.transition)
-	require.Equal(t, "assistant_delta", next.transition)
-}
-
-func TestLoopStateAppendMessageDoesNotMutateOriginalSnapshot(t *testing.T) {
-	t.Parallel()
-
-	state := newLoopState(QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{
-				Type: message.PartTypeText,
-				Text: "hello",
-			},
-		},
-	})
-
-	next := state.appendMessage(messageRecord("assistant-1", message.KindAssistant, "world"))
-
-	require.Len(t, state.messages, 1)
-	require.Len(t, next.messages, 2)
-	require.Equal(t, "hello", textOf(state.messages[0]))
-	require.Equal(t, "world", textOf(next.messages[1]))
+	require.Equal(t, "hello", state.Messages[0].Parts[0].Text)
+	require.Equal(t, "plan", state.Messages[0].Parts[1].Thinking.Content)
+	require.Equal(t, "assistant_delta_received", state.Transition)
+	require.Equal(t, "changed", copied.Messages[0].Parts[0].Text)
+	require.Equal(t, "changed-plan", copied.Messages[0].Parts[1].Thinking.Content)
+	require.Equal(t, "completed", copied.Transition)
 }
 
 type stubSessionConversationPort struct {
 	created            []message.CreateMessageParams
-	updated            []message.Message
 	hydratedSessionIDs []string
-	updatedSessionIDs  []string
-	listResult         []message.Message
 	persisted          []message.Message
 }
 
-func (s *stubSessionConversationPort) CreateMessage(_ context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
+func (s *stubSessionConversationPort) CreateMessage(_ context.Context, sessionID string, params message.CreateMessageParams, _ app.Dispatcher) (message.Message, error) {
 	s.created = append(s.created, params)
 	id := "user-1"
 	switch params.Kind {
@@ -401,25 +425,33 @@ func (s *stubSessionConversationPort) CreateMessage(_ context.Context, sessionID
 		ID:        id,
 		SessionID: sessionID,
 		Kind:      params.Kind,
-		Status:    params.Status,
-		Parts:     params.Parts,
+		Parts:     nil,
 		System:    params.System,
 		Progress:  params.Progress,
+	}
+	if len(params.Parts) > 0 {
+		msg.Parts = make([]message.Part, len(params.Parts))
+		copy(msg.Parts, params.Parts)
 	}
 	s.persisted = append(s.persisted, msg)
 	return msg, nil
 }
 
-func (s *stubSessionConversationPort) UpdateMessage(_ context.Context, sessionID string, msg message.Message) error {
-	s.updatedSessionIDs = append(s.updatedSessionIDs, sessionID)
-	s.updated = append(s.updated, msg)
-	return nil
-}
-
-func (s *stubSessionConversationPort) ListHistory(_ context.Context, sessionID string) ([]message.Message, error) {
+func (s *stubSessionConversationPort) ListHistory(_ context.Context, sessionID string, _ app.Dispatcher) ([]message.Message, error) {
 	s.hydratedSessionIDs = append(s.hydratedSessionIDs, sessionID)
-	copied := append([]message.Message(nil), s.listResult...)
-	copied = append(copied, s.persisted...)
+	if len(s.persisted) == 0 {
+		return nil, nil
+	}
+
+	copied := make([]message.Message, len(s.persisted))
+	for i := range s.persisted {
+		copied[i] = s.persisted[i]
+		if len(s.persisted[i].Parts) == 0 {
+			continue
+		}
+		copied[i].Parts = make([]message.Part, len(s.persisted[i].Parts))
+		copy(copied[i].Parts, s.persisted[i].Parts)
+	}
 	return copied, nil
 }
 
@@ -445,9 +477,8 @@ func (s *stubStreamingLLM) StreamChat(_ context.Context, req provider.Request) <
 
 func messageRecord(id string, kind message.Kind, text string) message.Message {
 	return message.Message{
-		ID:     id,
-		Kind:   kind,
-		Status: message.StatusComplete,
+		ID:   id,
+		Kind: kind,
 		Parts: []message.Part{
 			{
 				Type: message.PartTypeText,

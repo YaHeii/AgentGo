@@ -18,92 +18,19 @@ type QueryLoop struct {
 
 func NewQueryLoop(conversation sessionStore, llm provider.StreamingLLM, d app.Dispatcher) *QueryLoop {
 	return &QueryLoop{
-		config: defaultQueryConfig(),
-		deps:   defaultQueryDeps(conversation, llm, d),
+		config: QueryConfig{
+			MaxTurns: 1,
+		},
+		deps: QueryDeps{
+			Conversation: conversation,
+			LLM:          llm,
+			Now:          time.Now,
+			dispatcher:   d,
+		},
 	}
 }
 
-func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResult, error) {
-	if r.config.MaxTurns <= 0 {
-		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
-	}
-
-	state := newLoopState(params).withTransition("state_initialized")
-
-	userMessage, err := r.deps.Conversation.CreateMessage(ctx, params.SessionID, message.CreateMessageParams{
-		Kind:  message.KindUser,
-		Parts: cloneInputParts(params.InputParts),
-	})
-	if err != nil {
-		return QueryResult{}, err
-	}
-	state = state.replaceLastMessage(userMessage).withTransition("user_message_created")
-
-	for turn := 1; turn <= r.config.MaxTurns; turn++ {
-		state = state.withTurnCount(turn).withTransition("turn_started")
-
-		history, err := r.deps.Conversation.ListHistory(ctx, params.SessionID)
-		if err != nil {
-			return QueryResult{}, err
-		}
-		state = state.withMessages(history).withTransition("history_loaded")
-		assistantMessage := newAssistantStreamMessage(params.SessionID, turn, r.deps.Now().UTC())
-		state = state.appendMessage(assistantMessage).withTransition("assistant_stream_initialized")
-		req := provider.Request{
-			Messages: toProviderMessages(history, ""),
-		}
-
-		outcome, nextState, err := r.runTurn(ctx, state, req)
-		if err != nil {
-			return QueryResult{}, err
-		}
-		state = nextState
-
-		switch outcome.finishReason {
-		case FinishReasonAwaitingToolExecution:
-			// TODO: Add ToolExecutor to QueryDeps and resume the loop after tool results are persisted.
-			return QueryResult{
-				SessionID:               params.SessionID,
-				UserMessageID:           userMessage.ID,
-				FinalAssistantMessageID: outcome.assistantMessage.ID,
-				Turns:                   state.turnCount,
-				FinishReason:            outcome.finishReason,
-				PendingToolCalls:        append([]provider.ToolCall(nil), outcome.pendingToolCalls...),
-			}, nil
-		case FinishReasonCompleted:
-			if outcome.stopReason == provider.StopReasonLength && turn < r.config.MaxTurns {
-				continue
-			}
-			r.deps.dispatcher.Dispatch(app.BaseEvent{
-				T: "agent",
-				Payload: QueryCompletedEvent{
-					SessionID:          params.SessionID,
-					UserMessageID:      userMessage.ID,
-					AssistantMessageID: outcome.assistantMessage.ID,
-				},
-			})
-
-			return QueryResult{
-				SessionID:               params.SessionID,
-				UserMessageID:           userMessage.ID,
-				FinalAssistantMessageID: outcome.assistantMessage.ID,
-				Turns:                   state.turnCount,
-				FinishReason:            FinishReasonCompleted,
-				PendingToolCalls:        append([]provider.ToolCall(nil), outcome.pendingToolCalls...),
-			}, nil
-		}
-	}
-
-	lastAssistant, _ := latestAssistantMessage(state.messages)
-	return QueryResult{
-		SessionID:               params.SessionID,
-		UserMessageID:           userMessage.ID,
-		FinalAssistantMessageID: lastAssistant.ID,
-		Turns:                   state.turnCount,
-		FinishReason:            FinishReasonCompleted,
-	}, nil
-}
-
+//TODO: TOdelete
 func (r *QueryLoop) RunPrompt(ctx context.Context, sessionID string, prompt string) error {
 	_, err := r.RunQuery(ctx, QueryParams{
 		SessionID: sessionID,
@@ -117,194 +44,451 @@ func (r *QueryLoop) RunPrompt(ctx context.Context, sessionID string, prompt stri
 	return err
 }
 
-func toProviderMessages(messages []message.Message, skipID string) []provider.Message {
-	out := make([]provider.Message, 0, len(messages))
-	for _, msg := range messages {
-		if msg.ID == skipID && textOf(msg) == "" {
-			continue
-		}
-		out = append(out, provider.Message{
-			Role:    providerRole(msg.Kind),
-			Content: textOf(msg),
+func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResult, error) {
+	// start with Precheck
+	// 1. MaxTurn Check
+	if r.config.MaxTurns <= 0 {
+		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
+	}
+
+	// 
+	var inputParts []message.Part
+	if len(params.InputParts) > 0 {
+		inputParts = make([]message.Part, len(params.InputParts))
+		copy(inputParts, params.InputParts)
+	}
+
+	userMessage, err := r.deps.Conversation.CreateMessage(ctx, params.SessionID, message.CreateMessageParams{
+		Kind:  message.KindUser,
+		Parts: inputParts,
+	}, r.deps.dispatcher)
+	if err != nil {
+		return QueryResult{}, err
+	}
+
+	state := newLoopState(params)
+	state.Messages = []message.Message{userMessage}
+	state.Transition = "user_message_created"
+	if r.deps.dispatcher != nil {
+		r.deps.dispatcher.Dispatch(app.BaseEvent{
+			T: app.EventAgent,
+			Payload: QueryEvent{
+				Status: QueryStatusStarted,
+				State:  copyLoopState(state),
+				Err:    nil,
+			},
 		})
 	}
-	return out
-}
 
-func providerRole(kind message.Kind) string {
-	switch kind {
-	case message.KindAssistant:
-		return "assistant"
-	case message.KindUser:
-		return "user"
-	default:
-		return "system"
-	}
-}
+	for {
+		if state.TurnCount > r.config.MaxTurns {
+			break
+		}
 
-func textOf(msg message.Message) string {
-	for _, part := range msg.Parts {
-		if part.Type == message.PartTypeText {
-			return part.Text
+		state = copyLoopState(state)
+		state.Transition = "turn_started"
+
+		// TODO: Add per-turn preprocessing once tool loop ownership is finalized.
+		history, err := r.deps.Conversation.ListHistory(ctx, params.SessionID, r.deps.dispatcher)
+		if err != nil {
+			return QueryResult{}, err
+		}
+		state.Messages = history
+		state.Transition = "history_loaded"
+
+		assistantNow := r.deps.Now().UTC()
+		assistantMessage := message.Message{
+			ID:        fmt.Sprintf("assistant-turn-%d-%d", state.TurnCount, assistantNow.UnixNano()),
+			SessionID: params.SessionID,
+			Kind:      message.KindAssistant,
+			CreatedAt: assistantNow,
+			UpdatedAt: assistantNow,
+			Parts: []message.Part{
+				{
+					Type: message.PartTypeText,
+					Text: "",
+				},
+			},
+		}
+		state.Messages = append(state.Messages, assistantMessage)
+		state.Transition = "assistant_stream_initialized"
+		if r.deps.dispatcher != nil {
+			r.deps.dispatcher.Dispatch(app.BaseEvent{
+				T: app.EventAgent,
+				Payload: QueryEvent{
+					Status: QueryStatusDelta,
+					State:  copyLoopState(state),
+					Err:    nil,
+				},
+			})
+		}
+
+		providerMessages := make([]provider.Message, 0, len(history))
+		for _, msg := range history {
+			role := "system"
+			switch msg.Kind {
+			case message.KindAssistant:
+				role = "assistant"
+			case message.KindUser:
+				role = "user"
+			}
+
+			content := ""
+			for _, part := range msg.Parts {
+				if part.Type == message.PartTypeText {
+					content = part.Text
+					break
+				}
+			}
+
+			providerMessages = append(providerMessages, provider.Message{
+				Role:    role,
+				Content: content,
+			})
+		}
+
+		req := provider.Request{
+			Messages: providerMessages,
+		}
+
+		outcome, nextState, err := r.runTurn(ctx, state, req)
+		state = nextState
+		if err != nil {
+			if r.deps.dispatcher != nil {
+				r.deps.dispatcher.Dispatch(app.BaseEvent{
+					T: app.EventAgent,
+					Payload: QueryEvent{
+						Status: QueryStatusFailed,
+						State:  copyLoopState(state),
+						Err:    err,
+					},
+				})
+			}
+			return QueryResult{}, err
+		}
+
+		switch outcome.finishReason {
+		case FinishReasonAwaitingToolExecution:
+			return QueryResult{
+				SessionID:               params.SessionID,
+				UserMessageID:           userMessage.ID,
+				FinalAssistantMessageID: outcome.assistantMessage.ID,
+				Turns:                   state.TurnCount,
+				FinishReason:            outcome.finishReason,
+				PendingToolCalls:        append([]provider.ToolCall(nil), outcome.pendingToolCalls...),
+			}, nil
+		case FinishReasonCompleted:
+			if outcome.stopReason == provider.StopReasonLength && state.TurnCount < r.config.MaxTurns {
+				state = copyLoopState(state)
+				state.TurnCount++
+				continue
+			}
+
+			if r.deps.dispatcher != nil {
+				r.deps.dispatcher.Dispatch(app.BaseEvent{
+					T: app.EventAgent,
+					Payload: QueryEvent{
+						Status: QueryStatusCompleted,
+						State:  copyLoopState(state),
+						Err:    nil,
+					},
+				})
+			}
+			return QueryResult{
+				SessionID:               params.SessionID,
+				UserMessageID:           userMessage.ID,
+				FinalAssistantMessageID: outcome.assistantMessage.ID,
+				Turns:                   state.TurnCount,
+				FinishReason:            FinishReasonCompleted,
+				PendingToolCalls:        append([]provider.ToolCall(nil), outcome.pendingToolCalls...),
+			}, nil
 		}
 	}
-	return ""
-}
 
-func appendTextDelta(msg *message.Message, delta string) {
-	for i := range msg.Parts {
-		if msg.Parts[i].Type == message.PartTypeText {
-			msg.Parts[i].Text += delta
-			return
+	lastAssistantID := ""
+	for i := len(state.Messages) - 1; i >= 0; i-- {
+		if state.Messages[i].Kind == message.KindAssistant {
+			lastAssistantID = state.Messages[i].ID
+			break
 		}
 	}
-
-	msg.Parts = append(msg.Parts, message.Part{
-		Type: message.PartTypeText,
-		Text: delta,
-	})
-}
-
-func cloneInputParts(parts []message.Part) []message.Part {
-	if len(parts) == 0 {
-		return nil
+	if r.deps.dispatcher != nil {
+		r.deps.dispatcher.Dispatch(app.BaseEvent{
+			T: app.EventAgent,
+			Payload: QueryEvent{
+				Status: QueryStatusCompleted,
+				State:  copyLoopState(state),
+				Err:    nil,
+			},
+		})
 	}
-
-	cloned := make([]message.Part, len(parts))
-	copy(cloned, parts)
-	return cloned
+	return QueryResult{
+		SessionID:               params.SessionID,
+		UserMessageID:           userMessage.ID,
+		FinalAssistantMessageID: lastAssistantID,
+		Turns:                   state.TurnCount,
+		FinishReason:            FinishReasonCompleted,
+	}, nil
 }
 
-func finishReasonFromError(err error) FinishReason {
-	if errors.Is(err, context.Canceled) {
-		return FinishReasonCancelled
+
+func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.Request) (turnOutcome, LoopState, error) {
+	state = copyLoopState(state)
+
+	assistantIndex := -1
+	for i := len(state.Messages) - 1; i >= 0; i-- {
+		if state.Messages[i].Kind == message.KindAssistant {
+			assistantIndex = i
+			break
+		}
 	}
-
-	return FinishReasonFailed
-}
-
-type turnOutcome struct {
-	assistantMessage message.Message
-	persistedMessage message.Message
-	finishReason     FinishReason
-	stopReason       provider.StopReason
-	pendingToolCalls []provider.ToolCall
-}
-
-func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.Request) (turnOutcome, loopState, error) {
-	assistantMessage, ok := latestAssistantMessage(state.messages)
-	if !ok {
+	if assistantIndex < 0 {
 		return turnOutcome{}, state, errors.New("agent: assistant message not found")
 	}
+	assistantMessage := state.Messages[assistantIndex]
 
 	pendingToolCalls := make([]provider.ToolCall, 0)
 	stream := r.deps.LLM.StreamChat(ctx, req)
 	for event := range stream {
 		if event.Type == provider.StreamEventProviderError {
-			assistantMessage.Status = message.StatusFailed
-			if errors.Is(event.Err, context.Canceled) {
-				assistantMessage.Status = message.StatusCancelled
-			}
 			finishedAt := r.deps.Now().UTC()
 			assistantMessage.UpdatedAt = finishedAt
-			state = state.replaceLastMessage(assistantMessage).withTransition("stream_failed")
-			if err := r.deps.Conversation.UpdateMessage(ctx, assistantMessage.SessionID, assistantMessage); err != nil {
-				return turnOutcome{}, state, err
+			state = copyLoopState(state)
+			state.Messages[assistantIndex] = assistantMessage
+			state.Transition = "stream_failed"
+			if r.deps.dispatcher != nil {
+				r.deps.dispatcher.Dispatch(app.BaseEvent{
+					T: app.EventAgent,
+					Payload: QueryEvent{
+						Status: QueryStatusFailed,
+						State:  copyLoopState(state),
+						Err:    event.Err,
+					},
+				})
+			}
+
+			providerErrorText := "provider error"
+			if event.Err != nil {
+				providerErrorText = "provider error: " + event.Err.Error()
 			}
 
 			systemMessage, err := r.deps.Conversation.CreateMessage(ctx, assistantMessage.SessionID, message.CreateMessageParams{
 				Kind:       message.KindSystem,
-				Status:     assistantMessage.Status,
 				FinishedAt: finishedAt,
 				Parts: []message.Part{
 					{
 						Type: message.PartTypeText,
-						Text: buildProviderErrorText(event.Err),
+						Text: providerErrorText,
 					},
 				},
 				System: &message.SystemPayload{
 					Subtype: "provider_error",
 					Level:   "error",
 				},
-			})
+			}, r.deps.dispatcher)
 			if err != nil {
 				return turnOutcome{}, state, err
 			}
-			r.publish(QueryFailedEvent{
-				SessionID:          systemMessage.SessionID,
-				UserMessageID:      firstUserMessageID(state.messages),
-				AssistantMessageID: systemMessage.ID,
-				Err:                event.Err,
-			})
+
+			state = copyLoopState(state)
+			state.Messages = append(state.Messages, systemMessage)
+			state.Transition = "provider_error_recorded"
+			finishReason := FinishReasonFailed
+			if errors.Is(event.Err, context.Canceled) {
+				finishReason = FinishReasonCancelled
+			}
 			return turnOutcome{
 				assistantMessage: assistantMessage,
 				persistedMessage: systemMessage,
-				finishReason:     finishReasonFromError(event.Err),
+				finishReason:     finishReason,
 			}, state, event.Err
 		}
 
 		switch event.Type {
 		case provider.StreamEventTextDelta:
-			appendTextDelta(&assistantMessage, event.TextDelta)
-			assistantMessage.Status = message.StatusStreaming
+			textUpdated := false
+			for i := range assistantMessage.Parts {
+				if assistantMessage.Parts[i].Type == message.PartTypeText {
+					assistantMessage.Parts[i].Text += event.TextDelta
+					textUpdated = true
+					break
+				}
+			}
+			if !textUpdated {
+				assistantMessage.Parts = append(assistantMessage.Parts, message.Part{
+					Type: message.PartTypeText,
+					Text: event.TextDelta,
+				})
+			}
 			assistantMessage.UpdatedAt = r.deps.Now().UTC()
-			state = state.replaceLastMessage(assistantMessage).withTransition("assistant_delta_received")
-			if err := r.deps.Conversation.UpdateMessage(ctx, assistantMessage.SessionID, assistantMessage); err != nil {
-				return turnOutcome{}, state, err
+			state = copyLoopState(state)
+			state.Messages[assistantIndex] = assistantMessage
+			state.Transition = "assistant_delta_received"
+			if r.deps.dispatcher != nil {
+				r.deps.dispatcher.Dispatch(app.BaseEvent{
+					T: app.EventAgent,
+					Payload: QueryEvent{
+						Status: QueryStatusDelta,
+						State:  copyLoopState(state),
+						Err:    nil,
+					},
+				})
 			}
 		case provider.StreamEventReasoningDelta:
-			appendThinkingDelta(&assistantMessage, event.ReasoningDelta)
-			assistantMessage.Status = message.StatusStreaming
+			reasoningUpdated := false
+			for i := range assistantMessage.Parts {
+				if assistantMessage.Parts[i].Type == message.PartTypeThinking && assistantMessage.Parts[i].Thinking != nil {
+					assistantMessage.Parts[i].Thinking.Content += event.ReasoningDelta
+					reasoningUpdated = true
+					break
+				}
+			}
+			if !reasoningUpdated {
+				assistantMessage.Parts = append(assistantMessage.Parts, message.Part{
+					Type: message.PartTypeThinking,
+					Thinking: &message.ThinkingPart{
+						Content: event.ReasoningDelta,
+					},
+				})
+			}
 			assistantMessage.UpdatedAt = r.deps.Now().UTC()
-			state = state.replaceLastMessage(assistantMessage).withTransition("assistant_reasoning_received")
-			if err := r.deps.Conversation.UpdateMessage(ctx, assistantMessage.SessionID, assistantMessage); err != nil {
-				return turnOutcome{}, state, err
+			state = copyLoopState(state)
+			state.Messages[assistantIndex] = assistantMessage
+			state.Transition = "assistant_reasoning_received"
+			if r.deps.dispatcher != nil {
+				r.deps.dispatcher.Dispatch(app.BaseEvent{
+					T: app.EventAgent,
+					Payload: QueryEvent{
+						Status: QueryStatusDelta,
+						State:  copyLoopState(state),
+						Err:    nil,
+					},
+				})
 			}
 		case provider.StreamEventRefusalDelta:
-			appendTextDelta(&assistantMessage, event.RefusalDelta)
-			assistantMessage.Status = message.StatusStreaming
+			refusalUpdated := false
+			for i := range assistantMessage.Parts {
+				if assistantMessage.Parts[i].Type == message.PartTypeText {
+					assistantMessage.Parts[i].Text += event.RefusalDelta
+					refusalUpdated = true
+					break
+				}
+			}
+			if !refusalUpdated {
+				assistantMessage.Parts = append(assistantMessage.Parts, message.Part{
+					Type: message.PartTypeText,
+					Text: event.RefusalDelta,
+				})
+			}
 			assistantMessage.UpdatedAt = r.deps.Now().UTC()
-			state = state.replaceLastMessage(assistantMessage).withTransition("assistant_refusal_received")
-			if err := r.deps.Conversation.UpdateMessage(ctx, assistantMessage.SessionID, assistantMessage); err != nil {
-				return turnOutcome{}, state, err
+			state = copyLoopState(state)
+			state.Messages[assistantIndex] = assistantMessage
+			state.Transition = "assistant_refusal_received"
+			if r.deps.dispatcher != nil {
+				r.deps.dispatcher.Dispatch(app.BaseEvent{
+					T: app.EventAgent,
+					Payload: QueryEvent{
+						Status: QueryStatusDelta,
+						State:  copyLoopState(state),
+						Err:    nil,
+					},
+				})
 			}
 		case provider.StreamEventToolCallCompleted:
 			if event.ToolCall != nil {
 				pendingToolCalls = append(pendingToolCalls, *event.ToolCall)
-				appendToolCallPart(&assistantMessage, *event.ToolCall)
-				assistantMessage.Status = message.StatusStreaming
+				assistantMessage.Parts = append(assistantMessage.Parts, message.Part{
+					Type: message.PartTypeToolCall,
+					ToolCall: &message.ToolCallPart{
+						ID:     event.ToolCall.ID,
+						Name:   event.ToolCall.Name,
+						Input:  event.ToolCall.Arguments,
+						Status: "completed",
+					},
+				})
 				assistantMessage.UpdatedAt = r.deps.Now().UTC()
-				state = state.replaceLastMessage(assistantMessage)
-				state = state.withTransition("tool_call_completed")
+				state = copyLoopState(state)
+				state.Messages[assistantIndex] = assistantMessage
+				state.Transition = "tool_call_completed"
+				if r.deps.dispatcher != nil {
+					r.deps.dispatcher.Dispatch(app.BaseEvent{
+						T: app.EventAgent,
+						Payload: QueryEvent{
+							Status: QueryStatusDelta,
+							State:  copyLoopState(state),
+							Err:    nil,
+						},
+					})
+				}
 			}
 		case provider.StreamEventTurnFinished:
-			assistantMessage.Status = message.StatusComplete
 			finishedAt := r.deps.Now().UTC()
 			assistantMessage.UpdatedAt = finishedAt
-			state = state.replaceLastMessage(assistantMessage)
+			state = copyLoopState(state)
+			state.Messages[assistantIndex] = assistantMessage
+
+			var persistedParts []message.Part
+			if len(assistantMessage.Parts) > 0 {
+				persistedParts = make([]message.Part, len(assistantMessage.Parts))
+				for i := range assistantMessage.Parts {
+					persistedParts[i] = assistantMessage.Parts[i]
+					if assistantMessage.Parts[i].Image != nil {
+						imagePart := *assistantMessage.Parts[i].Image
+						persistedParts[i].Image = &imagePart
+					}
+					if assistantMessage.Parts[i].ToolCall != nil {
+						toolCallPart := *assistantMessage.Parts[i].ToolCall
+						persistedParts[i].ToolCall = &toolCallPart
+					}
+					if assistantMessage.Parts[i].ToolResult != nil {
+						toolResultPart := *assistantMessage.Parts[i].ToolResult
+						persistedParts[i].ToolResult = &toolResultPart
+					}
+					if assistantMessage.Parts[i].Thinking != nil {
+						thinkingPart := *assistantMessage.Parts[i].Thinking
+						persistedParts[i].Thinking = &thinkingPart
+					}
+					if assistantMessage.Parts[i].Attachment != nil {
+						attachmentPart := *assistantMessage.Parts[i].Attachment
+						persistedParts[i].Attachment = &attachmentPart
+					}
+					if assistantMessage.Parts[i].Summary != nil {
+						summaryPart := *assistantMessage.Parts[i].Summary
+						persistedParts[i].Summary = &summaryPart
+					}
+				}
+			}
 
 			persistedAssistant, err := r.deps.Conversation.CreateMessage(ctx, assistantMessage.SessionID, message.CreateMessageParams{
 				ID:               assistantMessage.ID,
 				Kind:             assistantMessage.Kind,
-				Status:           message.StatusComplete,
 				FinishedAt:       finishedAt,
 				IsCompactSummary: assistantMessage.Flags.IsCompactSummary,
 				Flags:            assistantMessage.Flags,
-				Parts:            cloneInputParts(assistantMessage.Parts),
+				Parts:            persistedParts,
 				System:           assistantMessage.System,
 				Progress:         assistantMessage.Progress,
-			})
+			}, r.deps.dispatcher)
 			if err != nil {
 				return turnOutcome{}, state, err
 			}
 
+			state = copyLoopState(state)
+			state.Messages[assistantIndex] = persistedAssistant
 			if event.StopReason == provider.StopReasonToolCalls {
-				state = state.withTransition("awaiting_tool_execution")
-				if err := r.deps.Conversation.UpdateMessage(ctx, persistedAssistant.SessionID, persistedAssistant); err != nil {
-					return turnOutcome{}, state, err
+				state.Transition = "awaiting_tool_execution"
+				if r.deps.dispatcher != nil {
+					r.deps.dispatcher.Dispatch(app.BaseEvent{
+						T: app.EventAgent,
+						Payload: QueryEvent{
+							Status: QueryStatusDelta,
+							State:  copyLoopState(state),
+							Err:    nil,
+						},
+					})
 				}
 				return turnOutcome{
-					assistantMessage: assistantMessage,
+					assistantMessage: persistedAssistant,
 					persistedMessage: persistedAssistant,
 					finishReason:     FinishReasonAwaitingToolExecution,
 					stopReason:       event.StopReason,
@@ -312,12 +496,19 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 				}, state, nil
 			}
 
-			state = state.withTransition("assistant_completed")
-			if err := r.deps.Conversation.UpdateMessage(ctx, persistedAssistant.SessionID, persistedAssistant); err != nil {
-				return turnOutcome{}, state, err
+			state.Transition = "assistant_completed"
+			if r.deps.dispatcher != nil {
+				r.deps.dispatcher.Dispatch(app.BaseEvent{
+					T: app.EventAgent,
+					Payload: QueryEvent{
+						Status: QueryStatusDelta,
+						State:  copyLoopState(state),
+						Err:    nil,
+					},
+				})
 			}
 			return turnOutcome{
-				assistantMessage: assistantMessage,
+				assistantMessage: persistedAssistant,
 				persistedMessage: persistedAssistant,
 				finishReason:     FinishReasonCompleted,
 				stopReason:       event.StopReason,
@@ -330,74 +521,4 @@ func (r *QueryLoop) runTurn(ctx context.Context, state loopState, req provider.R
 		assistantMessage: assistantMessage,
 		finishReason:     FinishReasonCompleted,
 	}, state, nil
-}
-
-func appendThinkingDelta(msg *message.Message, delta string) {
-	for i := range msg.Parts {
-		if msg.Parts[i].Type == message.PartTypeThinking && msg.Parts[i].Thinking != nil {
-			msg.Parts[i].Thinking.Content += delta
-			return
-		}
-	}
-
-	msg.Parts = append(msg.Parts, message.Part{
-		Type: message.PartTypeThinking,
-		Thinking: &message.ThinkingPart{
-			Content: delta,
-		},
-	})
-}
-
-func latestAssistantMessage(messages []message.Message) (message.Message, bool) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Kind == message.KindAssistant {
-			return cloneMessage(messages[i]), true
-		}
-	}
-	return message.Message{}, false
-}
-
-func firstUserMessageID(messages []message.Message) string {
-	for _, msg := range messages {
-		if msg.Kind == message.KindUser {
-			return msg.ID
-		}
-	}
-	return ""
-}
-
-func newAssistantStreamMessage(sessionID string, turn int, now time.Time) message.Message {
-	return message.Message{
-		ID:        fmt.Sprintf("assistant-turn-%d-%d", turn, now.UnixNano()),
-		SessionID: sessionID,
-		Kind:      message.KindAssistant,
-		CreatedAt: now,
-		UpdatedAt: now,
-		Parts: []message.Part{
-			{
-				Type: message.PartTypeText,
-				Text: "",
-			},
-		},
-	}
-}
-
-// TODO:should be refacotr
-func appendToolCallPart(msg *message.Message, call provider.ToolCall) {
-	msg.Parts = append(msg.Parts, message.Part{
-		Type: message.PartTypeToolCall,
-		ToolCall: &message.ToolCallPart{
-			ID:     call.ID,
-			Name:   call.Name,
-			Input:  call.Arguments,
-			Status: "completed",
-		},
-	})
-}
-
-func buildProviderErrorText(err error) string {
-	if err == nil {
-		return "provider error"
-	}
-	return "provider error: " + err.Error()
 }

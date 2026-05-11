@@ -1,118 +1,85 @@
 package agent
 
 import (
-	"time"
-
-	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/provider"
 )
 
-// loopState stores the minimal mutable state required to continue a query loop.
-type loopState struct {
-	messages                     []message.Message
-	maxOutputTokensOverride      *int
-	autoCompactTracking          *autoCompactTracking
-	stopHookActive               bool
-	maxOutputTokensRecoveryCount int
-	hasAttemptedReactiveCompact  bool
-	turnCount                    int
-	pendingToolUseSummary        *pendingToolUseSummary
-	transition                   string // Transition records the latest control-flow transition inside the query loop.
+// LoopState stores the minimal mutable state required to continue a query loop.
+// TODO：select fields which need to be exported
+type LoopState struct {
+	Messages                     []message.Message
+	MaxOutputTokensOverride      *int
+	AutoCompactTracking          *autoCompactTracking
+	StopHookActive               bool
+	MaxOutputTokensRecoveryCount int
+	HasAttemptedReactiveCompact  bool
+	TurnCount                    int
+	PendingToolUseSummary        *pendingToolUseSummary
+	Transition                   string // Transition records the latest control-flow transition inside the query loop.
 
 	// TODO: Add toolUseContext once tool loop ownership is finalized.
 	// TODO: Add richer transition metadata after recovery and compact paths exist.
 }
 
 // LoopState function
-func newLoopState(params QueryParams) loopState {
-	return loopState{
-		messages: []message.Message{
+func newLoopState(params QueryParams) LoopState {
+	return LoopState{
+		Messages: []message.Message{
 			{
 				SessionID: params.SessionID,
 				Kind:      message.KindUser,
 				Parts:     append([]message.Part(nil), params.InputParts...),
 			},
 		},
-		turnCount: 1,
+		TurnCount: 1,
 	}
 }
 
-// TODO: Maybe these func should be delete
-func (s loopState) withTransition(reason string) loopState {
-	next := s
-	next.transition = reason
-	return next
-}
-
-func (s loopState) withMessages(messages []message.Message) loopState {
-	next := s
-	next.messages = cloneMessages(messages)
-	return next
-}
-
-func (s loopState) appendMessage(msg message.Message) loopState {
-	next := s
-	next.messages = append(cloneMessages(s.messages), cloneMessage(msg))
-	return next
-}
-
-func (s loopState) replaceLastMessage(msg message.Message) loopState {
-	next := s
-	next.messages = cloneMessages(s.messages)
-	if len(next.messages) == 0 {
-		next.messages = append(next.messages, cloneMessage(msg))
-		return next
+// TO Deep copy loopstate
+func copyLoopState(state LoopState) LoopState {
+	copied := state
+	if len(state.Messages) == 0 {
+		copied.Messages = nil
+		return copied
 	}
 
-	next.messages[len(next.messages)-1] = cloneMessage(msg)
-	return next
-}
+	copied.Messages = make([]message.Message, len(state.Messages))
+	for i := range state.Messages {
+		copied.Messages[i] = state.Messages[i]
+		if len(state.Messages[i].Parts) == 0 {
+			copied.Messages[i].Parts = nil
+			continue
+		}
 
-func (s loopState) withTurnCount(turnCount int) loopState {
-	next := s
-	next.turnCount = turnCount
-	return next
-}
-
-func defaultQueryConfig() QueryConfig {
-	return QueryConfig{
-		MaxTurns: 1,
-	}
-}
-
-func defaultQueryDeps(conversation sessionStore, llm provider.StreamingLLM, d app.Dispatcher) QueryDeps {
-	return QueryDeps{
-		Conversation: conversation,
-		LLM:          llm,
-		Now:          time.Now,
-	}
-}
-
-func cloneMessages(messages []message.Message) []message.Message {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	cloned := make([]message.Message, len(messages))
-	for i := range messages {
-		cloned[i] = cloneMessage(messages[i])
-	}
-	return cloned
-}
-
-func cloneMessage(msg message.Message) message.Message {
-	cloned := msg
-	cloned.Parts = cloneMessageParts(msg.Parts)
-	return cloned
-}
-
-func cloneMessageParts(parts []message.Part) []message.Part {
-	if len(parts) == 0 {
-		return nil
+		copied.Messages[i].Parts = make([]message.Part, len(state.Messages[i].Parts))
+		for j := range state.Messages[i].Parts {
+			copied.Messages[i].Parts[j] = state.Messages[i].Parts[j]
+			if state.Messages[i].Parts[j].Image != nil {
+				imagePart := *state.Messages[i].Parts[j].Image
+				copied.Messages[i].Parts[j].Image = &imagePart
+			}
+			if state.Messages[i].Parts[j].ToolCall != nil {
+				toolCallPart := *state.Messages[i].Parts[j].ToolCall
+				copied.Messages[i].Parts[j].ToolCall = &toolCallPart
+			}
+			if state.Messages[i].Parts[j].ToolResult != nil {
+				toolResultPart := *state.Messages[i].Parts[j].ToolResult
+				copied.Messages[i].Parts[j].ToolResult = &toolResultPart
+			}
+			if state.Messages[i].Parts[j].Thinking != nil {
+				thinkingPart := *state.Messages[i].Parts[j].Thinking
+				copied.Messages[i].Parts[j].Thinking = &thinkingPart
+			}
+			if state.Messages[i].Parts[j].Attachment != nil {
+				attachmentPart := *state.Messages[i].Parts[j].Attachment
+				copied.Messages[i].Parts[j].Attachment = &attachmentPart
+			}
+			if state.Messages[i].Parts[j].Summary != nil {
+				summaryPart := *state.Messages[i].Parts[j].Summary
+				copied.Messages[i].Parts[j].Summary = &summaryPart
+			}
+		}
 	}
 
-	cloned := make([]message.Part, len(parts))
-	copy(cloned, parts)
-	return cloned
+	return copied
 }

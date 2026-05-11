@@ -85,38 +85,31 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case appEventMsg:
-		switch event := msg.event.(type) {
-		case session.SessionRestoredEvent:
-			m.sessionID = event.Session.ID
-			m.messages = append([]message.Message(nil), event.Messages...)
-		case session.SessionSwitchedEvent:
-			m.sessionID = event.SessionID
-		case message.MessageCreatedEvent:
-			m.upsertMessage(event.Message)
-		case message.MessageDeltaEvent:
-			m.upsertMessage(event.Message)
-		case message.MessageCompletedEvent:
-			m.upsertMessage(event.Message)
-			m.loading = false
-		case message.MessageFailedEvent:
-			m.upsertMessage(event.Message)
-			if event.Err != nil {
-				m.errMessage = event.Err.Error()
+		switch msg.event.Type() {
+		case app.EventSession:
+			if event, ok := msg.event.Data().(session.SessionEvent); ok && event.Session != nil {
+				m.sessionID = event.Session.ID
 			}
-			m.loading = false
-		case message.MessageCancelledEvent:
-			m.upsertMessage(event.Message)
-			if event.Err != nil {
-				m.errMessage = event.Err.Error()
+		case app.EventMessage:
+			if event, ok := msg.event.Data().(message.MessageEvent); ok && event.Message != nil {
+				m.upsertMessage(*event.Message)
 			}
-			m.loading = false
-		case agent.QueryCompletedEvent:
-			m.loading = false
-		case agent.QueryFailedEvent:
-			if event.Err != nil {
-				m.errMessage = event.Err.Error()
+		case app.EventAgent:
+			if event, ok := msg.event.Data().(agent.QueryEvent); ok {
+				m.messages = append([]message.Message(nil), event.State.Messages...)
+
+				switch event.Status {
+				case agent.QueryStatusStarted, agent.QueryStatusDelta:
+					m.loading = event.State.Transition != "awaiting_tool_execution"
+				case agent.QueryStatusCompleted:
+					m.loading = false
+				case agent.QueryStatusFailed:
+					if event.Err != nil {
+						m.errMessage = event.Err.Error()
+					}
+					m.loading = false
+				}
 			}
-			m.loading = false
 		}
 		return m, waitAppEventCmd(m.app.Events())
 	case tea.KeyPressMsg:

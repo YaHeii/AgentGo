@@ -60,6 +60,4 @@ type ToolCall struct {
 	Arguments string
 }
 
-type StreamingLLM interface {
-	StreamChat(ctx context.Context, req Request) <-chan StreamEvent
-}
+
