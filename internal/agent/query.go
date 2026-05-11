@@ -30,7 +30,7 @@ func NewQueryLoop(conversation sessionStore, llm provider.StreamingLLM, d app.Di
 	}
 }
 
-//TODO: TOdelete
+// TODO: TOdelete
 func (r *QueryLoop) RunPrompt(ctx context.Context, sessionID string, prompt string) error {
 	_, err := r.RunQuery(ctx, QueryParams{
 		SessionID: sessionID,
@@ -51,7 +51,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
 	}
 
-	// 
+	//
 	var inputParts []message.Part
 	if len(params.InputParts) > 0 {
 		inputParts = make([]message.Part, len(params.InputParts))
@@ -123,32 +123,8 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 			})
 		}
 
-		providerMessages := make([]provider.Message, 0, len(history))
-		for _, msg := range history {
-			role := "system"
-			switch msg.Kind {
-			case message.KindAssistant:
-				role = "assistant"
-			case message.KindUser:
-				role = "user"
-			}
-
-			content := ""
-			for _, part := range msg.Parts {
-				if part.Type == message.PartTypeText {
-					content = part.Text
-					break
-				}
-			}
-
-			providerMessages = append(providerMessages, provider.Message{
-				Role:    role,
-				Content: content,
-			})
-		}
-
 		req := provider.Request{
-			Messages: providerMessages,
+			SessionID: params.SessionID,
 		}
 
 		outcome, nextState, err := r.runTurn(ctx, state, req)
@@ -231,7 +207,6 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 	}, nil
 }
 
-
 func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.Request) (turnOutcome, LoopState, error) {
 	state = copyLoopState(state)
 
@@ -249,6 +224,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.R
 
 	pendingToolCalls := make([]provider.ToolCall, 0)
 	stream := r.deps.LLM.StreamChat(ctx, req)
+	
 	for event := range stream {
 		if event.Type == provider.StreamEventProviderError {
 			finishedAt := r.deps.Now().UTC()

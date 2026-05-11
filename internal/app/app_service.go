@@ -16,8 +16,8 @@ type APPService struct {
 func NewService(sessions sessionStore, agent agentStore, dispatcher Dispatcher) *APPService {
 
 	return &APPService{
-		sessions: sessions,
-		agent:    agent,
+		sessions:   sessions,
+		agent:      agent,
 		dispatcher: dispatcher,
 	}
 }
@@ -29,7 +29,7 @@ func (s *APPService) EnsureActiveSession(ctx context.Context) error {
 			return err
 		}
 		//TODO: title should from AI
-		sessionID, err = s.sessions.Create(ctx, "New Session",s.dispatcher)
+		sessionID, err = s.sessions.Create(ctx, "New Session", s.dispatcher)
 		if err != nil {
 			return err
 		}
@@ -49,4 +49,8 @@ func (s *APPService) DeleteSession(ctx context.Context, sessionID string) error 
 
 func (s *APPService) SendMessage(ctx context.Context, sessionID string, prompt string) error {
 	return s.agent.RunPrompt(ctx, sessionID, prompt)
+}
+
+func (s *APPService) Events() <-chan Event {
+	return s.dispatcher.Subscribe(context.Background())
 }

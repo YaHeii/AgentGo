@@ -69,8 +69,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	require.Len(t, depsStore.created, 2)
 	require.Len(t, originalLLM.calls, 0)
 	require.Len(t, depsLLM.calls, 1)
-	require.Len(t, depsLLM.calls[0].Messages, 1)
-	require.Equal(t, "hello", depsLLM.calls[0].Messages[0].Content)
+	require.Equal(t, "session-1", depsLLM.calls[0].SessionID)
 
 	gotStarted := <-events
 	require.Equal(t, app.EventAgent, gotStarted.Type())
@@ -131,8 +130,7 @@ func TestQueryLoopCreatesMessagesAndStreamsAssistantReply(t *testing.T) {
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, store.created, 2)
 	require.Equal(t, []string{"session-1"}, store.hydratedSessionIDs)
-	require.Len(t, llm.calls[0].Messages, 1)
-	require.Equal(t, "hello", llm.calls[0].Messages[0].Content)
+	require.Equal(t, "session-1", llm.calls[0].SessionID)
 	require.Equal(t, "hello", findTextPart(store.created[1].Parts))
 	require.Equal(t, store.persisted[1].ID, result.FinalAssistantMessageID)
 
@@ -307,8 +305,7 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 	require.Len(t, llm.calls, 2)
 	require.Equal(t, 2, result.Turns)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
-	require.Len(t, llm.calls[1].Messages, 2)
-	require.Equal(t, "one", llm.calls[1].Messages[1].Content)
+	require.Equal(t, "session-1", llm.calls[1].SessionID)
 }
 
 func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
@@ -489,11 +486,7 @@ func messageRecord(id string, kind message.Kind, text string) message.Message {
 }
 
 func cloneProviderRequest(req provider.Request) provider.Request {
-	cloned := provider.Request{}
-	if len(req.Messages) > 0 {
-		cloned.Messages = append([]provider.Message(nil), req.Messages...)
-	}
-	return cloned
+	return req
 }
 
 func findThinkingPart(parts []message.Part) *message.ThinkingPart {

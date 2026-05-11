@@ -1,7 +1,5 @@
 package provider
 
-import "context"
-
 type StreamEvent struct {
 	Type              StreamEventType
 	TextDelta         string
@@ -59,5 +57,3 @@ type ToolCall struct {
 	Name      string
 	Arguments string
 }
-
-

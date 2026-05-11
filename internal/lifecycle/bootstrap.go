@@ -13,7 +13,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/db"
 	"github.com/YaHeii/agentGo/internal/message"
-	provideropenai "github.com/YaHeii/agentGo/internal/provider/openai"
+	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/session"
 	"github.com/segmentio/ksuid"
 	"github.com/spf13/viper"
@@ -28,15 +28,15 @@ type Runtime struct {
 	closeFn func(context.Context) error
 }
 
-func ProviderConfigFromAppConfig(cfg Config) (provideropenai.Config, error) {
+func ProviderConfigFromAppConfig(cfg Config) (provider.Config, error) {
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return provideropenai.Config{}, errors.New("API_KEY is required")
+		return provider.Config{}, errors.New("API_KEY is required")
 	}
 	if strings.TrimSpace(cfg.Model) == "" {
-		return provideropenai.Config{}, errors.New("MODEL is required")
+		return provider.Config{}, errors.New("MODEL is required")
 	}
 
-	return provideropenai.Config{
+	return provider.Config{
 		BaseURL: strings.TrimSpace(cfg.BaseURL),
 		APIKey:  strings.TrimSpace(cfg.APIKey),
 		Model:   strings.TrimSpace(cfg.Model),
@@ -62,7 +62,8 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 	// TODO: Assemble MCP clients or connectors during bootstrap.
 	// TODO: Assemble skill registry or skill loader during bootstrap.
 
-	llm, err := provideropenai.New(providerCfg)
+	//TODO: The client should vary based on the configuration.
+	providerClient, err := provider.NewClient(providerCfg)
 	if err != nil {
 		return Runtime{}, fmt.Errorf("init provider: %w", err)
 	}
@@ -74,7 +75,8 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 
 	messageSvc := message.NewMessageService(st, dispatcher)
 	sessionSvc := session.NewSessionService(st, messageSvc, dispatcher)
-	agentSvc := agent.NewQueryLoop(sessionSvc, llm, dispatcher)
+	providerSvc := provider.NewProviderService(messageSvc, providerClient, dispatcher)
+	agentSvc := agent.NewQueryLoop(sessionSvc, providerSvc, dispatcher)
 
 	dispatcher.Dispatch(app.BaseEvent{
 		T: "lifecycle",

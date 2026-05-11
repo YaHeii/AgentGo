@@ -13,6 +13,7 @@ const (
 	EventMessage   EventType = "message"
 	EventSession   EventType = "session"
 	EventAgent     EventType = "agent"
+	EventProvider  EventType = "provider"
 )
 
 type Event interface {
