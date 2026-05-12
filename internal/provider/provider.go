@@ -2,25 +2,56 @@ package provider
 
 import (
 	"context"
-
-	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
+	"encoding/json"
 )
 
-type StreamingLLM interface {
-	StreamChat(ctx context.Context, req Request) <-chan StreamEvent
+type TurnRunner interface {
+	RunTurn(ctx context.Context, req Request) (TurnResult, error)
 }
 
 type Request struct {
-	SessionID string
+	Messages []Message
+	Tools    []ToolDefinition
+	Context  RequestContext
 }
 
-type messageStore interface {
-	ListMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error)
+type Message struct {
+	Role       Role
+	Content    string
+	ToolCallID string
+	ToolCalls  []ToolCall
 }
-// Now we only use the openai provider
-// To support more clients, 
-// the API is being retained and is currently implemented in the provider package.
+
+type Role string
+
+const (
+	RoleSystem    Role = "system"
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+	RoleTool      Role = "tool"
+)
+
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage
+}
+
+type RequestContext struct {
+	Temperature     *float32
+	MaxOutputTokens *int
+}
+
+type TurnResult struct {
+	Text              string
+	Reasoning         string
+	Refusal           string
+	ToolCalls         []ToolCall
+	Usage             *Usage
+	StopReason        StopReason
+	SystemFingerprint string
+}
+
 type streamClient interface {
-	streamMessages(ctx context.Context, messages []message.Message) <-chan StreamEvent
+	Stream(ctx context.Context, req Request) <-chan StreamEvent
 }

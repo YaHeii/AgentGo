@@ -133,7 +133,7 @@ func (s *Service) Call(ctx context.Context, req BatchRequest) ([]ToolResult, err
 	}
 	return results, nil
 }
-
+// TODO: Using zog makes the implementation even more elegant. 
 func validateCall(meta Metadata, call ToolCallRequest) error {
 	if err := validateCallPermission(meta, call); err != nil {
 		return err
@@ -144,6 +144,7 @@ func validateCall(meta Metadata, call ToolCallRequest) error {
 	return nil
 }
 
+// get permissionLevelfrom Environment  if don't match send the event
 func validateCallPermission(meta Metadata, call ToolCallRequest) error {
 	if !meta.Enabled {
 		return fmt.Errorf("tool %q is disabled", call.Name)

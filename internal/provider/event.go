@@ -6,7 +6,6 @@ type StreamEvent struct {
 	ReasoningDelta    string
 	RefusalDelta      string
 	ToolCallDelta     *ToolCallDelta
-	ToolCall          *ToolCall
 	Usage             *Usage
 	StopReason        StopReason
 	SystemFingerprint string
@@ -16,14 +15,13 @@ type StreamEvent struct {
 type StreamEventType string
 
 const (
-	StreamEventTextDelta         StreamEventType = "text_delta"
-	StreamEventReasoningDelta    StreamEventType = "reasoning_delta"
-	StreamEventRefusalDelta      StreamEventType = "refusal_delta"
-	StreamEventToolCallDelta     StreamEventType = "tool_call_delta"
-	StreamEventToolCallCompleted StreamEventType = "tool_call_completed"
-	StreamEventUsageAvailable    StreamEventType = "usage_available"
-	StreamEventTurnFinished      StreamEventType = "turn_finished"
-	StreamEventProviderError     StreamEventType = "provider_error"
+	StreamEventTextDelta      StreamEventType = "text_delta"
+	StreamEventReasoningDelta StreamEventType = "reasoning_delta"
+	StreamEventRefusalDelta   StreamEventType = "refusal_delta"
+	StreamEventToolCallDelta  StreamEventType = "tool_call_delta"
+	StreamEventUsageAvailable StreamEventType = "usage_available"
+	StreamEventTurnFinished   StreamEventType = "turn_finished"
+	StreamEventProviderError  StreamEventType = "provider_error"
 )
 
 type StopReason string
