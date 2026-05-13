@@ -4,24 +4,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/db"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/session"
-	"github.com/segmentio/ksuid"
 	"github.com/spf13/viper"
 )
 
 var (
 	State *GlobalState
 )
+
+type Config struct {
+	Environment   string `mapstructure:"ENVIRONMENT"`
+	BaseURL       string `mapstructure:"BASE_URL"`
+	APIKey        string `mapstructure:"API_KEY"`
+	Model         string `mapstructure:"MODEL"`
+	MaxToken      int64  `mapstructure:"MAX_TOKENS"`
+	ContextWindow int64  `mapstructure:"CONTEXT_WINDOW"`
+}
 
 type Runtime struct {
 	App     *app.APPService
@@ -47,26 +51,17 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 	if err != nil {
 		return Runtime{}, fmt.Errorf("load config: %w", err)
 	}
-	providerCfg, err := ProviderConfigFromAppConfig(cfg)
-	if err != nil {
+	if _, err := ProviderConfigFromAppConfig(cfg); err != nil {
 		return Runtime{}, fmt.Errorf("invalid config: %w", err)
 	}
-	state, err := LoadState()
-	if err != nil {
+
+	dispatcher := app.NewDispatcher(128)
+	State = &GlobalState{}
+	supervisor := NewSupervisor(dispatcher, cfg)
+	if err := supervisor.Initialize(ctx); err != nil {
 		return Runtime{}, fmt.Errorf("init lifecycle state: %w", err)
 	}
-	State = &state
-	dispatcher := app.NewDispatcher(128)
-	// TODO: Detect local runtime environment and workspace prerequisites during bootstrap.
-	// TODO: Assemble tool registry during bootstrap.
-	// TODO: Assemble MCP clients or connectors during bootstrap.
-	// TODO: Assemble skill registry or skill loader during bootstrap.
-
-	//TODO: The client should vary based on the configuration.
-	providerClient, err := provider.NewClient(providerCfg)
-	if err != nil {
-		return Runtime{}, fmt.Errorf("init provider: %w", err)
-	}
+	go supervisor.Run(ctx)
 
 	st, err := db.Open(databasePath)
 	if err != nil {
@@ -75,33 +70,24 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 
 	messageSvc := message.NewMessageService(st, dispatcher)
 	sessionSvc := session.NewSessionService(st, messageSvc, dispatcher)
-	providerSvc := provider.NewProviderService(messageSvc, providerClient, dispatcher)
-	agentSvc := agent.NewQueryLoop(sessionSvc, providerSvc, dispatcher)
 
 	dispatcher.Dispatch(app.BaseEvent{
 		T: "lifecycle",
 		Payload: BootstrapDoneEvent{
-			time:      state.StartTime,
-			sessionID: state.SessionID,
+			Time:      State.StartTime,
+			SessionID: State.SessionID,
 		},
 	})
 	return Runtime{
 		App: app.NewService(
 			sessionSvc,
-			agentSvc,
+			newBootstrapAgentService(),
 			dispatcher,
 		),
 		closeFn: func(context.Context) error {
 			return st.Close()
 		},
 	}, nil
-}
-
-type Config struct {
-	Environment string `mapstructure:"ENVIRONMENT"`
-	BaseURL     string `mapstructure:"BASE_URL"`
-	APIKey      string `mapstructure:"API_KEY"`
-	Model       string `mapstructure:"MODEL"`
 }
 
 // LoadConfig reads configuration from file or environment variables.
@@ -122,32 +108,14 @@ func LoadConfig(path string) (config Config, err error) {
 	return
 }
 
-// XXX: Optimize error handling
-// XXX: Enriched fields
-func LoadState() (state GlobalState, err error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return GlobalState{}, err
-	}
+type bootstrapSessionService struct{}
 
-	projectRoot, err := filepath.Abs(cwd)
-	if err != nil {
-		return GlobalState{}, err
-	}
+type bootstrapAgentService struct{}
 
-	startTime := time.Now().UTC()
-	sessionID, err := ksuid.NewRandomWithTime(startTime) //Ksuid uses time information for easy sorting.
-	if err != nil {
-		return GlobalState{}, fmt.Errorf("generate session id: %w", err)
-	}
+func newBootstrapAgentService() *bootstrapAgentService {
+	return &bootstrapAgentService{}
+}
 
-	state = GlobalState{
-		AppVersion:  "0.0.1",
-		StartTime:   startTime.Format(time.RFC3339Nano),
-		Cwd:         cwd,
-		ProjectRoot: projectRoot,
-		SessionID:   sessionID.String(),
-	}
-
-	return state, nil
+func (s *bootstrapAgentService) RunPrompt(_ context.Context, _ string, _ string) error {
+	return errors.New("lifecycle bootstrap agent service is not wired to runtime agent layer")
 }

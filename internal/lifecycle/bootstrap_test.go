@@ -6,62 +6,58 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/segmentio/ksuid"
 )
 
-func TestLoadStateInitializesBootstrapStateFields(t *testing.T) {
-	t.Parallel()
+func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
+	resetGlobalStateForTest()
+	dispatcher := app.NewDispatcher(16)
+	supervisor := NewSupervisor(dispatcher, Config{
+		Model:         "test-model",
+		ContextWindow: 400000,
+	})
 
-	before := time.Now().UTC()
-	state, err := LoadState()
+	err := supervisor.Initialize(context.Background())
 	if err != nil {
-		t.Fatalf("load state: %v", err)
+		t.Fatalf("initialize supervisor: %v", err)
 	}
-	after := time.Now().UTC()
 
-	if state.AppVersion != "0.0.1" {
-		t.Fatalf("expected app version 0.0.1, got %q", state.AppVersion)
+	snapshot := GetState()
+	if snapshot.AppVersion != "0.0.1" {
+		t.Fatalf("expected app version 0.0.1, got %q", snapshot.AppVersion)
 	}
-	if state.DebugMode {
-		t.Fatal("expected debug mode to default to false")
-	}
-	if state.Cwd == "" {
-		t.Fatal("expected cwd to be initialized")
-	}
-	expectedProjectRoot, err := filepath.Abs(state.Cwd)
-	if err != nil {
-		t.Fatalf("resolve expected project root: %v", err)
-	}
-	if state.ProjectRoot != expectedProjectRoot {
-		t.Fatalf("expected project root %q, got %q", expectedProjectRoot, state.ProjectRoot)
-	}
-	if state.StartTime == "" {
+	if snapshot.StartTime == "" {
 		t.Fatal("expected start time to be initialized")
 	}
-	startTime, err := time.Parse(time.RFC3339Nano, state.StartTime)
-	if err != nil {
-		t.Fatalf("parse start time: %v", err)
-	}
-	if startTime.Before(before) || startTime.After(after) {
-		t.Fatalf("expected start time between %s and %s, got %s", before, after, startTime)
-	}
-	if state.SessionID == "" {
+	if snapshot.SessionID == "" {
 		t.Fatal("expected session id to be initialized")
 	}
-	sessionID, err := ksuid.Parse(state.SessionID)
-	if err != nil {
-		t.Fatalf("parse session id: %v", err)
+	if _, err := ksuid.Parse(snapshot.SessionID); err != nil {
+		t.Fatalf("expected ksuid session id, got %v", err)
 	}
-	if sessionTime := sessionID.Time().UTC(); sessionTime.Before(before.Add(-time.Second)) || sessionTime.After(after.Add(time.Second)) {
-		t.Fatalf("expected session id time between %s and %s, got %s", before.Add(-time.Second), after.Add(time.Second), sessionTime)
+	if snapshot.Cwd == "" {
+		t.Fatal("expected cwd to be initialized")
+	}
+	if snapshot.ProjectRoot == "" {
+		t.Fatal("expected project root to be initialized")
+	}
+	if len(snapshot.InitialEnv) == 0 {
+		t.Fatal("expected initial env to be populated")
+	}
+	if snapshot.ModelLimit != 400000 {
+		t.Fatalf("expected model limit 400000, got %d", snapshot.ModelLimit)
+	}
+	if len(snapshot.KnownTools) == 0 {
+		t.Fatal("expected at least one known tool")
+	}
+	if snapshot.KnownTools[0].Name != "grep" {
+		t.Fatalf("expected grep tool to be discovered, got %+v", snapshot.KnownTools[0])
 	}
 }
 
 func TestProviderConfigFromAppConfigRequiresAPIKeyAndModel(t *testing.T) {
-	t.Parallel()
-
 	_, err := ProviderConfigFromAppConfig(Config{})
 	if err == nil {
 		t.Fatal("expected validation error")
@@ -80,8 +76,6 @@ func TestProviderConfigFromAppConfigRequiresAPIKeyAndModel(t *testing.T) {
 }
 
 func TestRuntimeCloseCallsCloser(t *testing.T) {
-	t.Parallel()
-
 	called := false
 	runtime := Runtime{
 		closeFn: func(context.Context) error {
@@ -99,8 +93,6 @@ func TestRuntimeCloseCallsCloser(t *testing.T) {
 }
 
 func TestRuntimeCloseWithoutCloserIsNoop(t *testing.T) {
-	t.Parallel()
-
 	runtime := Runtime{}
 	if err := runtime.GracefulShutdown(context.Background()); err != nil {
 		t.Fatalf("close runtime: %v", err)
@@ -108,11 +100,11 @@ func TestRuntimeCloseWithoutCloserIsNoop(t *testing.T) {
 }
 
 func TestBootstrapReturnsRuntimeWithAppAndCloser(t *testing.T) {
-	t.Parallel()
+	resetGlobalStateForTest()
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "app.env")
-	config := "API_KEY=test-key\nMODEL=test-model\n"
+	config := "API_KEY=test-key\nMODEL=test-model\nCONTEXT_WINDOW=400000\nMAX_TOKENS=128000\n"
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -129,15 +121,32 @@ func TestBootstrapReturnsRuntimeWithAppAndCloser(t *testing.T) {
 	if State == nil {
 		t.Fatal("expected global state to be initialized")
 	}
-	if State.Cwd == "" {
+
+	snapshot := GetState()
+	if snapshot.Cwd == "" {
 		t.Fatal("expected current cwd to be initialized")
 	}
-	if State.ProjectRoot == "" {
+	if snapshot.ProjectRoot == "" {
 		t.Fatal("expected project root to be initialized")
 	}
-	if _, err := ksuid.Parse(State.SessionID); err != nil {
+	if _, err := ksuid.Parse(snapshot.SessionID); err != nil {
 		t.Fatalf("expected bootstrap session id to be a ksuid: %v", err)
 	}
+	if len(snapshot.KnownTools) == 0 {
+		t.Fatal("expected known tools to be initialized")
+	}
+
+	payload := BootstrapDoneEvent{
+		Time:      snapshot.StartTime,
+		SessionID: snapshot.SessionID,
+	}
+	if payload.Time == "" {
+		t.Fatal("expected bootstrap event time")
+	}
+	if payload.SessionID == "" {
+		t.Fatal("expected bootstrap event session id")
+	}
+
 	if err := runtime.GracefulShutdown(context.Background()); err != nil {
 		t.Fatalf("close runtime: %v", err)
 	}

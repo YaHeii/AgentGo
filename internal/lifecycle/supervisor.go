@@ -1,44 +1,319 @@
 package lifecycle
 
-// todo:
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"time"
 
-// #### A. 持续发现 (Continuous Discovery)
+	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/message"
+	"github.com/YaHeii/agentGo/internal/provider"
+	"github.com/YaHeii/agentGo/internal/tool"
+	grepTool "github.com/YaHeii/agentGo/internal/tool/grep"
+	"github.com/pkoukk/tiktoken-go"
+	"github.com/segmentio/ksuid"
+)
 
-// 持续发现mcp工具和本地tool
+const defaultAppVersion = "0.0.1"
 
-// #### B. Token 与上下文监控 (Monitoring)
+type Supervisor struct {
+	dispatcher app.Dispatcher
+	model      string
+	modelLimit int
+	toolSvc    *tool.Service
+	estimator  contextEstimator
+}
 
-// 工具执行时的 Token 监控不应是“全生命周期”的，而应是“单次调用（Request-scoped）”的。
+type contextEstimator interface {
+	Estimate(model string, messages []message.Message) (int, error)
+}
 
-// ```go
-// func (s *ToolSupervisor) Execute(ctx context.Context, id string, args json.RawMessage) (Result, error) {
-//     // 1. 获取带有 Token 预算的子 Context
-//     // 假设你在 context 中注入了当前 Session 的 Token 限制
-//     execCtx, cancel := context.WithTimeout(ctx, s.maxExecutionTime)
-//     defer cancel()
+type tiktokenEstimator struct{}
 
-//     // 2. 监控协程：实时计算消耗
-//     go func() {
-//         for {
-//             select {
-//             case <-execCtx.Done():
-//                 return
-//             case <-s.tokenAlert: 
-//                 // 如果检测到 Token 异常溢出（例如模型陷入死循环不断输出）
-//                 cancel() // 强制终止底层进程
-//             }
-//         }
-//     }()
+func NewSupervisor(dispatcher app.Dispatcher, cfg Config) *Supervisor {
+	return &Supervisor{
+		dispatcher: dispatcher,
+		model:      strings.TrimSpace(cfg.Model),
+		modelLimit: normalizeContextWindow(cfg.ContextWindow),
+		estimator:  tiktokenEstimator{},
+	}
+}
 
-//     return s.registry.Get(id).Execute(execCtx, args)
-// }
+func (s *Supervisor) Initialize(ctx context.Context) error {
+	if State == nil {
+		State = &GlobalState{}
+	}
 
-// ```
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	projectRoot, err := filepath.Abs(cwd)
+	if err != nil {
+		return err
+	}
 
-// 为了实现“不符合则通过 Context 取消进程”，你需要实现一个 **`Execution Guard`（执行卫士）**：
+	startTime := time.Now().UTC()
+	sessionID, err := ksuid.NewRandomWithTime(startTime)
+	if err != nil {
+		return err
+	}
 
-// 1. **进程绑定**：对于 `bashtool`，确保 `os/exec.CommandContext` 使用的是受控的 `ctx`。当 `ctx` 被取消时，Go 会自动发送 `SIGKILL` 给子进程。
-// 2. **Token 熔断器**：在 `ToolResult` 回传时，记录每一轮的 Token 消耗。如果单次工具调用产生的日志/数据量超过阈值（例如 1MB），立即触发 `cancel()`。
-// 3. **副作用回滚**：如果进程因为不合规被强杀，`Supervisor` 应该尝试清理现场（如删除临时文件）。
+	s.toolSvc = tool.NewService(grepTool.NewGrepTool(projectRoot))
+	State.initialize(GlobalState{
+		AppVersion:  defaultAppVersion,
+		StartTime:   startTime.Format(time.RFC3339Nano),
+		Cwd:         cwd,
+		ProjectRoot: projectRoot,
+		SessionID:   sessionID.String(),
+		InitialEnv:  loadEnvironmentSnapshot(),
+		ModelLimit:  s.modelLimit,
+		KnownTools:  toToolSnapshots(s.toolSvc.ListTools(ctx)),
+	})
+	return nil
+}
 
-// ---
+func (s *Supervisor) Run(ctx context.Context) {
+	if s.dispatcher == nil {
+		<-ctx.Done()
+		return
+	}
+
+	events := s.dispatcher.Subscribe(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-events:
+			if !ok {
+				return
+			}
+			s.handleEvent(evt)
+		}
+	}
+}
+
+func (s *Supervisor) handleEvent(evt app.Event) {
+	switch evt.Type() {
+	case app.EventProvider:
+		providerEvent, ok := evt.Data().(provider.StreamEvent)
+		if !ok {
+			return
+		}
+		if providerEvent.Type == provider.StreamEventUsageAvailable && providerEvent.Usage != nil && State != nil {
+			State.applyUsage(
+				providerEvent.Usage.PromptTokens,
+				providerEvent.Usage.CompletionTokens,
+				providerEvent.Usage.TotalTokens,
+			)
+		}
+	case app.EventAgent:
+		messages, ok := extractMessagesFromAgentPayload(evt.Data())
+		if !ok || State == nil {
+			return
+		}
+		tokens, chars, messageCount := estimateContextUsage(s.model, messages, s.estimator)
+		State.setContextEstimate(tokens, chars, messageCount)
+	}
+}
+
+func extractMessagesFromAgentPayload(payload any) ([]message.Message, bool) {
+	value := reflect.ValueOf(payload)
+	if !value.IsValid() {
+		return nil, false
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil, false
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Struct {
+		return nil, false
+	}
+
+	stateField := value.FieldByName("State")
+	if !stateField.IsValid() {
+		return nil, false
+	}
+	if stateField.Kind() == reflect.Pointer {
+		if stateField.IsNil() {
+			return nil, false
+		}
+		stateField = stateField.Elem()
+	}
+	if stateField.Kind() != reflect.Struct {
+		return nil, false
+	}
+
+	messagesField := stateField.FieldByName("Messages")
+	if !messagesField.IsValid() || !messagesField.CanInterface() {
+		return nil, false
+	}
+	messages, ok := messagesField.Interface().([]message.Message)
+	if !ok {
+		return nil, false
+	}
+
+	copied := make([]message.Message, len(messages))
+	copy(copied, messages)
+	return copied, true
+}
+
+func estimateContextUsage(model string, messages []message.Message, estimator contextEstimator) (int, int, int) {
+	messageCount := len(messages)
+	if messageCount == 0 {
+		return 0, 0, 0
+	}
+
+	var builder []byte
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch part.Type {
+			case message.PartTypeText:
+				builder = append(builder, part.Text...)
+			case message.PartTypeThinking:
+				if part.Thinking != nil {
+					builder = append(builder, part.Thinking.Content...)
+					builder = append(builder, part.Thinking.Summary...)
+				}
+			case message.PartTypeToolCall:
+				if part.ToolCall != nil {
+					builder = append(builder, part.ToolCall.Name...)
+					builder = append(builder, part.ToolCall.Input...)
+				}
+			case message.PartTypeToolResult:
+				if part.ToolResult != nil {
+					builder = append(builder, part.ToolResult.Content...)
+				}
+			case message.PartTypeAttachment:
+				if part.Attachment != nil {
+					builder = append(builder, part.Attachment.Name...)
+					builder = append(builder, part.Attachment.Path...)
+				}
+			case message.PartTypeSummary:
+				if part.Summary != nil {
+					builder = append(builder, part.Summary.Content...)
+				}
+			}
+		}
+	}
+
+	chars := len(builder)
+	if chars == 0 {
+		return 0, 0, messageCount
+	}
+
+	if estimator == nil {
+		return 0, chars, messageCount
+	}
+
+	tokens, err := estimator.Estimate(model, messages)
+	if err != nil {
+		return 0, chars, messageCount
+	}
+	return tokens, chars, messageCount
+}
+
+func (tiktokenEstimator) Estimate(model string, messages []message.Message) (int, error) {
+	var builder []byte
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch part.Type {
+			case message.PartTypeText:
+				builder = append(builder, part.Text...)
+			case message.PartTypeThinking:
+				if part.Thinking != nil {
+					builder = append(builder, part.Thinking.Content...)
+					builder = append(builder, part.Thinking.Summary...)
+				}
+			case message.PartTypeToolCall:
+				if part.ToolCall != nil {
+					builder = append(builder, part.ToolCall.Name...)
+					builder = append(builder, part.ToolCall.Input...)
+				}
+			case message.PartTypeToolResult:
+				if part.ToolResult != nil {
+					builder = append(builder, part.ToolResult.Content...)
+				}
+			case message.PartTypeAttachment:
+				if part.Attachment != nil {
+					builder = append(builder, part.Attachment.Name...)
+					builder = append(builder, part.Attachment.Path...)
+				}
+			case message.PartTypeSummary:
+				if part.Summary != nil {
+					builder = append(builder, part.Summary.Content...)
+				}
+			}
+		}
+	}
+
+	encoding, err := tokenizerForModel(model)
+	if err != nil {
+		return 0, err
+	}
+	return len(encoding.Encode(string(builder), nil, nil)), nil
+}
+
+func tokenizerForModel(model string) (*tiktoken.Tiktoken, error) {
+	if encoding, err := tiktoken.EncodingForModel(model); err == nil {
+		return encoding, nil
+	}
+
+	trimmed := strings.TrimSpace(model)
+	switch {
+	case trimmed == "gpt-4o-mini", strings.HasPrefix(trimmed, "gpt-4o-mini-"):
+		return tiktoken.GetEncoding("o200k_base")
+	case strings.HasPrefix(trimmed, "gpt-4o"):
+		return tiktoken.GetEncoding("o200k_base")
+	case strings.HasPrefix(trimmed, "gpt-4"), strings.HasPrefix(trimmed, "gpt-3.5"):
+		return tiktoken.GetEncoding("cl100k_base")
+	default:
+		return nil, errors.New("model encoding not supported")
+	}
+}
+
+func loadEnvironmentSnapshot() map[string]string {
+	env := os.Environ()
+	out := make(map[string]string, len(env))
+	for _, entry := range env {
+		for i := 0; i < len(entry); i++ {
+			if entry[i] != '=' {
+				continue
+			}
+			out[entry[:i]] = entry[i+1:]
+			break
+		}
+	}
+	return out
+}
+
+func toToolSnapshots(metas []tool.Metadata) []ToolSnapshot {
+	if len(metas) == 0 {
+		return nil
+	}
+
+	snapshots := make([]ToolSnapshot, 0, len(metas))
+	for _, meta := range metas {
+		snapshots = append(snapshots, ToolSnapshot{
+			Name:              meta.Name,
+			Description:       meta.Description,
+			Enabled:           meta.Enabled,
+			SecurityLevel:     string(meta.SecurityLevel),
+			IsConcurrencySafe: meta.IsConcurrencySafe,
+		})
+	}
+	return snapshots
+}
+
+func normalizeContextWindow(v int64) int {
+	if v <= 0 {
+		return 0
+	}
+	return int(v)
+}

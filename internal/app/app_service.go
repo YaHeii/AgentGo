@@ -22,6 +22,7 @@ func NewService(sessions sessionStore, agent agentStore, dispatcher Dispatcher) 
 	}
 }
 
+// TODO: deletethis
 func (s *APPService) EnsureActiveSession(ctx context.Context) error {
 	sessionID, err := s.sessions.GetLast(ctx)
 	if err != nil {

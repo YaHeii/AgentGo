@@ -1,6 +1,6 @@
 package lifecycle
 
 type BootstrapDoneEvent struct {
-	time      string
-	sessionID string
+	Time      string
+	SessionID string
 }
