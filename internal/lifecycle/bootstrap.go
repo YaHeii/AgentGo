@@ -25,6 +25,7 @@ type Config struct {
 	Model         string `mapstructure:"MODEL"`
 	MaxToken      int64  `mapstructure:"MAX_TOKENS"`
 	ContextWindow int64  `mapstructure:"CONTEXT_WINDOW"`
+	MaxTurn       int64  `mapstructure:"MAX_TURN"`
 }
 
 type Runtime struct {
@@ -107,8 +108,6 @@ func LoadConfig(path string) (config Config, err error) {
 	err = v.Unmarshal(&config)
 	return
 }
-
-type bootstrapSessionService struct{}
 
 type bootstrapAgentService struct{}
 

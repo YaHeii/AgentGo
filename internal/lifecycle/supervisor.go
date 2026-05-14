@@ -22,10 +22,9 @@ const defaultAppVersion = "0.0.1"
 
 type Supervisor struct {
 	dispatcher app.Dispatcher
-	model      string
-	modelLimit int
 	toolSvc    *tool.Service
 	estimator  contextEstimator
+	cfg        Config
 }
 
 type contextEstimator interface {
@@ -34,11 +33,10 @@ type contextEstimator interface {
 
 type tiktokenEstimator struct{}
 
-func NewSupervisor(dispatcher app.Dispatcher, cfg Config) *Supervisor {
+func NewSupervisor(dispatcher app.Dispatcher, config Config) *Supervisor {
 	return &Supervisor{
 		dispatcher: dispatcher,
-		model:      strings.TrimSpace(cfg.Model),
-		modelLimit: normalizeContextWindow(cfg.ContextWindow),
+		cfg:        config,
 		estimator:  tiktokenEstimator{},
 	}
 }
@@ -71,7 +69,8 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 		ProjectRoot: projectRoot,
 		SessionID:   sessionID.String(),
 		InitialEnv:  loadEnvironmentSnapshot(),
-		ModelLimit:  s.modelLimit,
+		ModelLimit:  normalizeContextWindow(s.cfg.ContextWindow),
+		MaxTurn:     normalizeContextWindow(s.cfg.MaxTurn),
 		KnownTools:  toToolSnapshots(s.toolSvc.ListTools(ctx)),
 	})
 	return nil
@@ -116,7 +115,7 @@ func (s *Supervisor) handleEvent(evt app.Event) {
 		if !ok || State == nil {
 			return
 		}
-		tokens, chars, messageCount := estimateContextUsage(s.model, messages, s.estimator)
+		tokens, chars, messageCount := estimateContextUsage(s.cfg.Model, messages, s.estimator)
 		State.setContextEstimate(tokens, chars, messageCount)
 	}
 }

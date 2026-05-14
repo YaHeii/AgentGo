@@ -20,6 +20,7 @@ type GlobalState struct {
 	SessionID               string
 	InitialEnv              map[string]string
 	ModelLimit              int
+	MaxTurn                 int
 	CumulativeInputTokens   int
 	CumulativeOutputTokens  int
 	CumulativeTotalTokens   int
@@ -62,6 +63,7 @@ func (s *GlobalState) initialize(input GlobalState) {
 	s.SessionID = input.SessionID
 	s.InitialEnv = cloneEnvMap(input.InitialEnv)
 	s.ModelLimit = input.ModelLimit
+	s.MaxTurn = input.MaxTurn
 	s.KnownTools = cloneToolSnapshots(input.KnownTools)
 	s.CumulativeInputTokens = 0
 	s.CumulativeOutputTokens = 0

@@ -8,22 +8,13 @@ import (
 // LoopState stores the minimal mutable state required to continue a query loop.
 // TODO：select fields which need to be exported
 type LoopState struct {
-	Messages                     []message.Message
-	MaxOutputTokensOverride      *int
-	AutoCompactTracking          *autoCompactTracking
-	StopHookActive               bool
-	MaxOutputTokensRecoveryCount int
-	HasAttemptedReactiveCompact  bool
-	TurnCount                    int
-	PendingToolUseSummary        *pendingToolUseSummary
-	Transition                   string // Transition records the latest control-flow transition inside the query loop.
-	AssistantMessageID           string
-	FinishReason                 FinishReason
-	StopReason                   provider.StopReason
-	PendingToolCalls             []provider.ToolCall
-
-	// TODO: Add toolUseContext once tool loop ownership is finalized.
-	// TODO: Add richer transition metadata after recovery and compact paths exist.
+	Messages           []message.Message
+	TurnCount          int
+	Transition         string // Transition records the latest control-flow transition inside the query loop.
+	AssistantMessageID string
+	FinishReason       FinishReason
+	StopReason         provider.StopReason
+	PendingToolCalls   []provider.ToolCall
 }
 
 // LoopState function

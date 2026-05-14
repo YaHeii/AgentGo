@@ -49,6 +49,9 @@ func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
 	if snapshot.ModelLimit != 400000 {
 		t.Fatalf("expected model limit 400000, got %d", snapshot.ModelLimit)
 	}
+	if snapshot.MaxTurn != 0 {
+		t.Fatalf("expected default max turn 0, got %d", snapshot.MaxTurn)
+	}
 	if len(snapshot.KnownTools) == 0 {
 		t.Fatal("expected at least one known tool")
 	}
@@ -72,6 +75,28 @@ func TestProviderConfigFromAppConfigRequiresAPIKeyAndModel(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "MODEL") {
 		t.Fatalf("expected MODEL error, got %v", err)
+	}
+}
+
+func TestSupervisorInitializeCopiesConfigIntoState(t *testing.T) {
+	resetGlobalStateForTest()
+	dispatcher := app.NewDispatcher(16)
+	supervisor := NewSupervisor(dispatcher, Config{
+		Model:         "test-model",
+		ContextWindow: 12345,
+		MaxTurn:       9,
+	})
+
+	if err := supervisor.Initialize(context.Background()); err != nil {
+		t.Fatalf("initialize supervisor: %v", err)
+	}
+
+	snapshot := GetState()
+	if snapshot.ModelLimit != 12345 {
+		t.Fatalf("expected model limit 12345, got %d", snapshot.ModelLimit)
+	}
+	if snapshot.MaxTurn != 9 {
+		t.Fatalf("expected max turn 9, got %d", snapshot.MaxTurn)
 	}
 }
 

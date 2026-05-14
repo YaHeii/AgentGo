@@ -7,6 +7,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
+	"github.com/YaHeii/agentGo/internal/tool"
 )
 
 // QueryParams contains the minimal external inputs required to run a query.
@@ -40,6 +41,7 @@ type QueryConfig struct {
 type QueryDeps struct {
 	Conversation sessionStore
 	Provider     providerStore
+	Tools        toolRunner
 	Now          func() time.Time
 	dispatcher   app.Dispatcher
 }
@@ -54,10 +56,6 @@ const (
 	FinishReasonAwaitingToolExecution FinishReason = "awaiting_tool_execution"
 )
 
-type autoCompactTracking struct{}
-
-type pendingToolUseSummary struct{}
-
 type sessionStore interface {
 	ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error)
 	CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error)
@@ -65,5 +63,10 @@ type sessionStore interface {
 }
 
 type providerStore interface {
-	StreamChat(ctx context.Context, req provider.Request) <-chan provider.StreamEvent
+	RunTurn(ctx context.Context, req provider.Request) (provider.TurnResult, error)
+}
+
+type toolRunner interface {
+	ListTools(ctx context.Context) []tool.Metadata
+	Call(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error)
 }
