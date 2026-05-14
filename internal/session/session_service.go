@@ -38,7 +38,7 @@ func NewSessionService(st sessionStore, msgs messageStore, d app.Dispatcher) *Se
 	}
 }
 
-func (s *SessionService) Create(ctx context.Context, title string, d app.Dispatcher) (string ,error) {
+func (s *SessionService) Create(ctx context.Context, title string, d app.Dispatcher) (string, error) {
 	now := s.nowFunc().UTC()
 	sessionID, err := ksuid.NewRandomWithTime(now)
 	if err != nil {
@@ -167,8 +167,20 @@ func (s *SessionService) GetParentSessionID() string {
 	return s.parentSessionID
 }
 
-func (s *SessionService) CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error) {
-	return s.messageStore.CreateMessage(ctx, sessionID, params, d)
+func (s *SessionService) CreateMessage(ctx context.Context, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error) {
+	msg, err := s.messageStore.CreateMessage(ctx, params)
+	if err != nil {
+		return message.Message{}, err
+	}
+
+	d.Dispatch(app.BaseEvent{
+		T: app.EventMessage,
+		Payload: message.MessageEvent{
+			Status:  message.StatusPending,
+			Message: &msg,
+		},
+	})
+	return msg, nil
 }
 
 func (s *SessionService) ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error) {
@@ -209,7 +221,7 @@ func (s *SessionService) restoreSession(ctx context.Context, sessionID string, d
 }
 
 func (s *SessionService) listMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error) {
-	return s.messageStore.ListMessages(ctx, sessionID, d)
+	return s.messageStore.ListMessages(ctx, sessionID)
 }
 
 func mapError(err error) error {

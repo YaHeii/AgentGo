@@ -19,8 +19,6 @@ func (s MessageStatus) String() string {
 		return "PENDING"
 	case StatusSent:
 		return "SENT"
-	case StatusStreaming:
-		return "STREAMING"
 	case StatusFailed:
 		return "FAILED"
 	default:

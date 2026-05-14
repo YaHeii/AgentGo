@@ -67,14 +67,6 @@ func copyLoopState(state LoopState) LoopState {
 				thinkingPart := *state.Messages[i].Parts[j].Thinking
 				copied.Messages[i].Parts[j].Thinking = &thinkingPart
 			}
-			if state.Messages[i].Parts[j].Attachment != nil {
-				attachmentPart := *state.Messages[i].Parts[j].Attachment
-				copied.Messages[i].Parts[j].Attachment = &attachmentPart
-			}
-			if state.Messages[i].Parts[j].Summary != nil {
-				summaryPart := *state.Messages[i].Parts[j].Summary
-				copied.Messages[i].Parts[j].Summary = &summaryPart
-			}
 		}
 	}
 

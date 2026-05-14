@@ -133,11 +133,24 @@ func TestSessionServiceCreateMessageRoutesThroughMessageDependency(t *testing.T)
 	svc := NewSessionService(st, msgs, dispatcher)
 	svc.nowFunc = timeNowStub
 
-	got, err := svc.CreateMessage(context.Background(), "session-1", message.CreateMessageParams{Kind: message.KindAssistant}, dispatcher)
+	got, err := svc.CreateMessage(context.Background(), message.CreateMessageParams{
+		SessionID: "session-1",
+		Kind:      message.KindAssistant,
+	}, dispatcher)
 	require.NoError(t, err)
 	require.Equal(t, msgs.createResult, got)
-	require.Equal(t, "session-1", msgs.lastCreateSessionID)
+	require.Equal(t, "session-1", msgs.lastCreateParams.SessionID)
 	require.Equal(t, message.KindAssistant, msgs.lastCreateParams.Kind)
+
+	event := dispatcher.lastEvent
+	require.NotNil(t, event)
+	require.Equal(t, app.EventMessage, event.Type())
+
+	payload, ok := event.Data().(message.MessageEvent)
+	require.True(t, ok)
+	require.Equal(t, message.StatusPending, payload.Status)
+	require.NotNil(t, payload.Message)
+	require.Equal(t, got.ID, payload.Message.ID)
 }
 
 func TestSessionServiceSwitchSessionUpdatesStateAndPublishesEvent(t *testing.T) {
@@ -292,11 +305,10 @@ func (s *fakeSessionStore) DeleteSession(_ context.Context, id string) error {
 }
 
 type fakeSessionMessages struct {
-	listResult          map[string][]message.Message
-	createResult        message.Message
-	lastListSessionID   string
-	lastCreateSessionID string
-	lastCreateParams    message.CreateMessageParams
+	listResult        map[string][]message.Message
+	createResult      message.Message
+	lastListSessionID string
+	lastCreateParams  message.CreateMessageParams
 }
 
 func newFakeSessionMessages() *fakeSessionMessages {
@@ -305,16 +317,15 @@ func newFakeSessionMessages() *fakeSessionMessages {
 	}
 }
 
-func (s *fakeSessionMessages) ListMessages(_ context.Context, sessionID string, _ app.Dispatcher) ([]message.Message, error) {
+func (s *fakeSessionMessages) ListMessages(_ context.Context, sessionID string) ([]message.Message, error) {
 	s.lastListSessionID = sessionID
 	return append([]message.Message(nil), s.listResult[sessionID]...), nil
 }
 
-func (s *fakeSessionMessages) CreateMessage(_ context.Context, sessionID string, params message.CreateMessageParams, _ app.Dispatcher) (message.Message, error) {
-	s.lastCreateSessionID = sessionID
+func (s *fakeSessionMessages) CreateMessage(_ context.Context, params message.CreateMessageParams) (message.Message, error) {
 	s.lastCreateParams = params
 	msg := s.createResult
-	msg.SessionID = sessionID
+	msg.SessionID = params.SessionID
 	if msg.ID == "" {
 		msg.ID = "message-created"
 	}

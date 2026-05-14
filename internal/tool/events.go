@@ -1,5 +1,5 @@
 package tool
-
+// Deprecated
 type ToolResultEvent struct {
 	Status ToolCallStatus
 	Result ToolResult

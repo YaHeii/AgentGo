@@ -6,50 +6,42 @@ import (
 	"errors"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/store"
+	"github.com/segmentio/ksuid"
 )
 
 var errTODO = errors.New("TODO: not implemented")
 
 type MessageService struct {
 	messageStore messageStore
-	dispatcher   app.Dispatcher
 }
 
-func NewMessageService(st messageStore, d app.Dispatcher) *MessageService {
+func NewMessageService(st messageStore) *MessageService {
 	return &MessageService{
 		messageStore: st,
-		dispatcher:   d,
 	}
 }
 
 // TODO:Can the sessionID be passed into the ctx file? Is the ctx reset when the agent creates a single session?
-func (s *MessageService) CreateMessage(ctx context.Context, sessionID string, params CreateMessageParams, d app.Dispatcher) (Message, error) {
+func (s *MessageService) CreateMessage(ctx context.Context, params CreateMessageParams) (Message, error) {
 	now := time.Now().UTC()
 	if len(params.Parts) == 0 {
 		params.Parts = []Part{{Type: PartTypeText}}
 	}
-	if params.FinishedAt.IsZero() {
-		params.FinishedAt = now
-	}
 
 	msg := Message{
-		ID:        params.ID,
-		SessionID: sessionID,
-		Kind:      params.Kind,
-		CreatedAt: now,
-		UpdatedAt: now,
-		Flags:     params.Flags,
-		Parts:     cloneParts(params.Parts),
-		System:    cloneSystemPayload(params.System),
-		Progress:  cloneProgressPayload(params.Progress),
-	}
-	if params.IsCompactSummary {
-		msg.Flags.IsCompactSummary = true
+		ID:               params.ID,
+		SessionID:        params.SessionID,
+		Kind:             params.Kind,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		IsCompactSummary: params.IsCompactSummary,
+		Parts:            cloneParts(params.Parts),
+		System:           cloneSystemPayload(params.System),
+		Progress:         cloneProgressPayload(params.Progress),
 	}
 	if msg.ID == "" {
-		msg.ID = buildMessageID(params.Kind, now)
+		msg.ID = buildMessageID(now)
 	}
 
 	messageJSON, err := marshalMessageJSON(msg)
@@ -59,11 +51,11 @@ func (s *MessageService) CreateMessage(ctx context.Context, sessionID string, pa
 
 	row, err := s.messageStore.CreateMessage(ctx, store.CreateMessageParams{
 		ID:               msg.ID,
-		SessionID:        sessionID,
+		SessionID:        msg.SessionID,
 		Kind:             string(params.Kind),
 		Provider:         params.Provider,
-		FinishedAt:       params.FinishedAt,
-		IsCompactSummary: params.IsCompactSummary || params.Flags.IsCompactSummary,
+		FinishedAt:       now,
+		IsCompactSummary: params.IsCompactSummary,
 		MessageJSON:      messageJSON,
 	})
 	if err != nil {
@@ -74,21 +66,11 @@ func (s *MessageService) CreateMessage(ctx context.Context, sessionID string, pa
 	if err != nil {
 		return Message{}, err
 	}
-	msg.CreatedAt = params.FinishedAt
-	msg.UpdatedAt = params.FinishedAt
-
-	d.Dispatch(app.BaseEvent{
-		T: "message",
-		Payload: MessageEvent{
-			Status:  StatusPending,
-			Message: &msg,
-		},
-	})
 
 	return msg, nil
 }
 
-func (s *MessageService) ListMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]Message, error) {
+func (s *MessageService) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
 	rows, err := s.messageStore.ListMessages(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -115,29 +97,24 @@ func toMessage(msg store.Message) (Message, error) {
 	}
 
 	return Message{
-		ID:        msg.ID,
-		SessionID: msg.SessionID,
-		Kind:      Kind(msg.Kind),
-		CreatedAt: msg.FinishedAt,
-		UpdatedAt: msg.FinishedAt,
-		Flags:     payload.Flags,
-		Parts:     payload.Parts,
-		System:    payload.System,
-		Progress:  payload.Progress,
+		ID:               msg.ID,
+		SessionID:        msg.SessionID,
+		Kind:             Kind(msg.Kind),
+		CreatedAt:        msg.FinishedAt,
+		UpdatedAt:        msg.FinishedAt,
+		IsCompactSummary: msg.IsCompactSummary,
+		Parts:            payload.Parts,
+		System:           payload.System,
+		Progress:         payload.Progress,
 	}, nil
 }
 
-func buildMessageID(kind Kind, now time.Time) string {
-	prefix := "message"
-	switch kind {
-	case KindUser:
-		prefix = "user"
-	case KindAssistant:
-		prefix = "assistant"
-	case KindSystem:
-		prefix = "system"
+func buildMessageID(now time.Time) string {
+	id, err := ksuid.NewRandomWithTime(now)
+	if err == nil {
+		return id.String()
 	}
-	return prefix + "-" + now.Format(time.RFC3339Nano)
+	return "message-" + now.Format(time.RFC3339Nano)
 }
 
 func textContent(parts []Part) string {
@@ -175,7 +152,6 @@ func cloneProgressPayload(payload *ProgressPayload) *ProgressPayload {
 }
 func marshalMessageJSON(msg Message) (string, error) {
 	payload := persistedMessage{
-		Flags:    msg.Flags,
 		Parts:    cloneParts(msg.Parts),
 		System:   cloneSystemPayload(msg.System),
 		Progress: cloneProgressPayload(msg.Progress),

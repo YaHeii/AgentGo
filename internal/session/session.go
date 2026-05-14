@@ -3,14 +3,13 @@ package session
 import (
 	"context"
 
-	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/store"
 )
 
 type messageStore interface {
-	ListMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error)
-	CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error)
+	ListMessages(ctx context.Context, sessionID string) ([]message.Message, error)
+	CreateMessage(ctx context.Context, params message.CreateMessageParams) (message.Message, error)
 }
 
 type sessionStore interface {

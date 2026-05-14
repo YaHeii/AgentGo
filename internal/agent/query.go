@@ -13,6 +13,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/tool"
+	"github.com/segmentio/ksuid"
 )
 
 type QueryLoop struct {
@@ -54,9 +55,10 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 	}
 
 	inputParts := cloneMessageParts(params.InputParts)
-	userMessage, err := r.deps.Conversation.CreateMessage(ctx, params.SessionID, message.CreateMessageParams{
-		Kind:  message.KindUser,
-		Parts: inputParts,
+	userMessage, err := r.deps.Conversation.CreateMessage(ctx, message.CreateMessageParams{
+		SessionID: params.SessionID,
+		Kind:      message.KindUser,
+		Parts:     inputParts,
 	}, r.deps.dispatcher)
 	if err != nil {
 		return QueryResult{}, err
@@ -300,8 +302,24 @@ func (r *QueryLoop) listTools(ctx context.Context) []tool.Metadata {
 
 func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Message {
 	now := r.deps.Now().UTC()
+	id, err := ksuid.NewRandomWithTime(now)
+	if err != nil {
+		return message.Message{
+			ID:        fmt.Sprintf("assistant-turn-%d-%d", turn, now.UnixNano()),
+			SessionID: sessionID,
+			Kind:      message.KindAssistant,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Parts: []message.Part{
+				{
+					Type: message.PartTypeText,
+					Text: "",
+				},
+			},
+		}
+	}
 	return message.Message{
-		ID:        fmt.Sprintf("assistant-turn-%d-%d", turn, now.UnixNano()),
+		ID:        id.String(),
 		SessionID: sessionID,
 		Kind:      message.KindAssistant,
 		CreatedAt: now,
@@ -316,12 +334,11 @@ func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Mess
 }
 
 func (r *QueryLoop) persistAssistant(ctx context.Context, assistant message.Message) (message.Message, error) {
-	return r.deps.Conversation.CreateMessage(ctx, assistant.SessionID, message.CreateMessageParams{
+	return r.deps.Conversation.CreateMessage(ctx, message.CreateMessageParams{
 		ID:               assistant.ID,
+		SessionID:        assistant.SessionID,
 		Kind:             assistant.Kind,
-		FinishedAt:       r.deps.Now().UTC(),
-		IsCompactSummary: assistant.Flags.IsCompactSummary,
-		Flags:            assistant.Flags,
+		IsCompactSummary: assistant.IsCompactSummary,
 		Parts:            cloneMessageParts(assistant.Parts),
 		System:           assistant.System,
 		Progress:         assistant.Progress,
@@ -344,9 +361,10 @@ func (r *QueryLoop) persistToolResult(ctx context.Context, sessionID string, res
 			},
 		},
 	}
-	return r.deps.Conversation.CreateMessage(ctx, sessionID, message.CreateMessageParams{
-		Kind:  message.KindSystem,
-		Parts: parts,
+	return r.deps.Conversation.CreateMessage(ctx, message.CreateMessageParams{
+		SessionID: sessionID,
+		Kind:      message.KindSystem,
+		Parts:     parts,
 	}, r.deps.dispatcher)
 }
 
@@ -355,8 +373,9 @@ func (r *QueryLoop) createSystemErrorMessage(ctx context.Context, sessionID stri
 	if providerErr != nil {
 		text = "provider error: " + providerErr.Error()
 	}
-	return r.deps.Conversation.CreateMessage(ctx, sessionID, message.CreateMessageParams{
-		Kind: message.KindSystem,
+	return r.deps.Conversation.CreateMessage(ctx, message.CreateMessageParams{
+		SessionID: sessionID,
+		Kind:      message.KindSystem,
 		Parts: []message.Part{
 			{
 				Type: message.PartTypeText,
@@ -566,14 +585,6 @@ func cloneMessageParts(parts []message.Part) []message.Part {
 		if parts[i].Thinking != nil {
 			thinking := *parts[i].Thinking
 			copied[i].Thinking = &thinking
-		}
-		if parts[i].Attachment != nil {
-			attachment := *parts[i].Attachment
-			copied[i].Attachment = &attachment
-		}
-		if parts[i].Summary != nil {
-			summary := *parts[i].Summary
-			copied[i].Summary = &summary
 		}
 	}
 	return copied

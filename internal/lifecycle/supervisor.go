@@ -189,15 +189,6 @@ func estimateContextUsage(model string, messages []message.Message, estimator co
 				if part.ToolResult != nil {
 					builder = append(builder, part.ToolResult.Content...)
 				}
-			case message.PartTypeAttachment:
-				if part.Attachment != nil {
-					builder = append(builder, part.Attachment.Name...)
-					builder = append(builder, part.Attachment.Path...)
-				}
-			case message.PartTypeSummary:
-				if part.Summary != nil {
-					builder = append(builder, part.Summary.Content...)
-				}
 			}
 		}
 	}
@@ -238,15 +229,6 @@ func (tiktokenEstimator) Estimate(model string, messages []message.Message) (int
 			case message.PartTypeToolResult:
 				if part.ToolResult != nil {
 					builder = append(builder, part.ToolResult.Content...)
-				}
-			case message.PartTypeAttachment:
-				if part.Attachment != nil {
-					builder = append(builder, part.Attachment.Name...)
-					builder = append(builder, part.Attachment.Path...)
-				}
-			case message.PartTypeSummary:
-				if part.Summary != nil {
-					builder = append(builder, part.Summary.Content...)
 				}
 			}
 		}

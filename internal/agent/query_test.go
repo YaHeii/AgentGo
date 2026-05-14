@@ -752,7 +752,7 @@ type stubSessionConversationPort struct {
 	persisted          []message.Message
 }
 
-func (s *stubSessionConversationPort) CreateMessage(_ context.Context, sessionID string, params message.CreateMessageParams, _ app.Dispatcher) (message.Message, error) {
+func (s *stubSessionConversationPort) CreateMessage(_ context.Context, params message.CreateMessageParams, _ app.Dispatcher) (message.Message, error) {
 	s.created = append(s.created, params)
 	id := "user-1"
 	switch params.Kind {
@@ -766,7 +766,7 @@ func (s *stubSessionConversationPort) CreateMessage(_ context.Context, sessionID
 	}
 	msg := message.Message{
 		ID:        id,
-		SessionID: sessionID,
+		SessionID: params.SessionID,
 		Kind:      params.Kind,
 		Parts:     cloneMessagePartsForTest(params.Parts),
 		System:    params.System,

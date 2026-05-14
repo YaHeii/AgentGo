@@ -10,36 +10,31 @@ import (
 
 // basic message struct
 type Message struct {
-	ID        string
-	SessionID string
-
-	Kind      Kind
-	CreatedAt time.Time
-	UpdatedAt time.Time
-
-	Flags Flags
-	Parts []Part
-
+	ID               string
+	SessionID        string
+	Kind             Kind
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	IsCompactSummary bool
+	// for MessageJSON
+	Parts    []Part
 	System   *SystemPayload
 	Progress *ProgressPayload
+}
+type messageStore interface {
+	CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error)
+	ListMessages(ctx context.Context, sessionID string) ([]store.Message, error)
+	// TODO: add delete and  SELECT
 }
 
 // The kind list define the message type.
 type Kind string
 
 const (
-	KindUser       Kind = "user"
-	KindAssistant  Kind = "assistant"
-	KindSystem     Kind = "system"
-	KindProgress   Kind = "progress"
-	KindAttachment Kind = "attachment"
+	KindUser      Kind = "user"
+	KindAssistant Kind = "assistant"
+	KindSystem    Kind = "system"
 )
-
-type Flags struct {
-	IsMeta                    bool // metadata in system
-	IsCompactSummary          bool // compact summary
-	IsVisibleInTranscriptOnly bool // only used in ui/transcript not for ai
-}
 
 // The part list contains the message body.
 type Part struct {
@@ -49,8 +44,6 @@ type Part struct {
 	ToolCall   *ToolCallPart
 	ToolResult *ToolResultPart
 	Thinking   *ThinkingPart
-	Attachment *AttachmentPart
-	Summary    *SummaryPart
 }
 
 // Structured metadata of system messages
@@ -125,24 +118,17 @@ type SummaryPart struct {
 
 type CreateMessageParams struct {
 	ID               string
+	SessionID        string
 	Kind             Kind
 	Provider         string
-	FinishedAt       time.Time
 	IsCompactSummary bool
-	Flags            Flags
 	Parts            []Part
 	System           *SystemPayload
 	Progress         *ProgressPayload
 }
 
 type persistedMessage struct {
-	Flags    Flags            `json:"flags"`
 	Parts    []Part           `json:"parts"`
 	System   *SystemPayload   `json:"system,omitempty"`
 	Progress *ProgressPayload `json:"progress,omitempty"`
-}
-
-type messageStore interface {
-	CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error)
-	ListMessages(ctx context.Context, sessionID string) ([]store.Message, error)
 }

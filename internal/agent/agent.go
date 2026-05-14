@@ -58,7 +58,7 @@ const (
 
 type sessionStore interface {
 	ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error)
-	CreateMessage(ctx context.Context, sessionID string, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error)
+	CreateMessage(ctx context.Context, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error)
 	// UpdateMessage(ctx context.Context, sessionID string, msg message.Message) error
 }
 

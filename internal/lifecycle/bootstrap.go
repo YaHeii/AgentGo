@@ -69,7 +69,7 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 		return Runtime{}, fmt.Errorf("open store: %w", err)
 	}
 
-	messageSvc := message.NewMessageService(st, dispatcher)
+	messageSvc := message.NewMessageService(st)
 	sessionSvc := session.NewSessionService(st, messageSvc, dispatcher)
 
 	dispatcher.Dispatch(app.BaseEvent{
@@ -83,6 +83,7 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 		App: app.NewService(
 			sessionSvc,
 			newBootstrapAgentService(),
+			supervisor.toolSvc,
 			dispatcher,
 		),
 		closeFn: func(context.Context) error {
