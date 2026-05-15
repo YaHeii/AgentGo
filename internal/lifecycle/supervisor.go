@@ -71,6 +71,7 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 		InitialEnv:  loadEnvironmentSnapshot(),
 		ModelLimit:  normalizeContextWindow(s.cfg.ContextWindow),
 		MaxTurn:     normalizeContextWindow(s.cfg.MaxTurn),
+		Model:       s.cfg.Model,
 		KnownTools:  toToolSnapshots(s.toolSvc.ListTools(ctx, tool.DangerLevel)),
 	})
 	return nil
@@ -257,6 +258,10 @@ func tokenizerForModel(model string) (*tiktoken.Tiktoken, error) {
 	default:
 		return nil, errors.New("model encoding not supported")
 	}
+}
+
+func TokenizerForModel(model string) (*tiktoken.Tiktoken, error) {
+	return tokenizerForModel(model)
 }
 
 func loadEnvironmentSnapshot() map[string]string {

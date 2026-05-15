@@ -210,13 +210,13 @@ func TestServiceCallToolsDelegatesToToolService(t *testing.T) {
 	require.Equal(t, req, tools.lastCallReq)
 }
 
-func TestServiceSendMessageDelegatesPromptToAgent(t *testing.T) {
+func TestServiceRunQueryDelegatesPromptToAgent(t *testing.T) {
 	t.Parallel()
 
 	agentSvc := newStubAgentService()
 	svc := newServiceWithDeps(newStubSessionService(), agentSvc, newStubToolService(), nil)
 
-	err := svc.SendMessage(context.Background(), "session-1", "hello")
+	err := svc.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Equal(t, "session-1", agentSvc.lastSessionID)
 	require.Equal(t, "hello", agentSvc.lastPrompt)
@@ -420,6 +420,6 @@ func newServiceWithDeps(sessions sessionStore, agent agentStore, tools toolStore
 	if dispatcher == nil {
 		dispatcher = app.NewDispatcher(16)
 	}
-
+	
 	return app.NewService(sessions, agent, tools, dispatcher)
 }

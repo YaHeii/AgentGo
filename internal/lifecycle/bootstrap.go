@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/YaHeii/agentGo/internal/agent"
+	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/db"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/session"
+	"github.com/YaHeii/agentGo/internal/tool"
 	"github.com/spf13/viper"
 )
 
@@ -55,6 +58,10 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 	if _, err := ProviderConfigFromAppConfig(cfg); err != nil {
 		return Runtime{}, fmt.Errorf("invalid config: %w", err)
 	}
+	providerCfg, err := ProviderConfigFromAppConfig(cfg)
+	if err != nil {
+		return Runtime{}, fmt.Errorf("invalid config: %w", err)
+	}
 
 	dispatcher := app.NewDispatcher(128)
 	State = &GlobalState{}
@@ -68,9 +75,20 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 	if err != nil {
 		return Runtime{}, fmt.Errorf("open store: %w", err)
 	}
+	providerClient, err := provider.NewOpenAIClient(providerCfg)
+	if err != nil {
+		_ = st.Close()
+		return Runtime{}, fmt.Errorf("new provider client: %w", err)
+	}
 
 	messageSvc := message.NewMessageService(st)
 	sessionSvc := session.NewSessionService(st, messageSvc, dispatcher)
+	providerSvc := provider.NewProviderService(providerClient, dispatcher)
+	runtimeProvider := lifecycleRuntimeProvider{}
+	queryApp := app.NewService(sessionSvc, nil, supervisor.toolSvc, dispatcher)
+	queryLoop := agent.NewQueryLoop(queryApp, providerSvc, dispatcher)
+	queryLoop.SetRuntimeProvider(runtimeProvider)
+	agentSvc := queryLoopAdapter{loop: queryLoop}
 
 	dispatcher.Dispatch(app.BaseEvent{
 		T: "lifecycle",
@@ -82,7 +100,7 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 	return Runtime{
 		App: app.NewService(
 			sessionSvc,
-			newBootstrapAgentService(),
+			agentSvc,
 			supervisor.toolSvc,
 			dispatcher,
 		),
@@ -90,6 +108,37 @@ func Bootstrap(ctx context.Context, configDir string, databasePath string) (Runt
 			return st.Close()
 		},
 	}, nil
+}
+
+type lifecycleRuntimeProvider struct{}
+
+type queryLoopAdapter struct {
+	loop *agent.QueryLoop
+}
+
+func (a queryLoopAdapter) RunQuery(ctx context.Context, sessionID string, prompt string) error {
+	if a.loop == nil {
+		return errors.New("lifecycle: query loop is required")
+	}
+	_, err := a.loop.RunQuery(ctx, sessionID, prompt)
+	return err
+}
+
+func (lifecycleRuntimeProvider) Snapshot() agentcontract.RuntimeSnapshot {
+	state := GetState()
+	return agentcontract.RuntimeSnapshot{
+		AppVersion:      state.AppVersion,
+		ProjectRoot:     state.ProjectRoot,
+		Cwd:             state.Cwd,
+		PermissionLevel: tool.SecurityLevel(state.PermissionLevel),
+		ModelLimit:      state.ModelLimit,
+		Model:           state.Model,
+		Temperature:     state.Temperature,
+	}
+}
+
+func (lifecycleRuntimeProvider) TokenizerForModel(model string) (agentcontract.TokenEncoder, error) {
+	return TokenizerForModel(model)
 }
 
 // LoadConfig reads configuration from file or environment variables.
@@ -108,14 +157,4 @@ func LoadConfig(path string) (config Config, err error) {
 
 	err = v.Unmarshal(&config)
 	return
-}
-
-type bootstrapAgentService struct{}
-
-func newBootstrapAgentService() *bootstrapAgentService {
-	return &bootstrapAgentService{}
-}
-
-func (s *bootstrapAgentService) RunQuery(_ context.Context, _ string, _ string) error {
-	return errors.New("lifecycle bootstrap agent service is not wired to runtime agent layer")
 }

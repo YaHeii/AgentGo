@@ -4,12 +4,12 @@ import (
 	"context"
 	"time"
 
+	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/tool"
 )
-
 
 // QueryResult is the terminal snapshot returned when a query finishes successfully.
 type QueryResult struct {
@@ -23,13 +23,15 @@ type QueryResult struct {
 
 // QueryConfig stores stable runtime limits and policy knobs for a query runner.
 type QueryConfig struct {
-	MaxTurns int
+	MaxTurns      int
+	MessageWindow int
 }
 
 // QueryDeps groups the concrete collaborators required by the query runner.
 type QueryDeps struct {
 	App        appStore
 	Provider   providerStore
+	Runtime    agentcontract.RuntimeProvider
 	Now        func() time.Time
 	dispatcher app.Dispatcher
 }

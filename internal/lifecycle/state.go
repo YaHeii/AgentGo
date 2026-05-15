@@ -26,6 +26,7 @@ type GlobalState struct {
 	InitialEnv              map[string]string
 	ModelLimit              int
 	MaxTurn                 int
+	Model                   string
 	CumulativeInputTokens   int
 	CumulativeOutputTokens  int
 	CumulativeTotalTokens   int
@@ -89,6 +90,7 @@ func (s *GlobalState) initialize(input GlobalState) {
 	s.InitialEnv = cloneEnvMap(input.InitialEnv)
 	s.ModelLimit = input.ModelLimit
 	s.MaxTurn = input.MaxTurn
+	s.Model = input.Model
 	s.KnownTools = cloneToolSnapshots(input.KnownTools)
 	s.CumulativeInputTokens = 0
 	s.CumulativeOutputTokens = 0

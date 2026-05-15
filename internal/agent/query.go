@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/lifecycle"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/tool"
@@ -25,59 +25,115 @@ func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) 
 	return &QueryLoop{
 		// TODO:setup from lifecycle
 		config: QueryConfig{
-			MaxTurns: 10,
+			MaxTurns:      10,
+			MessageWindow: 20,
 		},
 		deps: QueryDeps{
 			App:        appSvc,
 			Provider:   providerSvc,
+			Runtime:    noopRuntimeProvider{},
 			Now:        time.Now,
 			dispatcher: d,
 		},
 	}
 }
 
-// TODO: Four-Step Preprocessing
-// first to check permission level and to Determine the Scope of Execution
-// second to get tool/ history message and precalculate the token usage use the tiktoken from lifecycle
-// third to microcompact if the token usage Exceeded the context window.
+func (r *QueryLoop) SetRuntimeProvider(provider agentcontract.RuntimeProvider) {
+	r.deps.Runtime = provider
+}
+
 func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt string) (QueryResult, error) {
-	
 	if r.config.MaxTurns <= 0 {
 		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
 	}
 
-	inputParts := cloneMessageParts(params.InputParts)
+	inputParts := []message.Part{
+		{
+			Type: message.PartTypeText,
+			Text: prompt,
+		},
+	}
 	userMessage, err := r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
-		SessionID: params.SessionID,
+		SessionID: sessionID,
 		Kind:      message.KindUser,
 		Parts:     inputParts,
+		//TODO: add other fields
 	})
 	if err != nil {
 		return QueryResult{}, err
 	}
-
-	loopstate := newLoopState(params)
+	loopstate := newLoopState(sessionID, inputParts)
 	loopstate.Messages = []message.Message{userMessage}
 	loopstate.Transition = "user_message_created"
 	r.dispatch(QueryStatusStarted, loopstate, nil)
 
+	history, err := r.deps.App.ListHistory(ctx, sessionID)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	loopstate.Messages = r.preprocessHistory(history)
+	loopstate.Transition = "history_loaded"
+
+	assistantMessage := r.newAssistantMessage(sessionID, loopstate.TurnCount)
+	loopstate.Messages = append(loopstate.Messages, assistantMessage)
+	loopstate.Transition = "assistant_turn_initialized"
+	r.dispatch(QueryStatusDelta, loopstate, nil)
+
+	initPrompt, err := r.renderPrompt(loopstate, prompt)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	// firstreq onlyuse the template
+	firstReq, err := r.buildInitialRequest(loopstate, initPrompt)
+	if err != nil {
+		return QueryResult{}, err
+	}
+
+	loopstate, err = r.runTurn(ctx, loopstate, firstReq)
+	if err != nil {
+		r.dispatch(QueryStatusFailed, loopstate, err)
+		return QueryResult{}, err
+	}
+
 	for {
+		if loopstate.FinishReason == FinishReasonAwaitingToolExecution {
+			loopstate, err = r.executePendingTools(ctx, loopstate, sessionID)
+			if err != nil {
+				r.dispatch(QueryStatusFailed, loopstate, err)
+				return QueryResult{}, err
+			}
+			continue
+		}
+
+		if loopstate.FinishReason == FinishReasonCompleted && loopstate.StopReason == provider.StopReasonLength && loopstate.TurnCount < r.config.MaxTurns {
+			loopstate.TurnCount++
+		} else if loopstate.FinishReason == FinishReasonCompleted {
+			r.dispatch(QueryStatusCompleted, loopstate, nil)
+			return QueryResult{
+				SessionID:               sessionID,
+				UserMessageID:           userMessage.ID,
+				FinalAssistantMessageID: loopstate.AssistantMessageID,
+				Turns:                   loopstate.TurnCount,
+				FinishReason:            loopstate.FinishReason,
+				PendingToolCalls:        append([]provider.ToolCall(nil), loopstate.PendingToolCalls...),
+			}, nil
+		}
+
 		if loopstate.TurnCount > r.config.MaxTurns {
 			break
 		}
 
-		loopstate.Transition = "turn_started"
-
-		history, err := r.deps.App.ListHistory(ctx, params.SessionID)
+		history, err := r.deps.App.ListHistory(ctx, sessionID)
 		if err != nil {
 			return QueryResult{}, err
 		}
-		loopstate.Messages = history
+		loopstate.Messages = r.preprocessHistory(history)
 		loopstate.Transition = "history_loaded"
 
-		assistantMessage := r.newAssistantMessage(params.SessionID, loopstate.TurnCount)
+		assistantMessage := r.newAssistantMessage(sessionID, loopstate.TurnCount)
 		loopstate.Messages = append(loopstate.Messages, assistantMessage)
 		loopstate.Transition = "assistant_turn_initialized"
+
 		r.dispatch(QueryStatusDelta, loopstate, nil)
 
 		req, err := r.renderLoopstate(loopstate)
@@ -90,33 +146,6 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 			r.dispatch(QueryStatusFailed, loopstate, err)
 			return QueryResult{}, err
 		}
-
-		if loopstate.FinishReason == FinishReasonAwaitingToolExecution {
-			loopstate, err = r.executePendingTools(ctx, loopstate, params.SessionID)
-			if err != nil {
-				r.dispatch(QueryStatusFailed, loopstate, err)
-				return QueryResult{}, err
-			}
-			continue
-		}
-
-		if loopstate.FinishReason == FinishReasonCompleted && loopstate.StopReason == provider.StopReasonLength && loopstate.TurnCount < r.config.MaxTurns {
-			loopstate = copyLoopState(loopstate)
-			loopstate.TurnCount++
-			continue
-		}
-
-		if loopstate.FinishReason == FinishReasonCompleted {
-			r.dispatch(QueryStatusCompleted, loopstate, nil)
-			return QueryResult{
-				SessionID:               params.SessionID,
-				UserMessageID:           userMessage.ID,
-				FinalAssistantMessageID: loopstate.AssistantMessageID,
-				Turns:                   loopstate.TurnCount,
-				FinishReason:            loopstate.FinishReason,
-				PendingToolCalls:        append([]provider.ToolCall(nil), loopstate.PendingToolCalls...),
-			}, nil
-		}
 	}
 
 	lastAssistantID := ""
@@ -128,12 +157,94 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 	}
 	r.dispatch(QueryStatusCompleted, loopstate, nil)
 	return QueryResult{
-		SessionID:               params.SessionID,
+		SessionID:               sessionID,
 		UserMessageID:           userMessage.ID,
 		FinalAssistantMessageID: lastAssistantID,
 		Turns:                   loopstate.TurnCount,
 		FinishReason:            FinishReasonCompleted,
 	}, nil
+}
+
+func (r *QueryLoop) preprocessHistory(history []message.Message) []message.Message {
+	processed := cloneMessages(history)
+	if r.config.MessageWindow > 0 && len(processed) > r.config.MessageWindow {
+		processed = processed[len(processed)-r.config.MessageWindow:]
+	}
+	runtimeState := r.runtimeSnapshot()
+	if runtimeState.ModelLimit <= 0 || strings.TrimSpace(runtimeState.Model) == "" {
+		return processed
+	}
+
+	for len(processed) > 1 {
+		exceeded, err := r.exceedsModelLimit(runtimeState.Model, runtimeState.ModelLimit, processed)
+		if err == nil && !exceeded {
+			return processed
+		}
+		processed = processed[1:]
+	}
+	return processed
+}
+
+func cloneMessages(history []message.Message) []message.Message {
+	if len(history) == 0 {
+		return nil
+	}
+
+	copied := make([]message.Message, len(history))
+	for i := range history {
+		copied[i] = history[i]
+		copied[i].Parts = cloneMessageParts(history[i].Parts)
+	}
+	return copied
+}
+
+func (r *QueryLoop) estimateMessagesTokens(model string, messages []message.Message) (int, error) {
+	builder := flattenMessages(messages)
+	encoding, err := r.deps.Runtime.TokenizerForModel(model)
+	if err != nil {
+		return 0, err
+	}
+	return len(encoding.Encode(string(builder), nil, nil)), nil
+}
+
+func (r *QueryLoop) exceedsModelLimit(model string, limit int, messages []message.Message) (bool, error) {
+	builder := flattenMessages(messages)
+	if len(builder) > limit {
+		return true, nil
+	}
+
+	tokens, err := r.estimateMessagesTokens(model, messages)
+	if err != nil {
+		return false, err
+	}
+	return tokens > limit, nil
+}
+
+func flattenMessages(messages []message.Message) []byte {
+	var builder []byte
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch part.Type {
+			case message.PartTypeText:
+				builder = append(builder, part.Text...)
+			case message.PartTypeThinking:
+				if part.Thinking != nil {
+					builder = append(builder, part.Thinking.Content...)
+					builder = append(builder, part.Thinking.Summary...)
+				}
+			case message.PartTypeToolCall:
+				if part.ToolCall != nil {
+					builder = append(builder, part.ToolCall.Name...)
+					builder = append(builder, part.ToolCall.Input...)
+				}
+			case message.PartTypeToolResult:
+				if part.ToolResult != nil {
+					builder = append(builder, part.ToolResult.Content...)
+				}
+			}
+		}
+	}
+	return builder
 }
 
 func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.Request) (LoopState, error) {
@@ -208,13 +319,13 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 	batch := tool.BatchRequest{
 		Calls: make([]tool.ToolCallRequest, 0, len(state.PendingToolCalls)),
 	}
+	runtimeState := r.runtimeSnapshot()
 	for _, call := range state.PendingToolCalls {
-		runtimeState := lifecycle.GetState()
 		batch.Calls = append(batch.Calls, tool.NewToolCallRequest(
 			call.ID,
 			call.Name,
 			json.RawMessage(call.Arguments),
-			tool.SecurityLevel(runtimeState.PermissionLevel),
+			runtimeState.PermissionLevel,
 			tool.ToolCallContext{
 				SessionID:     sessionID,
 				TurnID:        fmt.Sprintf("turn-%d", state.TurnCount),
@@ -237,9 +348,27 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 		state.Messages = append(state.Messages, msg)
 	}
 	state.PendingToolCalls = nil
+	state.FinishReason = ""
 	state.Transition = "tool_results_recorded"
 	r.dispatch(QueryStatusDelta, state, nil)
 	return state, nil
+}
+
+func (r *QueryLoop) runtimeSnapshot() agentcontract.RuntimeSnapshot {
+	if r.deps.Runtime == nil {
+		return agentcontract.RuntimeSnapshot{}
+	}
+	return r.deps.Runtime.Snapshot()
+}
+
+type noopRuntimeProvider struct{}
+
+func (noopRuntimeProvider) Snapshot() agentcontract.RuntimeSnapshot {
+	return agentcontract.RuntimeSnapshot{}
+}
+
+func (noopRuntimeProvider) TokenizerForModel(_ string) (agentcontract.TokenEncoder, error) {
+	return nil, errors.New("agent: runtime provider is required")
 }
 
 func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Message {
@@ -400,15 +529,6 @@ func buildPromptHistory(history []message.Message) []PromptMessage {
 	return out
 }
 
-func latestUserInput(history []message.Message) string {
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Kind == message.KindUser {
-			return flattenMessageParts(history[i].Parts)
-		}
-	}
-	return ""
-}
-
 func flattenMessageParts(parts []message.Part) string {
 	segments := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -474,34 +594,6 @@ func firstToolResultPart(parts []message.Part) *message.ToolResultPart {
 		}
 	}
 	return nil
-}
-
-func trimPendingAssistant(history []message.Message) []message.Message {
-	if len(history) == 0 {
-		return nil
-	}
-
-	trimmed := history
-	last := history[len(history)-1]
-	if last.Kind == message.KindAssistant && isPendingAssistantMessage(last) {
-		trimmed = history[:len(history)-1]
-	}
-
-	out := make([]message.Message, len(trimmed))
-	copy(out, trimmed)
-	return out
-}
-
-func isPendingAssistantMessage(msg message.Message) bool {
-	if len(msg.Parts) == 0 {
-		return true
-	}
-	if len(msg.Parts) > 1 {
-		return false
-	}
-
-	part := msg.Parts[0]
-	return part.Type == message.PartTypeText && strings.TrimSpace(part.Text) == ""
 }
 
 func cloneMessageParts(parts []message.Part) []message.Part {

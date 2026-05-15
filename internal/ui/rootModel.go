@@ -14,6 +14,7 @@ import (
 
 type rootModel struct {
 	app        chatService
+	events     <-chan app.Event
 	sessionID  string
 	messages   []message.Message
 	input      string
@@ -30,6 +31,7 @@ type bootstrapDoneMsg struct {
 func NewRootModel(appSvc chatService) rootModel {
 	return rootModel{
 		app:    appSvc,
+		events: appSvc.Events(),
 		width:  defaultWidth,
 		height: defaultHeight,
 	}
@@ -81,7 +83,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMessage = msg.err.Error()
 			return m, nil
 		}
-		return m, waitAppEventCmd(m.app.Events())
+		return m, waitAppEventCmd(m.events)
 	case sendMessageDoneMsg:
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
@@ -103,7 +105,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				switch event.Status {
 				case agent.QueryStatusStarted, agent.QueryStatusDelta:
-					m.loading = event.State.Transition != "awaiting_tool_execution"
+					m.loading = true
 				case agent.QueryStatusCompleted:
 					m.loading = false
 				case agent.QueryStatusFailed:
@@ -114,7 +116,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		return m, waitAppEventCmd(m.app.Events())
+		return m, waitAppEventCmd(m.events)
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
@@ -131,7 +133,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMessage = ""
 			m.loading = true
 			m.input = ""
-			return m, sendMessageCmd(m.app, m.sessionID, prompt)
+			return m, runQueryCmd(m.app, m.sessionID, prompt)
 		case "backspace":
 			if len(m.input) > 0 {
 				runes := []rune(m.input)
@@ -175,10 +177,10 @@ func (m rootModel) View() tea.View {
 	return tea.NewView(strings.Join(lines, "\n"))
 }
 
-// UIlayer should only send the basic prompt, tool schema .etc will be assembled in app layer
-func sendMessageCmd(appSvc chatService, sessionID string, prompt string) tea.Cmd {
+// UI layer only sends the raw user prompt. Query assembly stays below app/agent.
+func runQueryCmd(appSvc chatService, sessionID string, prompt string) tea.Cmd {
 	return func() tea.Msg {
-		err := appSvc.SendMessage(context.Background(), sessionID, prompt)
+		err := appSvc.RunQuery(context.Background(), sessionID, prompt)
 		return sendMessageDoneMsg{err: err}
 	}
 }

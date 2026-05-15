@@ -176,3 +176,34 @@ func TestBootstrapReturnsRuntimeWithAppAndCloser(t *testing.T) {
 		t.Fatalf("close runtime: %v", err)
 	}
 }
+
+func TestBootstrapWiresRuntimeAppToConcreteAgent(t *testing.T) {
+	resetGlobalStateForTest()
+
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "app.env")
+	config := "API_KEY=test-key\nMODEL=test-model\nCONTEXT_WINDOW=400000\nMAX_TOKENS=128000\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	databasePath := filepath.Join(configDir, "agentgo.db")
+
+	runtime, err := Bootstrap(context.Background(), configDir, databasePath)
+	if err != nil {
+		t.Fatalf("bootstrap runtime: %v", err)
+	}
+	defer func() {
+		if err := runtime.GracefulShutdown(context.Background()); err != nil {
+			t.Fatalf("close runtime: %v", err)
+		}
+	}()
+
+	err = runtime.App.RunQuery(context.Background(), "session-1", "hello")
+	if err == nil {
+		t.Fatal("expected query to fail before provider completes")
+	}
+	if strings.Contains(err.Error(), "lifecycle bootstrap agent service is not wired to runtime agent layer") {
+		t.Fatalf("expected runtime app to use concrete agent service, got stub error: %v", err)
+	}
+}

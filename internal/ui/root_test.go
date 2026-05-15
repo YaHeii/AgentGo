@@ -68,7 +68,7 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	}
 }
 
-func TestEnterDispatchesSendAndAppliesQueryEvents(t *testing.T) {
+func TestEnterRunsQueryAndAppliesMultiTurnEvents(t *testing.T) {
 	t.Parallel()
 
 	svc := newStubChatService()
@@ -85,7 +85,7 @@ func TestEnterDispatchesSendAndAppliesQueryEvents(t *testing.T) {
 		}
 		return nil
 	}
-	svc.sendMessageFn = func(_ context.Context, sessionID string, prompt string) error {
+	svc.runQueryFn = func(_ context.Context, sessionID string, prompt string) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventAgent,
 			Payload: agent.QueryEvent{
@@ -105,9 +105,38 @@ func TestEnterDispatchesSendAndAppliesQueryEvents(t *testing.T) {
 				State: agent.LoopState{
 					Messages: []message.Message{
 						messageRecord("user-1", message.KindUser, prompt),
-						messageRecord("assistant-1", message.KindAssistant, "hel"),
+						messageRecord("assistant-1", message.KindAssistant, ""),
 					},
-					Transition: "assistant_delta_received",
+					Transition: "awaiting_tool_execution",
+				},
+			},
+		}
+		svc.events <- app.BaseEvent{
+			T: app.EventAgent,
+			Payload: agent.QueryEvent{
+				Status: agent.QueryStatusDelta,
+				State: agent.LoopState{
+					Messages: []message.Message{
+						messageRecord("user-1", message.KindUser, prompt),
+						messageRecord("assistant-1", message.KindAssistant, ""),
+						messageRecord("tool-1", message.KindSystem, `{"matches":["root_test.go"]}`),
+					},
+					Transition: "tool_results_recorded",
+				},
+			},
+		}
+		svc.events <- app.BaseEvent{
+			T: app.EventAgent,
+			Payload: agent.QueryEvent{
+				Status: agent.QueryStatusDelta,
+				State: agent.LoopState{
+					Messages: []message.Message{
+						messageRecord("user-1", message.KindUser, prompt),
+						messageRecord("assistant-1", message.KindAssistant, ""),
+						messageRecord("tool-1", message.KindSystem, `{"matches":["root_test.go"]}`),
+						messageRecord("assistant-2", message.KindAssistant, "hello"),
+					},
+					Transition: "assistant_completed",
 				},
 			},
 		}
@@ -118,7 +147,9 @@ func TestEnterDispatchesSendAndAppliesQueryEvents(t *testing.T) {
 				State: agent.LoopState{
 					Messages: []message.Message{
 						messageRecord("user-1", message.KindUser, prompt),
-						messageRecord("assistant-1", message.KindAssistant, "hello"),
+						messageRecord("assistant-1", message.KindAssistant, ""),
+						messageRecord("tool-1", message.KindSystem, `{"matches":["root_test.go"]}`),
+						messageRecord("assistant-2", message.KindAssistant, "hello"),
 					},
 					Transition: "assistant_completed",
 				},
@@ -146,19 +177,34 @@ func TestEnterDispatchesSendAndAppliesQueryEvents(t *testing.T) {
 
 	_ = sendCmd()
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		updated, listenCmd = model.Update(listenCmd())
 		model = updated.(rootModel)
+		if !model.loading {
+			t.Fatalf("expected loading to continue during multi-turn event %d", i)
+		}
 	}
+
+	updated, listenCmd = model.Update(listenCmd())
+	model = updated.(rootModel)
 
 	if model.loading {
 		t.Fatal("expected loading to stop after completion event")
 	}
-	if len(model.messages) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(model.messages))
+	if svc.eventsCalls != 1 {
+		t.Fatalf("expected root model to subscribe once, got %d subscriptions", svc.eventsCalls)
 	}
-	if textContent(model.messages[1].Parts) != "hello" {
-		t.Fatalf("expected streamed assistant content, got %q", textContent(model.messages[1].Parts))
+	if svc.lastSessionID != "session-1" {
+		t.Fatalf("expected query to use restored session, got %q", svc.lastSessionID)
+	}
+	if svc.lastPrompt != "hello" {
+		t.Fatalf("expected query prompt to be hello, got %q", svc.lastPrompt)
+	}
+	if len(model.messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(model.messages))
+	}
+	if textContent(model.messages[3].Parts) != "hello" {
+		t.Fatalf("expected final assistant content, got %q", textContent(model.messages[3].Parts))
 	}
 }
 
@@ -179,7 +225,7 @@ func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 		}
 		return nil
 	}
-	svc.sendMessageFn = func(_ context.Context, sessionID string, prompt string) error {
+	svc.runQueryFn = func(_ context.Context, sessionID string, prompt string) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventAgent,
 			Payload: agent.QueryEvent{
@@ -320,8 +366,11 @@ func TestQueryCompletedEventStopsLoading(t *testing.T) {
 
 type stubChatService struct {
 	events          chan app.Event
+	eventsCalls     int
 	ensureSessionFn func(ctx context.Context) error
-	sendMessageFn   func(ctx context.Context, sessionID string, prompt string) error
+	runQueryFn      func(ctx context.Context, sessionID string, prompt string) error
+	lastSessionID   string
+	lastPrompt      string
 }
 
 func newStubChatService() *stubChatService {
@@ -337,14 +386,17 @@ func (s *stubChatService) EnsureActiveSession(ctx context.Context) error {
 	return s.ensureSessionFn(ctx)
 }
 
-func (s *stubChatService) SendMessage(ctx context.Context, sessionID string, prompt string) error {
-	if s.sendMessageFn == nil {
+func (s *stubChatService) RunQuery(ctx context.Context, sessionID string, prompt string) error {
+	s.lastSessionID = sessionID
+	s.lastPrompt = prompt
+	if s.runQueryFn == nil {
 		return nil
 	}
-	return s.sendMessageFn(ctx, sessionID, prompt)
+	return s.runQueryFn(ctx, sessionID, prompt)
 }
 
 func (s *stubChatService) Events() <-chan app.Event {
+	s.eventsCalls++
 	return s.events
 }
 

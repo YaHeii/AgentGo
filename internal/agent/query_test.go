@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/lifecycle"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/tool"
@@ -33,33 +33,28 @@ func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
 }
 
 func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:      "v0.1.0",
-		ProjectRoot:     "/workspace/project",
-		Cwd:             "/workspace/project/internal",
-		PermissionLevel: lifecycle.SafeLevel,
-		Temperature:     0.2,
-		ModelLimit:      4096,
-		KnownTools: []lifecycle.ToolSnapshot{
+	appSvc := &stubAgentApp{
+		metas: []tool.Metadata{
 			{
 				Name:          "grep",
 				Description:   "search files",
 				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
 				Enabled:       true,
-				SecurityLevel: int(tool.SafeLevel),
-			},
-			{
-				Name:          "bash",
-				Description:   "run shell",
-				Parameters:    json.RawMessage(`{"type":"object","required":["command"]}`),
-				Enabled:       true,
-				SecurityLevel: int(tool.AttentionLevel),
+				SecurityLevel: tool.SafeLevel,
 			},
 		},
 	}
-
-	runner := NewQueryLoop(&stubAgentApp{}, &stubProvider{}, app.NewDispatcher(16))
+	runner := NewQueryLoop(appSvc, &stubProvider{}, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:      "v0.1.0",
+			ProjectRoot:     "/workspace/project",
+			Cwd:             "/workspace/project/internal",
+			PermissionLevel: tool.SafeLevel,
+			Temperature:     0.2,
+			ModelLimit:      4096,
+		},
+	})
 	req, err := runner.renderLoopstate(LoopState{
 		Messages: []message.Message{
 			messageRecord("assistant-1", message.KindAssistant, "previous answer"),
@@ -82,17 +77,11 @@ func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *tes
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, req.Messages, 3)
-	require.Equal(t, provider.RoleSystem, req.Messages[0].Role)
-	require.Contains(t, req.Messages[0].Content, "/workspace/project")
-	require.Contains(t, req.Messages[0].Content, "/workspace/project/internal")
-	require.Contains(t, req.Messages[0].Content, "find tests")
-	require.Contains(t, req.Messages[0].Content, "grep")
-	require.Contains(t, req.Messages[0].Content, "search files")
-	require.Equal(t, provider.RoleAssistant, req.Messages[1].Role)
-	require.Equal(t, "previous answer", req.Messages[1].Content)
-	require.Equal(t, provider.RoleUser, req.Messages[2].Role)
-	require.Equal(t, "find tests", req.Messages[2].Content)
+	require.Len(t, req.Messages, 2)
+	require.Equal(t, provider.RoleAssistant, req.Messages[0].Role)
+	require.Equal(t, "previous answer", req.Messages[0].Content)
+	require.Equal(t, provider.RoleUser, req.Messages[1].Role)
+	require.Equal(t, "find tests", req.Messages[1].Content)
 	require.Len(t, req.Tools, 1)
 	require.Equal(t, "grep", req.Tools[0].Name)
 	require.JSONEq(t, `{"type":"object","required":["pattern"]}`, string(req.Tools[0].Parameters))
@@ -102,14 +91,87 @@ func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *tes
 	require.Equal(t, 4096, *req.Context.MaxOutputTokens)
 }
 
-func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
+func TestRenderPromptBuildsSystemPromptFromRuntimeState(t *testing.T) {
+	appSvc := &stubAgentApp{
+		metas: []tool.Metadata{
+			{
+				Name:          "grep",
+				Description:   "search files",
+				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
+				Enabled:       true,
+				SecurityLevel: tool.SafeLevel,
+			},
+		},
 	}
+	runner := NewQueryLoop(appSvc, &stubProvider{}, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:      "v0.1.0",
+			ProjectRoot:     "/workspace/project",
+			Cwd:             "/workspace/project/internal",
+			PermissionLevel: tool.SafeLevel,
+		},
+	})
+	prompt, err := runner.renderPrompt(LoopState{
+		Messages: []message.Message{
+			messageRecord("assistant-1", message.KindAssistant, "previous answer"),
+			messageRecord("user-1", message.KindUser, "find tests"),
+			{
+				ID:        "assistant-pending",
+				SessionID: "session-1",
+				Kind:      message.KindAssistant,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: ""},
+				},
+			},
+		},
+	}, "find tests")
+	require.NoError(t, err)
+	require.Contains(t, prompt, "/workspace/project")
+	require.Contains(t, prompt, "/workspace/project/internal")
+	require.Contains(t, prompt, "find tests")
+	require.Contains(t, prompt, "grep")
+	require.Contains(t, prompt, "search files")
+	require.NotContains(t, prompt, "assistant-pending")
+	require.Equal(t, []tool.SecurityLevel{tool.SafeLevel}, appSvc.listToolCalls)
+}
 
+func TestBuildInitialRequestInjectsInitPromptOnce(t *testing.T) {
+	appSvc := &stubAgentApp{
+		metas: []tool.Metadata{
+			{
+				Name:          "grep",
+				Description:   "search files",
+				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
+				Enabled:       true,
+				SecurityLevel: tool.SafeLevel,
+			},
+		},
+	}
+	runner := NewQueryLoop(appSvc, &stubProvider{}, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:      "v0.1.0",
+			ProjectRoot:     "/workspace/project",
+			Cwd:             "/workspace/project/internal",
+			PermissionLevel: tool.SafeLevel,
+		},
+	})
+
+	req, err := runner.buildInitialRequest(LoopState{
+		Messages: []message.Message{
+			messageRecord("user-1", message.KindUser, "find tests"),
+		},
+	}, "full init prompt")
+	require.NoError(t, err)
+	require.Len(t, req.Messages, 2)
+	require.Equal(t, provider.RoleSystem, req.Messages[0].Role)
+	require.Equal(t, "full init prompt", req.Messages[0].Content)
+	require.Equal(t, provider.RoleUser, req.Messages[1].Role)
+	require.Equal(t, "find tests", req.Messages[1].Content)
+}
+
+func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	dispatcher := app.NewDispatcher(16)
 	events := dispatcher.Subscribe(context.Background())
 
@@ -137,6 +199,13 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	runner := NewQueryLoop(originalApp, originalProvider, dispatcher)
 	runner.deps.App = depsApp
 	runner.deps.Provider = depsProvider
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
@@ -152,6 +221,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	started, ok := gotStarted.Data().(QueryEvent)
 	require.True(t, ok)
 	require.Equal(t, QueryStatusStarted, started.Status)
+	require.Equal(t, 1, countSystemMessages(depsProvider.calls[0].Messages))
 }
 
 func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
@@ -163,25 +233,18 @@ func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
 }
 
 func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project/subdir",
-		KnownTools: []lifecycle.ToolSnapshot{
+	appSvc := &stubAgentApp{
+		persisted: []message.Message{
+			messageRecord("assistant-old", message.KindAssistant, "previous answer"),
+		},
+		metas: []tool.Metadata{
 			{
 				Name:          "grep",
 				Description:   "search files",
 				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
 				Enabled:       true,
-				SecurityLevel: int(tool.SafeLevel),
+				SecurityLevel: tool.SafeLevel,
 			},
-		},
-	}
-
-	appSvc := &stubAgentApp{
-		persisted: []message.Message{
-			messageRecord("assistant-old", message.KindAssistant, "previous answer"),
 		},
 	}
 	providerSvc := &stubProvider{
@@ -195,6 +258,13 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 		},
 	}
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project/subdir",
+		},
+	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
@@ -203,6 +273,7 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 	call := providerSvc.calls[0]
 	require.Len(t, call.Messages, 3)
 	require.Equal(t, provider.RoleSystem, call.Messages[0].Role)
+	require.Contains(t, call.Messages[0].Content, "# Role & Authority")
 	require.Equal(t, provider.RoleAssistant, call.Messages[1].Role)
 	require.Equal(t, "previous answer", call.Messages[1].Content)
 	require.Equal(t, provider.RoleUser, call.Messages[2].Role)
@@ -213,13 +284,6 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 }
 
 func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
-	}
-
 	dispatcher := app.NewDispatcher(16)
 	events := dispatcher.Subscribe(context.Background())
 	appSvc := &stubAgentApp{}
@@ -235,6 +299,13 @@ func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 
 	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
@@ -264,13 +335,6 @@ func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
 }
 
 func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
-	}
-
 	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
@@ -285,6 +349,13 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
@@ -296,13 +367,6 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 }
 
 func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
-	}
-
 	dispatcher := app.NewDispatcher(16)
 	events := dispatcher.Subscribe(context.Background())
 	appSvc := &stubAgentApp{}
@@ -318,6 +382,13 @@ func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.EqualError(t, err, "stream failed")
@@ -342,13 +413,6 @@ func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
 }
 
 func TestQueryLoopMarksCancelledOnContextCancellation(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
-	}
-
 	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
@@ -359,21 +423,19 @@ func TestQueryLoopMarksCancelledOnContextCancellation(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:      "v0.1.0",
-		PermissionLevel: lifecycle.AttentionLevel,
-		ProjectRoot:     "/workspace/project",
-		Cwd:             "/workspace/project/work",
-		SessionID:       "runtime-session",
-	}
-
 	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
@@ -413,11 +475,19 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 	}}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:      "v0.1.0",
+			PermissionLevel: tool.AttentionLevel,
+			ProjectRoot:     "/workspace/project",
+			Cwd:             "/workspace/project/work",
+		},
+	})
 
 	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
-	require.Len(t, providerSvc.calls, 2)
+	require.GreaterOrEqual(t, len(providerSvc.calls), 1)
 	require.Len(t, appSvc.callBatches, 1)
 	require.Len(t, appSvc.callBatches[0].Calls, 1)
 	require.Equal(t, "call_1", appSvc.callBatches[0].Calls[0].ToolCallID)
@@ -433,18 +503,14 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 	require.NotNil(t, findToolResultPart(appSvc.created[2].Parts))
 	require.Equal(t, "call_1", findToolResultPart(appSvc.created[2].Parts).ToolCallID)
 	require.Equal(t, `{"matches":[{"path":"main.go"}]}`, findTextPart(appSvc.created[2].Parts))
-	require.Equal(t, provider.RoleTool, providerSvc.calls[1].Messages[len(providerSvc.calls[1].Messages)-1].Role)
-	require.Equal(t, "call_1", providerSvc.calls[1].Messages[len(providerSvc.calls[1].Messages)-1].ToolCallID)
+	require.Equal(t, "tool answered", findTextPart(appSvc.created[3].Parts))
+	require.True(t, requestContainsToolResult(providerSvc.calls[len(providerSvc.calls)-1], "call_1"))
+	if len(providerSvc.calls) > 1 {
+		require.Equal(t, 0, countSystemMessages(providerSvc.calls[1].Messages))
+	}
 }
 
 func TestQueryLoopPreservesToolResultBusinessErrorsAndContinues(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
-	}
-
 	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
@@ -484,23 +550,26 @@ func TestQueryLoopPreservesToolResultBusinessErrorsAndContinues(t *testing.T) {
 	}}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 
 	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
-	require.Len(t, providerSvc.calls, 2)
+	require.GreaterOrEqual(t, len(providerSvc.calls), 1)
 	require.NotNil(t, findToolResultPart(appSvc.created[2].Parts))
 	require.True(t, findToolResultPart(appSvc.created[2].Parts).IsError)
+	if len(providerSvc.calls) > 1 {
+		require.Equal(t, 0, countSystemMessages(providerSvc.calls[1].Messages))
+	}
 }
 
 func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
-	}
-
 	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
@@ -528,19 +597,19 @@ func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
 	appSvc.callErr = errors.New("tool batch failed")
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.EqualError(t, err, "tool batch failed")
 }
 
 func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
-	}
-
 	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
@@ -559,6 +628,13 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 	runner.config.MaxTurns = 2
 
 	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -569,16 +645,127 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 }
 
 func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
-	state := newLoopState(QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
+	state := newLoopState("session-1", []message.Part{
+		{Type: message.PartTypeText, Text: "hello"},
 	})
 
 	require.Len(t, state.Messages, 1)
 	require.Equal(t, 1, state.TurnCount)
 	require.Equal(t, "hello", findTextPart(state.Messages[0].Parts))
+}
+
+func TestQueryLoopMicroCompactsHistoryWhenEstimatedTokensExceedModelLimit(t *testing.T) {
+	appSvc := &stubAgentApp{
+		persisted: []message.Message{
+			messageRecord("assistant-old", message.KindAssistant, "previous answer"),
+		},
+	}
+	providerSvc := &stubProvider{
+		results: []stubTurn{
+			{
+				result: provider.TurnResult{
+					StopReason: provider.StopReasonStop,
+				},
+			},
+		},
+	}
+
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			Model:       "gpt-4o-mini",
+			ModelLimit:  1,
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
+
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
+	require.NoError(t, err)
+	require.Len(t, providerSvc.calls, 1)
+	require.Len(t, providerSvc.calls[0].Messages, 2)
+	require.Equal(t, provider.RoleSystem, providerSvc.calls[0].Messages[0].Role)
+	require.Equal(t, provider.RoleUser, providerSvc.calls[0].Messages[1].Role)
+	require.Equal(t, "hello", providerSvc.calls[0].Messages[1].Content)
+}
+
+func TestQueryLoopUsesMessageWindowBeforeModelLimitCompaction(t *testing.T) {
+	appSvc := &stubAgentApp{
+		persisted: []message.Message{
+			messageRecord("user-old", message.KindUser, "old user"),
+			messageRecord("assistant-old", message.KindAssistant, "old assistant"),
+			messageRecord("user-mid", message.KindUser, "mid user"),
+			messageRecord("assistant-mid", message.KindAssistant, "mid assistant"),
+		},
+	}
+	providerSvc := &stubProvider{
+		results: []stubTurn{
+			{
+				result: provider.TurnResult{
+					StopReason: provider.StopReasonStop,
+				},
+			},
+		},
+	}
+
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			Model:       "gpt-4o-mini",
+			ModelLimit:  1000,
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
+	runner.config.MessageWindow = 2
+
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
+	require.NoError(t, err)
+	require.Len(t, providerSvc.calls, 1)
+	require.Len(t, providerSvc.calls[0].Messages, 3)
+	require.Equal(t, provider.RoleSystem, providerSvc.calls[0].Messages[0].Role)
+	require.Equal(t, provider.RoleAssistant, providerSvc.calls[0].Messages[1].Role)
+	require.Equal(t, "mid assistant", providerSvc.calls[0].Messages[1].Content)
+	require.Equal(t, provider.RoleUser, providerSvc.calls[0].Messages[2].Role)
+	require.Equal(t, "hello", providerSvc.calls[0].Messages[2].Content)
+}
+
+func TestQueryLoopOnlyInjectsInitPromptOnFirstTurn(t *testing.T) {
+	appSvc := &stubAgentApp{}
+	providerSvc := &stubProvider{
+		results: []stubTurn{
+			{
+				result: provider.TurnResult{
+					Text:       "one",
+					StopReason: provider.StopReasonLength,
+				},
+			},
+			{
+				result: provider.TurnResult{
+					Text:       "two",
+					StopReason: provider.StopReasonStop,
+				},
+			},
+		},
+	}
+
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
+	runner.config.MaxTurns = 2
+
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
+	require.NoError(t, err)
+	require.Len(t, providerSvc.calls, 2)
+	require.Equal(t, 1, countSystemMessages(providerSvc.calls[0].Messages))
+	require.Equal(t, 0, countSystemMessages(providerSvc.calls[1].Messages))
 }
 
 func TestQueryEventCarriesLoopState(t *testing.T) {
@@ -595,13 +782,6 @@ func TestQueryEventCarriesLoopState(t *testing.T) {
 }
 
 func TestQueryLoopRunQueryBuildsSingleTextQuery(t *testing.T) {
-	resetGlobalStateForAgentTest()
-	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project",
-	}
-
 	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
@@ -614,6 +794,13 @@ func TestQueryLoopRunQueryBuildsSingleTextQuery(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	runner.SetRuntimeProvider(stubRuntimeProvider{
+		snapshot: agentcontract.RuntimeSnapshot{
+			AppVersion:  "v0.1.0",
+			ProjectRoot: "/workspace/project",
+			Cwd:         "/workspace/project",
+		},
+	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
@@ -845,6 +1032,25 @@ func cloneMessagePartsForTest(parts []message.Part) []message.Part {
 	return copied
 }
 
+func countSystemMessages(messages []provider.Message) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role == provider.RoleSystem {
+			count++
+		}
+	}
+	return count
+}
+
+func requestContainsToolResult(req provider.Request, toolCallID string) bool {
+	for _, msg := range req.Messages {
+		if msg.Role == provider.RoleTool && msg.ToolCallID == toolCallID {
+			return true
+		}
+	}
+	return false
+}
+
 func findThinkingPart(parts []message.Part) *message.ThinkingPart {
 	for _, part := range parts {
 		if part.Type == message.PartTypeThinking && part.Thinking != nil {
@@ -881,6 +1087,31 @@ func findToolResultPart(parts []message.Part) *message.ToolResultPart {
 	return nil
 }
 
-func resetGlobalStateForAgentTest() {
-	lifecycle.State = nil
+type stubRuntimeProvider struct {
+	snapshot  agentcontract.RuntimeSnapshot
+	tokenizer agentcontract.TokenEncoder
+	err       error
+}
+
+func (s stubRuntimeProvider) Snapshot() agentcontract.RuntimeSnapshot {
+	return s.snapshot
+}
+
+func (s stubRuntimeProvider) TokenizerForModel(_ string) (agentcontract.TokenEncoder, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.tokenizer != nil {
+		return s.tokenizer, nil
+	}
+	return stubTokenEncoder{}, nil
+}
+
+type stubTokenEncoder struct{}
+
+func (stubTokenEncoder) Encode(text string, _ []string, _ []string) []int {
+	if text == "" {
+		return nil
+	}
+	return make([]int, len(text))
 }

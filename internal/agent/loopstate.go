@@ -18,13 +18,13 @@ type LoopState struct {
 }
 
 // LoopState function
-func newLoopState(params QueryParams) LoopState {
+func newLoopState(sessionID string, inputParts []message.Part) LoopState {
 	return LoopState{
 		Messages: []message.Message{
 			{
-				SessionID: params.SessionID,
+				SessionID: sessionID,
 				Kind:      message.KindUser,
-				Parts:     append([]message.Part(nil), params.InputParts...),
+				Parts:     append([]message.Part(nil), inputParts...),
 			},
 		},
 		TurnCount: 1,

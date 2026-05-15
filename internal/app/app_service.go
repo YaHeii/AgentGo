@@ -94,7 +94,7 @@ func (s *APPService) CreateMessage(ctx context.Context, params message.CreateMes
 	return s.sessions.CreateMessage(ctx, params, s.dispatcher)
 }
 
-func (s *APPService) SendMessage(ctx context.Context, sessionID string, prompt string) error {
+func (s *APPService) RunQuery(ctx context.Context, sessionID string, prompt string) error {
 	return s.agent.RunQuery(ctx, sessionID, prompt)
 }
 

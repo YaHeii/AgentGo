@@ -19,8 +19,8 @@ func (s *ChatService) EnsureActiveSession(ctx context.Context) error {
 	return s.app.EnsureActiveSession(ctx)
 }
 
-func (s *ChatService) SendMessage(ctx context.Context, sessionID string, prompt string) error {
-	return s.app.SendMessage(ctx, sessionID, prompt)
+func (s *ChatService) RunQuery(ctx context.Context, sessionID string, prompt string) error {
+	return s.app.RunQuery(ctx, sessionID, prompt)
 }
 
 func (s *ChatService) Events() <-chan app.Event {
