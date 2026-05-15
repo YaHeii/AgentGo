@@ -21,12 +21,6 @@ type QueryResult struct {
 	PendingToolCalls        []providercontract.ToolCall
 }
 
-// QueryConfig stores stable runtime limits and policy knobs for a query runner.
-type QueryConfig struct {
-	MaxTurns      int
-	MessageWindow int
-}
-
 // QueryDeps groups the concrete collaborators required by the query runner.
 type QueryDeps struct {
 	App        appStore

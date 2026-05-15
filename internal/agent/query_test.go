@@ -26,7 +26,6 @@ func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
 
-	require.Equal(t, 10, runner.config.MaxTurns)
 	require.Same(t, appSvc, runner.deps.App)
 	require.Same(t, providerSvc, runner.deps.Provider)
 	require.Same(t, dispatcher, runner.deps.dispatcher)
@@ -224,14 +223,6 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, QueryStatusStarted, started.Status)
 	require.Equal(t, 1, countSystemMessages(depsProvider.calls[0].Messages))
-}
-
-func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
-	runner := NewQueryLoop(&stubAgentApp{}, &stubProvider{}, app.NewDispatcher(16))
-	runner.config.MaxTurns = 0
-
-	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
-	require.EqualError(t, err, "agent: max turns must be greater than 0")
 }
 
 func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T) {
@@ -595,7 +586,7 @@ func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
 	require.EqualError(t, err, "tool batch failed")
 }
 
-func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
+func TestQueryLoopStopsAtRuntimeMaxTurn(t *testing.T) {
 	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
@@ -618,13 +609,13 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 		AppVersion:  "v0.1.0",
 		ProjectRoot: "/workspace/project",
 		Cwd:         "/workspace/project",
+		MaxTurn:     1,
 	})
-	runner.config.MaxTurns = 2
 
 	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
-	require.Len(t, providerSvc.calls, 2)
-	require.Equal(t, 2, result.Turns)
+	require.Len(t, providerSvc.calls, 1)
+	require.Equal(t, 1, result.Turns)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 }
 
@@ -666,10 +657,12 @@ func TestQueryLoopMicroCompactsHistoryWhenEstimatedTokensExceedModelLimit(t *tes
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Len(t, providerSvc.calls, 1)
-	require.Len(t, providerSvc.calls[0].Messages, 2)
+	require.Len(t, providerSvc.calls[0].Messages, 3)
 	require.Equal(t, message.KindSystem, providerSvc.calls[0].Messages[0].Kind)
-	require.Equal(t, message.KindUser, providerSvc.calls[0].Messages[1].Kind)
-	require.Equal(t, "hello", findTextPart(providerSvc.calls[0].Messages[1].Parts))
+	require.Equal(t, message.KindAssistant, providerSvc.calls[0].Messages[1].Kind)
+	require.Equal(t, "previous answer", findTextPart(providerSvc.calls[0].Messages[1].Parts))
+	require.Equal(t, message.KindUser, providerSvc.calls[0].Messages[2].Kind)
+	require.Equal(t, "hello", findTextPart(providerSvc.calls[0].Messages[2].Parts))
 }
 
 func TestQueryLoopUsesMessageWindowBeforeModelLimitCompaction(t *testing.T) {
@@ -699,7 +692,7 @@ func TestQueryLoopUsesMessageWindowBeforeModelLimitCompaction(t *testing.T) {
 		ProjectRoot: "/workspace/project",
 		Cwd:         "/workspace/project",
 	})
-	runner.config.MessageWindow = 2
+	runner.messageWindow = 2
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
@@ -736,8 +729,8 @@ func TestQueryLoopOnlyInjectsInitPromptOnFirstTurn(t *testing.T) {
 		AppVersion:  "v0.1.0",
 		ProjectRoot: "/workspace/project",
 		Cwd:         "/workspace/project",
+		MaxTurn:     2,
 	})
-	runner.config.MaxTurns = 2
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)

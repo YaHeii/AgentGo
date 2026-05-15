@@ -52,6 +52,7 @@ func main() {
 	providerSvc := provider.NewProviderService(providerClient, dispatcher)
 	toolSvc := supervisor.ToolService()
 	queryApp := app.NewService(sessionSvc, nil, toolSvc, dispatcher)
+	//TOFIX: ui should do this, not main
 	queryLoop := agent.NewQueryLoop(queryApp, providerSvc, dispatcher)
 	agentSvc := agent.NewService(queryLoop)
 	appSvc := app.NewService(sessionSvc, agentSvc, toolSvc, dispatcher)

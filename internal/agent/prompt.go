@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/YaHeii/agentGo/internal/lifecycle"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
@@ -30,16 +31,27 @@ type PromptMessage struct {
 }
 
 func (r *QueryLoop) renderPrompt(state LoopState, usrPrompt string) (string, error) {
-	runtimeState := r.runtimeSnapshot()
 	requestMessages := trimPendingAssistant(state.Messages)
 	var tools []toolcontract.Metadata
+	permissionLevel := toolcontract.SecurityLevel(0)
+	if lifecycle.State != nil {
+		permissionLevel = toolcontract.SecurityLevel(lifecycle.State.PermissionLevel)
+	}
 	if r.deps.App != nil {
-		tools = r.deps.App.ListTools(context.Background(), runtimeState.PermissionLevel)
+		tools = r.deps.App.ListTools(context.Background(), permissionLevel)
+	}
+	appVersion := ""
+	projectRoot := ""
+	cwd := ""
+	if lifecycle.State != nil {
+		appVersion = lifecycle.State.AppVersion
+		projectRoot = lifecycle.State.ProjectRoot
+		cwd = lifecycle.State.Cwd
 	}
 	data := promptTemplateData{
-		AppVersion:  runtimeState.AppVersion,
-		ProjectRoot: runtimeState.ProjectRoot,
-		Cwd:         runtimeState.Cwd,
+		AppVersion:  appVersion,
+		ProjectRoot: projectRoot,
+		Cwd:         cwd,
 		Tools:       tools,
 		History:     buildPromptHistory(requestMessages),
 		UserInput:   usrPrompt,
@@ -58,12 +70,6 @@ func (r *QueryLoop) renderPrompt(state LoopState, usrPrompt string) (string, err
 }
 
 func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (providercontract.Request, error) {
-	runtimeState := r.runtimeSnapshot()
-	requestMessages := trimPendingAssistant(state.Messages)
-	var tools []toolcontract.Metadata
-	if r.deps.App != nil {
-		tools = r.deps.App.ListTools(context.Background(), runtimeState.PermissionLevel)
-	}
 	req := providercontract.Request{
 		Messages: []message.Message{
 			{
@@ -73,47 +79,39 @@ func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (provide
 				},
 			},
 		},
-		Tools: make([]toolcontract.Metadata, 0, len(tools)),
 	}
-	if runtimeState.Temperature != 0 {
-		temperature := runtimeState.Temperature
-		req.Context.Temperature = &temperature
-	}
-	if runtimeState.ModelLimit > 0 {
-		maxOutputTokens := runtimeState.ModelLimit
-		req.Context.MaxOutputTokens = &maxOutputTokens
-	}
-	for _, msg := range requestMessages {
-		providerMsg, ok := toProviderMessage(msg)
-		if !ok {
-			continue
-		}
-		req.Messages = append(req.Messages, providerMsg)
-	}
-	for _, meta := range tools {
-		req.Tools = append(req.Tools, meta)
-	}
+	loopReq := r.buildRequest(state)
+	req.Messages = append(req.Messages, loopReq.Messages...)
+	req.Tools = loopReq.Tools
+	req.Context = loopReq.Context
 	return req, nil
 }
 
 func (r *QueryLoop) renderLoopstate(state LoopState) (providercontract.Request, error) {
-	runtimeState := r.runtimeSnapshot()
+	return r.buildRequest(state), nil
+}
+
+func (r *QueryLoop) buildRequest(state LoopState) providercontract.Request {
 	requestMessages := trimPendingAssistant(state.Messages)
+	permissionLevel := toolcontract.SecurityLevel(0)
+	if lifecycle.State != nil {
+		permissionLevel = toolcontract.SecurityLevel(lifecycle.State.PermissionLevel)
+	}
 	var tools []toolcontract.Metadata
 	if r.deps.App != nil {
-		tools = r.deps.App.ListTools(context.Background(), runtimeState.PermissionLevel)
+		tools = r.deps.App.ListTools(context.Background(), permissionLevel)
 	}
 
 	req := providercontract.Request{
 		Messages: make([]message.Message, 0, len(requestMessages)),
 		Tools:    make([]toolcontract.Metadata, 0, len(tools)),
 	}
-	if runtimeState.Temperature != 0 {
-		temperature := runtimeState.Temperature
+	if lifecycle.State != nil && lifecycle.State.Temperature != 0 {
+		temperature := lifecycle.State.Temperature
 		req.Context.Temperature = &temperature
 	}
-	if runtimeState.ModelLimit > 0 {
-		maxOutputTokens := runtimeState.ModelLimit
+	if lifecycle.State != nil && lifecycle.State.ModelLimit > 0 {
+		maxOutputTokens := lifecycle.State.ModelLimit
 		req.Context.MaxOutputTokens = &maxOutputTokens
 	}
 	for _, msg := range requestMessages {
@@ -126,7 +124,7 @@ func (r *QueryLoop) renderLoopstate(state LoopState) (providercontract.Request, 
 	for _, meta := range tools {
 		req.Tools = append(req.Tools, meta)
 	}
-	return req, nil
+	return req
 }
 
 // Clean up invalid assistant messages at the end of the message history.

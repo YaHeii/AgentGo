@@ -16,7 +16,6 @@ type LoopState struct {
 	PendingToolCalls   []providercontract.ToolCall
 }
 
-// LoopState function
 func newLoopState(sessionID string, inputParts []messagecontract.Part) LoopState {
 	return LoopState{
 		Messages: []messagecontract.Message{
@@ -30,7 +29,6 @@ func newLoopState(sessionID string, inputParts []messagecontract.Part) LoopState
 	}
 }
 
-// TO Deep copy loopstate
 func copyLoopState(state LoopState) LoopState {
 	copied := state
 	copied.PendingToolCalls = append([]providercontract.ToolCall(nil), state.PendingToolCalls...)

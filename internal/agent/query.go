@@ -17,17 +17,13 @@ import (
 )
 
 type QueryLoop struct {
-	config QueryConfig
-	deps   QueryDeps
+	messageWindow int
+	deps          QueryDeps
 }
 
 func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) *QueryLoop {
 	return &QueryLoop{
-		// TODO:setup from lifecycle
-		config: QueryConfig{
-			MaxTurns:      10,
-			MessageWindow: 20,
-		},
+		messageWindow: 20,
 		deps: QueryDeps{
 			App:        appSvc,
 			Provider:   providerSvc,
@@ -38,7 +34,8 @@ func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) 
 }
 
 func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt string) (QueryResult, error) {
-	if r.config.MaxTurns <= 0 {
+	maxTurns := r.maxTurns()
+	if maxTurns <= 0 {
 		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
 	}
 
@@ -52,7 +49,6 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 		SessionID: sessionID,
 		Kind:      message.KindUser,
 		Parts:     inputParts,
-		//TODO: add other fields
 	})
 	if err != nil {
 		return QueryResult{}, err
@@ -78,7 +74,6 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 	if err != nil {
 		return QueryResult{}, err
 	}
-	// firstreq onlyuse the template
 	firstReq, err := r.buildInitialRequest(loopstate, initPrompt)
 	if err != nil {
 		return QueryResult{}, err
@@ -100,7 +95,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 			continue
 		}
 
-		if loopstate.FinishReason == FinishReasonCompleted && loopstate.StopReason == providercontract.StopReasonLength && loopstate.TurnCount < r.config.MaxTurns {
+		if loopstate.FinishReason == FinishReasonCompleted && loopstate.StopReason == providercontract.StopReasonLength && loopstate.TurnCount < maxTurns {
 			loopstate.TurnCount++
 		} else if loopstate.FinishReason == FinishReasonCompleted {
 			r.dispatch(QueryStatusCompleted, loopstate, nil)
@@ -114,7 +109,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 			}, nil
 		}
 
-		if loopstate.TurnCount > r.config.MaxTurns {
+		if loopstate.TurnCount > maxTurns {
 			break
 		}
 
@@ -162,16 +157,18 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 
 func (r *QueryLoop) preprocessHistory(history []message.Message) []message.Message {
 	processed := cloneMessages(history)
-	if r.config.MessageWindow > 0 && len(processed) > r.config.MessageWindow {
-		processed = processed[len(processed)-r.config.MessageWindow:]
+	if r.messageWindow > 0 && len(processed) > r.messageWindow {
+		processed = processed[len(processed)-r.messageWindow:]
 	}
-	runtimeState := r.runtimeSnapshot()
-	if runtimeState.ModelLimit <= 0 || strings.TrimSpace(runtimeState.Model) == "" {
+	if lifecycle.State == nil || lifecycle.CurrentSupervisor == nil {
+		return processed
+	}
+	if lifecycle.State.ModelLimit <= 0 || strings.TrimSpace(lifecycle.State.Model) == "" {
 		return processed
 	}
 
 	for len(processed) > 1 {
-		exceeded, err := r.exceedsModelLimit(runtimeState.Model, runtimeState.ModelLimit, processed)
+		exceeded, err := r.exceedsModelLimit(lifecycle.State.Model, lifecycle.State.ModelLimit, processed)
 		if err == nil && !exceeded {
 			return processed
 		}
@@ -194,16 +191,10 @@ func cloneMessages(history []message.Message) []message.Message {
 }
 
 func (r *QueryLoop) estimateMessagesTokens(model string, messages []message.Message) (int, error) {
-	if lifecycle.CurrentSupervisor != nil {
-		return lifecycle.CurrentSupervisor.EstimateTokens(model, messages)
+	if lifecycle.CurrentSupervisor == nil {
+		return 0, errors.New("agent: supervisor is required for token estimation")
 	}
-
-	builder := flattenMessages(messages)
-	encoding, err := lifecycle.TokenizerForModel(model)
-	if err != nil {
-		return 0, err
-	}
-	return len(encoding.Encode(string(builder), nil, nil)), nil
+	return lifecycle.CurrentSupervisor.EstimateTokens(model, messages)
 }
 
 func (r *QueryLoop) exceedsModelLimit(model string, limit int, messages []message.Message) (bool, error) {
@@ -318,18 +309,25 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 	batch := toolcontract.BatchRequest{
 		Calls: make([]toolcontract.ToolCallRequest, 0, len(state.PendingToolCalls)),
 	}
-	runtimeState := r.runtimeSnapshot()
+	permissionLevel := toolcontract.SecurityLevel(0)
+	workspaceRoot := ""
+	workingDir := ""
+	if lifecycle.State != nil {
+		permissionLevel = toolcontract.SecurityLevel(lifecycle.State.PermissionLevel)
+		workspaceRoot = lifecycle.State.ProjectRoot
+		workingDir = lifecycle.State.Cwd
+	}
 	for _, call := range state.PendingToolCalls {
 		batch.Calls = append(batch.Calls, toolcontract.ToolCallRequest{
 			ToolCallID:      call.ID,
 			Name:            call.Name,
 			Arguments:       json.RawMessage(call.Arguments),
-			PermissionLevel: runtimeState.PermissionLevel,
+			PermissionLevel: permissionLevel,
 			Context: toolcontract.ToolCallContext{
 				SessionID:     sessionID,
 				TurnID:        fmt.Sprintf("turn-%d", state.TurnCount),
-				WorkspaceRoot: runtimeState.ProjectRoot,
-				WorkingDir:    runtimeState.Cwd,
+				WorkspaceRoot: workspaceRoot,
+				WorkingDir:    workingDir,
 			},
 		})
 	}
@@ -495,31 +493,6 @@ func buildAssistantParts(turn providercontract.TurnResult) []message.Part {
 	return parts
 }
 
-type runtimeState struct {
-	AppVersion      string
-	ProjectRoot     string
-	Cwd             string
-	PermissionLevel toolcontract.SecurityLevel
-	ModelLimit      int
-	Model           string
-	Temperature     float32
-}
-
-func (r *QueryLoop) runtimeSnapshot() runtimeState {
-	if lifecycle.State == nil {
-		return runtimeState{}
-	}
-	return runtimeState{
-		AppVersion:      lifecycle.State.AppVersion,
-		ProjectRoot:     lifecycle.State.ProjectRoot,
-		Cwd:             lifecycle.State.Cwd,
-		PermissionLevel: toolcontract.SecurityLevel(lifecycle.State.PermissionLevel),
-		ModelLimit:      lifecycle.State.ModelLimit,
-		Model:           lifecycle.State.Model,
-		Temperature:     lifecycle.State.Temperature,
-	}
-}
-
 func buildPromptHistory(history []message.Message) []PromptMessage {
 	out := make([]PromptMessage, 0, len(history))
 	for _, msg := range history {
@@ -602,4 +575,11 @@ func cloneMessageParts(parts []message.Part) []message.Part {
 		}
 	}
 	return copied
+}
+
+func (r *QueryLoop) maxTurns() int {
+	if lifecycle.State != nil && lifecycle.State.MaxTurn > 0 {
+		return lifecycle.State.MaxTurn
+	}
+	return 10
 }
