@@ -243,12 +243,57 @@ func TestBuildChatCompletionRequestMapsMessagesToolsAndContext(t *testing.T) {
 	require.NotNil(t, got.StreamOptions)
 	require.True(t, got.StreamOptions.IncludeUsage)
 	require.Equal(t, temperature, got.Temperature)
-	require.Equal(t, maxOutputTokens, got.MaxCompletionTokens)
 	require.Len(t, got.Messages, 4)
 	require.Equal(t, openai.ChatMessageRoleTool, got.Messages[3].Role)
 	require.Equal(t, "call_1", got.Messages[3].ToolCallID)
 	require.Len(t, got.Tools, 1)
 	require.Equal(t, "grep", got.Tools[0].Function.Name)
+
+	payload, err := json.Marshal(got)
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(payload, &body))
+	_, hasMaxCompletionTokens := body["max_completion_tokens"]
+	require.False(t, hasMaxCompletionTokens)
+	_, hasMaxTokens := body["max_tokens"]
+	require.False(t, hasMaxTokens)
+}
+
+func TestBuildChatCompletionRequestKeepsToolParametersAsJSONObject(t *testing.T) {
+	t.Parallel()
+
+	req := Request{
+		Messages: []Message{
+			{Role: RoleUser, Content: "user"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "grep",
+				Description: "search project",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"pattern":{"type":"string"}
+					},
+					"required":["pattern"]
+				}`),
+			},
+		},
+	}
+
+	got := buildChatCompletionRequest("gpt-test", req)
+	payload, err := json.Marshal(got)
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(payload, &body))
+
+	tools := body["tools"].([]any)
+	function := tools[0].(map[string]any)["function"].(map[string]any)
+	parameters, ok := function["parameters"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "object", parameters["type"])
 }
 
 func TestPublishChoiceEventsDoesNotEmitToolCallCompleted(t *testing.T) {

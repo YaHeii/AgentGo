@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -110,9 +111,6 @@ func buildChatCompletionRequest(model string, req Request) openai.ChatCompletion
 
 	if req.Context.Temperature != nil {
 		out.Temperature = *req.Context.Temperature
-	}
-	if req.Context.MaxOutputTokens != nil {
-		out.MaxCompletionTokens = *req.Context.MaxOutputTokens
 	}
 
 	for _, msg := range req.Messages {
@@ -261,7 +259,12 @@ func toolParameters(raw []byte) any {
 	if len(raw) == 0 {
 		return map[string]any{}
 	}
-	return raw
+
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return map[string]any{}
+	}
+	return schema
 }
 
 var _ streamClient = (*OpenAIClient)(nil)
