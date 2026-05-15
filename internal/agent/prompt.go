@@ -7,9 +7,9 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/provider"
-	"github.com/YaHeii/agentGo/internal/tool"
+	message "github.com/YaHeii/agentGo/internal/message/contract"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 )
 
 //go:embed template/prompt.md.tpl
@@ -19,7 +19,7 @@ type promptTemplateData struct {
 	AppVersion  string
 	ProjectRoot string
 	Cwd         string
-	Tools       []tool.Metadata
+	Tools       []toolcontract.Metadata
 	History     []PromptMessage
 	UserInput   string
 }
@@ -32,7 +32,7 @@ type PromptMessage struct {
 func (r *QueryLoop) renderPrompt(state LoopState, usrPrompt string) (string, error) {
 	runtimeState := r.runtimeSnapshot()
 	requestMessages := trimPendingAssistant(state.Messages)
-	var tools []tool.Metadata
+	var tools []toolcontract.Metadata
 	if r.deps.App != nil {
 		tools = r.deps.App.ListTools(context.Background(), runtimeState.PermissionLevel)
 	}
@@ -57,21 +57,23 @@ func (r *QueryLoop) renderPrompt(state LoopState, usrPrompt string) (string, err
 	return strings.TrimSpace(buf.String()), nil
 }
 
-func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (provider.Request, error) {
+func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (providercontract.Request, error) {
 	runtimeState := r.runtimeSnapshot()
 	requestMessages := trimPendingAssistant(state.Messages)
-	var tools []tool.Metadata
+	var tools []toolcontract.Metadata
 	if r.deps.App != nil {
 		tools = r.deps.App.ListTools(context.Background(), runtimeState.PermissionLevel)
 	}
-	req := provider.Request{
-		Messages: []provider.Message{
+	req := providercontract.Request{
+		Messages: []message.Message{
 			{
-				Role:    provider.RoleSystem,
-				Content: prompt,
+				Kind: message.KindSystem,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: prompt},
+				},
 			},
 		},
-		Tools: make([]provider.ToolDefinition, 0, len(tools)),
+		Tools: make([]toolcontract.Metadata, 0, len(tools)),
 	}
 	if runtimeState.Temperature != 0 {
 		temperature := runtimeState.Temperature
@@ -89,26 +91,22 @@ func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (provide
 		req.Messages = append(req.Messages, providerMsg)
 	}
 	for _, meta := range tools {
-		req.Tools = append(req.Tools, provider.ToolDefinition{
-			Name:        meta.Name,
-			Description: meta.Description,
-			Parameters:  meta.Parameters,
-		})
+		req.Tools = append(req.Tools, meta)
 	}
 	return req, nil
 }
 
-func (r *QueryLoop) renderLoopstate(state LoopState) (provider.Request, error) {
+func (r *QueryLoop) renderLoopstate(state LoopState) (providercontract.Request, error) {
 	runtimeState := r.runtimeSnapshot()
 	requestMessages := trimPendingAssistant(state.Messages)
-	var tools []tool.Metadata
+	var tools []toolcontract.Metadata
 	if r.deps.App != nil {
 		tools = r.deps.App.ListTools(context.Background(), runtimeState.PermissionLevel)
 	}
 
-	req := provider.Request{
-		Messages: make([]provider.Message, 0, len(requestMessages)),
-		Tools:    make([]provider.ToolDefinition, 0, len(tools)),
+	req := providercontract.Request{
+		Messages: make([]message.Message, 0, len(requestMessages)),
+		Tools:    make([]toolcontract.Metadata, 0, len(tools)),
 	}
 	if runtimeState.Temperature != 0 {
 		temperature := runtimeState.Temperature
@@ -126,11 +124,7 @@ func (r *QueryLoop) renderLoopstate(state LoopState) (provider.Request, error) {
 		req.Messages = append(req.Messages, providerMsg)
 	}
 	for _, meta := range tools {
-		req.Tools = append(req.Tools, provider.ToolDefinition{
-			Name:        meta.Name,
-			Description: meta.Description,
-			Parameters:  meta.Parameters,
-		})
+		req.Tools = append(req.Tools, meta)
 	}
 	return req, nil
 }

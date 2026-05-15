@@ -11,16 +11,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
-)
 
-type ToolResult struct {
-	ToolCallID string
-	Name       string
-	Status     ToolCallStatus
-	Content    string
-	Metadata   map[string]any
-	Err        error
-}
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
+)
 
 type Service struct {
 	mu       sync.RWMutex
@@ -31,8 +24,8 @@ type Service struct {
 
 type validatedToolCall struct {
 	tool Tool
-	meta Metadata
-	call ToolCallRequest
+	meta toolcontract.Metadata
+	call toolcontract.ToolCallRequest
 }
 
 type parameterSchema struct {
@@ -60,7 +53,7 @@ func NewService(tools ...Tool) *Service {
 	return svc
 }
 
-func (s *Service) ListTools(_ context.Context, permissionLevel SecurityLevel) []Metadata {
+func (s *Service) ListTools(_ context.Context, permissionLevel toolcontract.SecurityLevel) []toolcontract.Metadata {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -70,7 +63,7 @@ func (s *Service) ListTools(_ context.Context, permissionLevel SecurityLevel) []
 	}
 	slices.Sort(names)
 
-	metas := make([]Metadata, 0, len(names))
+	metas := make([]toolcontract.Metadata, 0, len(names))
 	for _, name := range names {
 		meta := s.registry[name].Metadata()
 		if !meta.Enabled {
@@ -84,7 +77,7 @@ func (s *Service) ListTools(_ context.Context, permissionLevel SecurityLevel) []
 	return metas
 }
 
-func (s *Service) Call(ctx context.Context, req BatchRequest) ([]ToolResult, error) {
+func (s *Service) Call(ctx context.Context, req toolcontract.BatchRequest) ([]toolcontract.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -115,7 +108,7 @@ func (s *Service) Call(ctx context.Context, req BatchRequest) ([]ToolResult, err
 		}
 	}
 
-	results := make([]ToolResult, len(req.Calls))
+	results := make([]toolcontract.ToolResult, len(req.Calls))
 	var wg sync.WaitGroup
 
 	for i := range validated {
@@ -142,7 +135,7 @@ func (s *Service) Call(ctx context.Context, req BatchRequest) ([]ToolResult, err
 }
 
 // TODO: Using zog makes the implementation even more elegant.
-func validateCall(meta Metadata, call ToolCallRequest) error {
+func validateCall(meta toolcontract.Metadata, call toolcontract.ToolCallRequest) error {
 	if err := validateCallPermission(meta, call); err != nil {
 		return err
 	}
@@ -153,23 +146,23 @@ func validateCall(meta Metadata, call ToolCallRequest) error {
 }
 
 // get permissionLevelfrom Environment  if don't match send the event
-func validateCallPermission(meta Metadata, call ToolCallRequest) error {
+func validateCallPermission(meta toolcontract.Metadata, call toolcontract.ToolCallRequest) error {
 	if !meta.Enabled {
 		return fmt.Errorf("tool %q is disabled", call.Name)
 	}
 	if call.PermissionLevel < meta.SecurityLevel {
 		return fmt.Errorf("tool %q requires a higher permission_level", call.Name)
 	}
-	if meta.Requirements&RequireWorkingDir != 0 && strings.TrimSpace(call.Context.WorkingDir) == "" {
+	if meta.Requirements&toolcontract.RequireWorkingDir != 0 && strings.TrimSpace(call.Context.WorkingDir) == "" {
 		return fmt.Errorf("tool %q requires working_dir", call.Name)
 	}
-	if meta.Requirements&RequireWorkspaceRoot != 0 && strings.TrimSpace(call.Context.WorkspaceRoot) == "" {
+	if meta.Requirements&toolcontract.RequireWorkspaceRoot != 0 && strings.TrimSpace(call.Context.WorkspaceRoot) == "" {
 		return fmt.Errorf("tool %q requires workspace_root", call.Name)
 	}
 	return nil
 }
 
-func validateCallArguments(meta Metadata, args json.RawMessage) error {
+func validateCallArguments(meta toolcontract.Metadata, args json.RawMessage) error {
 	value, err := decodeJSONValue(args)
 	if err != nil {
 		return fmt.Errorf("tool %q arguments must be valid JSON: %w", meta.Name, err)
@@ -298,13 +291,13 @@ func decodeJSONValue(data json.RawMessage) (any, error) {
 	return value, nil
 }
 
-func (s *Service) executeCall(ctx context.Context, vc validatedToolCall) ToolResult {
+func (s *Service) executeCall(ctx context.Context, vc validatedToolCall) toolcontract.ToolResult {
 	call := vc.call
 	if err := ctx.Err(); err != nil {
-		return ToolResult{
+		return toolcontract.ToolResult{
 			ToolCallID: call.ToolCallID,
 			Name:       call.Name,
-			Status:     StatusSystemError,
+			Status:     toolcontract.StatusSystemError,
 			Err:        err,
 		}
 	}
@@ -319,7 +312,7 @@ func (s *Service) executeCall(ctx context.Context, vc validatedToolCall) ToolRes
 	return normalizeResult(result, call)
 }
 
-func normalizeResult(result ToolResult, call ToolCallRequest) ToolResult {
+func normalizeResult(result toolcontract.ToolResult, call toolcontract.ToolCallRequest) toolcontract.ToolResult {
 	if result.ToolCallID == "" {
 		result.ToolCallID = call.ToolCallID
 	}
@@ -327,9 +320,9 @@ func normalizeResult(result ToolResult, call ToolCallRequest) ToolResult {
 		result.Name = call.Name
 	}
 	if result.Status == "" {
-		result.Status = StatusSuccess
+		result.Status = toolcontract.StatusSuccess
 		if result.Err != nil {
-			result.Status = StatusExecutionError
+			result.Status = toolcontract.StatusExecutionError
 		}
 	}
 	return result

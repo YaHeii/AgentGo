@@ -28,6 +28,9 @@ func (s *ChatService) Events() <-chan app.Event {
 }
 
 func (s *ChatService) InitializePermissionLevel(_ context.Context) error {
-	lifecycle.SetPermissionLevel(lifecycle.SafeLevel)
+	if lifecycle.State == nil {
+		lifecycle.State = &lifecycle.GlobalState{}
+	}
+	lifecycle.State.PermissionLevel = lifecycle.SafeLevel
 	return nil
 }

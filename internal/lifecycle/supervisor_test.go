@@ -6,8 +6,9 @@ import (
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
+	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/provider"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
 )
 
 type testAgentPayload struct {
@@ -28,7 +29,8 @@ func (s stubEstimator) Estimate(_ string, _ []message.Message) (int, error) {
 }
 
 func TestSupervisorRunUpdatesCurrentAndCumulativeUsage(t *testing.T) {
-	resetGlobalStateForTest()
+	State = &GlobalState{}
+	t.Cleanup(func() { State = nil })
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
 		Model:         "test-model",
@@ -50,7 +52,7 @@ func TestSupervisorRunUpdatesCurrentAndCumulativeUsage(t *testing.T) {
 		T: app.EventProvider,
 		Payload: provider.StreamEvent{
 			Type: provider.StreamEventUsageAvailable,
-			Usage: &provider.Usage{
+			Usage: &providercontract.Usage{
 				PromptTokens:     11,
 				CompletionTokens: 7,
 				TotalTokens:      18,
@@ -61,7 +63,7 @@ func TestSupervisorRunUpdatesCurrentAndCumulativeUsage(t *testing.T) {
 		T: app.EventProvider,
 		Payload: provider.StreamEvent{
 			Type: provider.StreamEventUsageAvailable,
-			Usage: &provider.Usage{
+			Usage: &providercontract.Usage{
 				PromptTokens:     5,
 				CompletionTokens: 3,
 				TotalTokens:      8,
@@ -70,11 +72,10 @@ func TestSupervisorRunUpdatesCurrentAndCumulativeUsage(t *testing.T) {
 	})
 
 	waitForCondition(t, func() bool {
-		snapshot := GetState()
-		return snapshot.CumulativeTotalTokens == 26 && snapshot.CurrentTurnTotalTokens == 8
+		return State.CumulativeTotalTokens == 26 && State.CurrentTurnTotalTokens == 8
 	})
 
-	snapshot := GetState()
+	snapshot := *State
 	if snapshot.CumulativeInputTokens != 16 {
 		t.Fatalf("expected cumulative input tokens 16, got %d", snapshot.CumulativeInputTokens)
 	}
@@ -100,7 +101,8 @@ func TestSupervisorRunUpdatesCurrentAndCumulativeUsage(t *testing.T) {
 }
 
 func TestSupervisorRunEstimatesContextFromAgentEvents(t *testing.T) {
-	resetGlobalStateForTest()
+	State = &GlobalState{}
+	t.Cleanup(func() { State = nil })
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
 		Model:         "test-model",
@@ -147,11 +149,10 @@ func TestSupervisorRunEstimatesContextFromAgentEvents(t *testing.T) {
 	})
 
 	waitForCondition(t, func() bool {
-		snapshot := GetState()
-		return snapshot.EstimatedContextTokens == 4 && snapshot.CurrentMessageCount == 2
+		return State.EstimatedContextTokens == 4 && State.CurrentMessageCount == 2
 	})
 
-	snapshot := GetState()
+	snapshot := *State
 	if snapshot.EstimatedContextTokens != 4 {
 		t.Fatalf("expected estimated context tokens 4, got %d", snapshot.EstimatedContextTokens)
 	}
@@ -171,7 +172,8 @@ func TestSupervisorRunEstimatesContextFromAgentEvents(t *testing.T) {
 }
 
 func TestSupervisorEstimateFallsBackWhenModelEncodingUnknown(t *testing.T) {
-	resetGlobalStateForTest()
+	State = &GlobalState{}
+	t.Cleanup(func() { State = nil })
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
 		Model:         "unknown-model",
@@ -206,11 +208,10 @@ func TestSupervisorEstimateFallsBackWhenModelEncodingUnknown(t *testing.T) {
 	})
 
 	waitForCondition(t, func() bool {
-		snapshot := GetState()
-		return snapshot.EstimatedContextChars > 0 && snapshot.CurrentMessageCount == 1
+		return State.EstimatedContextChars > 0 && State.CurrentMessageCount == 1
 	})
 
-	snapshot := GetState()
+	snapshot := *State
 	if snapshot.EstimatedContextChars != len("fallback") {
 		t.Fatalf("expected fallback char count %d, got %d", len("fallback"), snapshot.EstimatedContextChars)
 	}

@@ -1,30 +1,29 @@
 package agent
 
 import (
-	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/provider"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
 )
 
 // LoopState stores the minimal mutable state required to continue a query loop.
-// TODO：select fields which need to be exported
 type LoopState struct {
-	Messages           []message.Message
+	Messages           []messagecontract.Message
 	TurnCount          int
 	Transition         string // Transition records the latest control-flow transition inside the query loop.
 	AssistantMessageID string
 	FinishReason       FinishReason
-	StopReason         provider.StopReason
-	PendingToolCalls   []provider.ToolCall
+	StopReason         providercontract.StopReason
+	PendingToolCalls   []providercontract.ToolCall
 }
 
 // LoopState function
-func newLoopState(sessionID string, inputParts []message.Part) LoopState {
+func newLoopState(sessionID string, inputParts []messagecontract.Part) LoopState {
 	return LoopState{
-		Messages: []message.Message{
+		Messages: []messagecontract.Message{
 			{
 				SessionID: sessionID,
-				Kind:      message.KindUser,
-				Parts:     append([]message.Part(nil), inputParts...),
+				Kind:      messagecontract.KindUser,
+				Parts:     append([]messagecontract.Part(nil), inputParts...),
 			},
 		},
 		TurnCount: 1,
@@ -34,13 +33,13 @@ func newLoopState(sessionID string, inputParts []message.Part) LoopState {
 // TO Deep copy loopstate
 func copyLoopState(state LoopState) LoopState {
 	copied := state
-	copied.PendingToolCalls = append([]provider.ToolCall(nil), state.PendingToolCalls...)
+	copied.PendingToolCalls = append([]providercontract.ToolCall(nil), state.PendingToolCalls...)
 	if len(state.Messages) == 0 {
 		copied.Messages = nil
 		return copied
 	}
 
-	copied.Messages = make([]message.Message, len(state.Messages))
+	copied.Messages = make([]messagecontract.Message, len(state.Messages))
 	for i := range state.Messages {
 		copied.Messages[i] = state.Messages[i]
 		if len(state.Messages[i].Parts) == 0 {
@@ -48,7 +47,7 @@ func copyLoopState(state LoopState) LoopState {
 			continue
 		}
 
-		copied.Messages[i].Parts = make([]message.Part, len(state.Messages[i].Parts))
+		copied.Messages[i].Parts = make([]messagecontract.Part, len(state.Messages[i].Parts))
 		for j := range state.Messages[i].Parts {
 			copied.Messages[i].Parts[j] = state.Messages[i].Parts[j]
 			if state.Messages[i].Parts[j].Image != nil {

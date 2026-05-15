@@ -6,11 +6,11 @@ import (
 	"errors"
 	"testing"
 
-	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/provider"
-	"github.com/YaHeii/agentGo/internal/tool"
+	"github.com/YaHeii/agentGo/internal/lifecycle"
+	message "github.com/YaHeii/agentGo/internal/message/contract"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,28 +32,36 @@ func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
 	require.Same(t, dispatcher, runner.deps.dispatcher)
 }
 
+func setRuntimeStateForTest(t *testing.T, state lifecycle.GlobalState) {
+	t.Helper()
+	lifecycle.State = &state
+	lifecycle.CurrentSupervisor = nil
+	t.Cleanup(func() {
+		lifecycle.State = nil
+		lifecycle.CurrentSupervisor = nil
+	})
+}
+
 func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *testing.T) {
 	appSvc := &stubAgentApp{
-		metas: []tool.Metadata{
+		metas: []toolcontract.Metadata{
 			{
 				Name:          "grep",
 				Description:   "search files",
 				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
 				Enabled:       true,
-				SecurityLevel: tool.SafeLevel,
+				SecurityLevel: toolcontract.SafeLevel,
 			},
 		},
 	}
 	runner := NewQueryLoop(appSvc, &stubProvider{}, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:      "v0.1.0",
-			ProjectRoot:     "/workspace/project",
-			Cwd:             "/workspace/project/internal",
-			PermissionLevel: tool.SafeLevel,
-			Temperature:     0.2,
-			ModelLimit:      4096,
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:      "v0.1.0",
+		ProjectRoot:     "/workspace/project",
+		Cwd:             "/workspace/project/internal",
+		PermissionLevel: lifecycle.SafeLevel,
+		Temperature:     0.2,
+		ModelLimit:      4096,
 	})
 	req, err := runner.renderLoopstate(LoopState{
 		Messages: []message.Message{
@@ -68,7 +76,7 @@ func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *tes
 				},
 			},
 		},
-		PendingToolCalls: []provider.ToolCall{
+		PendingToolCalls: []providercontract.ToolCall{
 			{
 				ID:        "call-1",
 				Name:      "grep",
@@ -78,10 +86,10 @@ func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *tes
 	})
 	require.NoError(t, err)
 	require.Len(t, req.Messages, 2)
-	require.Equal(t, provider.RoleAssistant, req.Messages[0].Role)
-	require.Equal(t, "previous answer", req.Messages[0].Content)
-	require.Equal(t, provider.RoleUser, req.Messages[1].Role)
-	require.Equal(t, "find tests", req.Messages[1].Content)
+	require.Equal(t, message.KindAssistant, req.Messages[0].Kind)
+	require.Equal(t, "previous answer", findTextPart(req.Messages[0].Parts))
+	require.Equal(t, message.KindUser, req.Messages[1].Kind)
+	require.Equal(t, "find tests", findTextPart(req.Messages[1].Parts))
 	require.Len(t, req.Tools, 1)
 	require.Equal(t, "grep", req.Tools[0].Name)
 	require.JSONEq(t, `{"type":"object","required":["pattern"]}`, string(req.Tools[0].Parameters))
@@ -93,24 +101,22 @@ func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *tes
 
 func TestRenderPromptBuildsSystemPromptFromRuntimeState(t *testing.T) {
 	appSvc := &stubAgentApp{
-		metas: []tool.Metadata{
+		metas: []toolcontract.Metadata{
 			{
 				Name:          "grep",
 				Description:   "search files",
 				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
 				Enabled:       true,
-				SecurityLevel: tool.SafeLevel,
+				SecurityLevel: toolcontract.SafeLevel,
 			},
 		},
 	}
 	runner := NewQueryLoop(appSvc, &stubProvider{}, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:      "v0.1.0",
-			ProjectRoot:     "/workspace/project",
-			Cwd:             "/workspace/project/internal",
-			PermissionLevel: tool.SafeLevel,
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:      "v0.1.0",
+		ProjectRoot:     "/workspace/project",
+		Cwd:             "/workspace/project/internal",
+		PermissionLevel: lifecycle.SafeLevel,
 	})
 	prompt, err := runner.renderPrompt(LoopState{
 		Messages: []message.Message{
@@ -133,29 +139,27 @@ func TestRenderPromptBuildsSystemPromptFromRuntimeState(t *testing.T) {
 	require.Contains(t, prompt, "grep")
 	require.Contains(t, prompt, "search files")
 	require.NotContains(t, prompt, "assistant-pending")
-	require.Equal(t, []tool.SecurityLevel{tool.SafeLevel}, appSvc.listToolCalls)
+	require.Equal(t, []toolcontract.SecurityLevel{toolcontract.SafeLevel}, appSvc.listToolCalls)
 }
 
 func TestBuildInitialRequestInjectsInitPromptOnce(t *testing.T) {
 	appSvc := &stubAgentApp{
-		metas: []tool.Metadata{
+		metas: []toolcontract.Metadata{
 			{
 				Name:          "grep",
 				Description:   "search files",
 				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
 				Enabled:       true,
-				SecurityLevel: tool.SafeLevel,
+				SecurityLevel: toolcontract.SafeLevel,
 			},
 		},
 	}
 	runner := NewQueryLoop(appSvc, &stubProvider{}, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:      "v0.1.0",
-			ProjectRoot:     "/workspace/project",
-			Cwd:             "/workspace/project/internal",
-			PermissionLevel: tool.SafeLevel,
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:      "v0.1.0",
+		ProjectRoot:     "/workspace/project",
+		Cwd:             "/workspace/project/internal",
+		PermissionLevel: lifecycle.SafeLevel,
 	})
 
 	req, err := runner.buildInitialRequest(LoopState{
@@ -165,10 +169,10 @@ func TestBuildInitialRequestInjectsInitPromptOnce(t *testing.T) {
 	}, "full init prompt")
 	require.NoError(t, err)
 	require.Len(t, req.Messages, 2)
-	require.Equal(t, provider.RoleSystem, req.Messages[0].Role)
-	require.Equal(t, "full init prompt", req.Messages[0].Content)
-	require.Equal(t, provider.RoleUser, req.Messages[1].Role)
-	require.Equal(t, "find tests", req.Messages[1].Content)
+	require.Equal(t, message.KindSystem, req.Messages[0].Kind)
+	require.Equal(t, "full init prompt", findTextPart(req.Messages[0].Parts))
+	require.Equal(t, message.KindUser, req.Messages[1].Kind)
+	require.Equal(t, "find tests", findTextPart(req.Messages[1].Parts))
 }
 
 func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
@@ -182,14 +186,14 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	depsProvider := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text:       "hi",
-					StopReason: provider.StopReasonStop,
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
-	depsApp.metas = []tool.Metadata{{
+	depsApp.metas = []toolcontract.Metadata{{
 		Name:        "grep",
 		Description: "search files",
 		Parameters:  json.RawMessage(`{"type":"object"}`),
@@ -199,12 +203,10 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	runner := NewQueryLoop(originalApp, originalProvider, dispatcher)
 	runner.deps.App = depsApp
 	runner.deps.Provider = depsProvider
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -214,7 +216,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	require.Len(t, originalProvider.calls, 0)
 	require.Len(t, depsProvider.calls, 1)
 	require.NotEmpty(t, depsProvider.calls[0].Messages)
-	require.Equal(t, provider.RoleSystem, depsProvider.calls[0].Messages[0].Role)
+	require.Equal(t, message.KindSystem, depsProvider.calls[0].Messages[0].Kind)
 
 	gotStarted := <-events
 	require.Equal(t, app.EventAgent, gotStarted.Type())
@@ -237,33 +239,31 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 		persisted: []message.Message{
 			messageRecord("assistant-old", message.KindAssistant, "previous answer"),
 		},
-		metas: []tool.Metadata{
+		metas: []toolcontract.Metadata{
 			{
 				Name:          "grep",
 				Description:   "search files",
 				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
 				Enabled:       true,
-				SecurityLevel: tool.SafeLevel,
+				SecurityLevel: toolcontract.SafeLevel,
 			},
 		},
 	}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text:       "new answer",
-					StopReason: provider.StopReasonStop,
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project/subdir",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project/subdir",
 	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -272,12 +272,12 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 
 	call := providerSvc.calls[0]
 	require.Len(t, call.Messages, 3)
-	require.Equal(t, provider.RoleSystem, call.Messages[0].Role)
-	require.Contains(t, call.Messages[0].Content, "# Role & Authority")
-	require.Equal(t, provider.RoleAssistant, call.Messages[1].Role)
-	require.Equal(t, "previous answer", call.Messages[1].Content)
-	require.Equal(t, provider.RoleUser, call.Messages[2].Role)
-	require.Equal(t, "hello", call.Messages[2].Content)
+	require.Equal(t, message.KindSystem, call.Messages[0].Kind)
+	require.Contains(t, findTextPart(call.Messages[0].Parts), "# Role & Authority")
+	require.Equal(t, message.KindAssistant, call.Messages[1].Kind)
+	require.Equal(t, "previous answer", findTextPart(call.Messages[1].Parts))
+	require.Equal(t, message.KindUser, call.Messages[2].Kind)
+	require.Equal(t, "hello", findTextPart(call.Messages[2].Parts))
 	require.Len(t, call.Tools, 1)
 	require.Equal(t, "grep", call.Tools[0].Name)
 	require.JSONEq(t, `{"type":"object","required":["pattern"]}`, string(call.Tools[0].Parameters))
@@ -290,21 +290,19 @@ func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text:       "hello",
-					StopReason: provider.StopReasonStop,
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -339,22 +337,20 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Reasoning:  "thinking",
 					Refusal:    "decline",
-					StopReason: provider.StopReasonStop,
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -373,7 +369,7 @@ func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text: "par",
 				},
 				err: errors.New("stream failed"),
@@ -382,12 +378,10 @@ func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -423,12 +417,10 @@ func TestQueryLoopMarksCancelledOnContextCancellation(t *testing.T) {
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -440,8 +432,8 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
-					ToolCalls: []provider.ToolCall{
+				result: providercontract.TurnResult{
+					ToolCalls: []providercontract.ToolCall{
 						{
 							Index:     0,
 							ID:        "call_1",
@@ -449,39 +441,37 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 							Arguments: `{"pattern":"go"}`,
 						},
 					},
-					StopReason: provider.StopReasonToolCalls,
+					StopReason: providercontract.StopReasonToolCalls,
 				},
 			},
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text:       "tool answered",
-					StopReason: provider.StopReasonStop,
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
-	appSvc.metas = []tool.Metadata{{
+	appSvc.metas = []toolcontract.Metadata{{
 		Name:              "grep",
 		Description:       "search files",
 		Parameters:        json.RawMessage(`{"type":"object","required":["pattern"]}`),
 		Enabled:           true,
 		IsConcurrencySafe: true,
 	}}
-	appSvc.callResults = []tool.ToolResult{{
+	appSvc.callResults = []toolcontract.ToolResult{{
 		ToolCallID: "call_1",
 		Name:       "grep",
-		Status:     tool.StatusSuccess,
+		Status:     toolcontract.StatusSuccess,
 		Content:    `{"matches":[{"path":"main.go"}]}`,
 	}}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:      "v0.1.0",
-			PermissionLevel: tool.AttentionLevel,
-			ProjectRoot:     "/workspace/project",
-			Cwd:             "/workspace/project/work",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:      "v0.1.0",
+		PermissionLevel: lifecycle.AttentionLevel,
+		ProjectRoot:     "/workspace/project",
+		Cwd:             "/workspace/project/work",
 	})
 
 	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -496,7 +486,7 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 	require.Equal(t, "turn-1", appSvc.callBatches[0].Calls[0].Context.TurnID)
 	require.Equal(t, "/workspace/project", appSvc.callBatches[0].Calls[0].Context.WorkspaceRoot)
 	require.Equal(t, "/workspace/project/work", appSvc.callBatches[0].Calls[0].Context.WorkingDir)
-	require.Equal(t, tool.AttentionLevel, appSvc.callBatches[0].Calls[0].PermissionLevel)
+	require.Equal(t, toolcontract.AttentionLevel, appSvc.callBatches[0].Calls[0].PermissionLevel)
 	require.Len(t, appSvc.created, 4)
 	require.NotNil(t, findToolCallPart(appSvc.created[1].Parts))
 	require.Equal(t, "call_1", findToolCallPart(appSvc.created[1].Parts).ID)
@@ -515,8 +505,8 @@ func TestQueryLoopPreservesToolResultBusinessErrorsAndContinues(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
-					ToolCalls: []provider.ToolCall{
+				result: providercontract.TurnResult{
+					ToolCalls: []providercontract.ToolCall{
 						{
 							Index:     0,
 							ID:        "call_1",
@@ -524,38 +514,36 @@ func TestQueryLoopPreservesToolResultBusinessErrorsAndContinues(t *testing.T) {
 							Arguments: `{"pattern":"go"}`,
 						},
 					},
-					StopReason: provider.StopReasonToolCalls,
+					StopReason: providercontract.StopReasonToolCalls,
 				},
 			},
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text:       "handled error",
-					StopReason: provider.StopReasonStop,
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
-	appSvc.metas = []tool.Metadata{{
+	appSvc.metas = []toolcontract.Metadata{{
 		Name:        "grep",
 		Description: "search files",
 		Parameters:  json.RawMessage(`{"type":"object","required":["pattern"]}`),
 		Enabled:     true,
 	}}
-	appSvc.callResults = []tool.ToolResult{{
+	appSvc.callResults = []toolcontract.ToolResult{{
 		ToolCallID: "call_1",
 		Name:       "grep",
-		Status:     tool.StatusExecutionError,
+		Status:     toolcontract.StatusExecutionError,
 		Content:    "path escaped workspace",
 		Err:        errors.New("path escaped workspace"),
 	}}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -574,8 +562,8 @@ func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
-					ToolCalls: []provider.ToolCall{
+				result: providercontract.TurnResult{
+					ToolCalls: []providercontract.ToolCall{
 						{
 							Index:     0,
 							ID:        "call_1",
@@ -583,12 +571,12 @@ func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
 							Arguments: `{"pattern":"go"}`,
 						},
 					},
-					StopReason: provider.StopReasonToolCalls,
+					StopReason: providercontract.StopReasonToolCalls,
 				},
 			},
 		},
 	}
-	appSvc.metas = []tool.Metadata{{
+	appSvc.metas = []toolcontract.Metadata{{
 		Name:        "grep",
 		Description: "search files",
 		Parameters:  json.RawMessage(`{"type":"object"}`),
@@ -597,12 +585,10 @@ func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
 	appSvc.callErr = errors.New("tool batch failed")
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -614,26 +600,24 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text:       "one",
-					StopReason: provider.StopReasonLength,
+					StopReason: providercontract.StopReasonLength,
 				},
 			},
 			{
-				result: provider.TurnResult{
-					StopReason: provider.StopReasonStop,
+				result: providercontract.TurnResult{
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 	runner.config.MaxTurns = 2
 
@@ -663,31 +647,29 @@ func TestQueryLoopMicroCompactsHistoryWhenEstimatedTokensExceedModelLimit(t *tes
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
-					StopReason: provider.StopReasonStop,
+				result: providercontract.TurnResult{
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			Model:       "gpt-4o-mini",
-			ModelLimit:  1,
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		Model:       "gpt-4o-mini",
+		ModelLimit:  1,
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Len(t, providerSvc.calls, 1)
 	require.Len(t, providerSvc.calls[0].Messages, 2)
-	require.Equal(t, provider.RoleSystem, providerSvc.calls[0].Messages[0].Role)
-	require.Equal(t, provider.RoleUser, providerSvc.calls[0].Messages[1].Role)
-	require.Equal(t, "hello", providerSvc.calls[0].Messages[1].Content)
+	require.Equal(t, message.KindSystem, providerSvc.calls[0].Messages[0].Kind)
+	require.Equal(t, message.KindUser, providerSvc.calls[0].Messages[1].Kind)
+	require.Equal(t, "hello", findTextPart(providerSvc.calls[0].Messages[1].Parts))
 }
 
 func TestQueryLoopUsesMessageWindowBeforeModelLimitCompaction(t *testing.T) {
@@ -702,22 +684,20 @@ func TestQueryLoopUsesMessageWindowBeforeModelLimitCompaction(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
-					StopReason: provider.StopReasonStop,
+				result: providercontract.TurnResult{
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			Model:       "gpt-4o-mini",
-			ModelLimit:  1000,
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		Model:       "gpt-4o-mini",
+		ModelLimit:  1000,
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 	runner.config.MessageWindow = 2
 
@@ -725,11 +705,11 @@ func TestQueryLoopUsesMessageWindowBeforeModelLimitCompaction(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, providerSvc.calls, 1)
 	require.Len(t, providerSvc.calls[0].Messages, 3)
-	require.Equal(t, provider.RoleSystem, providerSvc.calls[0].Messages[0].Role)
-	require.Equal(t, provider.RoleAssistant, providerSvc.calls[0].Messages[1].Role)
-	require.Equal(t, "mid assistant", providerSvc.calls[0].Messages[1].Content)
-	require.Equal(t, provider.RoleUser, providerSvc.calls[0].Messages[2].Role)
-	require.Equal(t, "hello", providerSvc.calls[0].Messages[2].Content)
+	require.Equal(t, message.KindSystem, providerSvc.calls[0].Messages[0].Kind)
+	require.Equal(t, message.KindAssistant, providerSvc.calls[0].Messages[1].Kind)
+	require.Equal(t, "mid assistant", findTextPart(providerSvc.calls[0].Messages[1].Parts))
+	require.Equal(t, message.KindUser, providerSvc.calls[0].Messages[2].Kind)
+	require.Equal(t, "hello", findTextPart(providerSvc.calls[0].Messages[2].Parts))
 }
 
 func TestQueryLoopOnlyInjectsInitPromptOnFirstTurn(t *testing.T) {
@@ -737,27 +717,25 @@ func TestQueryLoopOnlyInjectsInitPromptOnFirstTurn(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text:       "one",
-					StopReason: provider.StopReasonLength,
+					StopReason: providercontract.StopReasonLength,
 				},
 			},
 			{
-				result: provider.TurnResult{
+				result: providercontract.TurnResult{
 					Text:       "two",
-					StopReason: provider.StopReasonStop,
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 	runner.config.MaxTurns = 2
 
@@ -786,20 +764,18 @@ func TestQueryLoopRunQueryBuildsSingleTextQuery(t *testing.T) {
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
-				result: provider.TurnResult{
-					StopReason: provider.StopReasonStop,
+				result: providercontract.TurnResult{
+					StopReason: providercontract.StopReasonStop,
 				},
 			},
 		},
 	}
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
-	runner.SetRuntimeProvider(stubRuntimeProvider{
-		snapshot: agentcontract.RuntimeSnapshot{
-			AppVersion:  "v0.1.0",
-			ProjectRoot: "/workspace/project",
-			Cwd:         "/workspace/project",
-		},
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
 	})
 
 	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
@@ -837,8 +813,8 @@ func TestCopyLoopStateDeepCopiesMessages(t *testing.T) {
 		Transition:         "assistant_delta_received",
 		AssistantMessageID: "assistant-1",
 		FinishReason:       FinishReasonAwaitingToolExecution,
-		StopReason:         provider.StopReasonToolCalls,
-		PendingToolCalls: []provider.ToolCall{
+		StopReason:         providercontract.StopReasonToolCalls,
+		PendingToolCalls: []providercontract.ToolCall{
 			{
 				ID:        "call-1",
 				Name:      "search",
@@ -861,7 +837,7 @@ func TestCopyLoopStateDeepCopiesMessages(t *testing.T) {
 	require.Equal(t, "assistant_delta_received", state.Transition)
 	require.Equal(t, "assistant-1", state.AssistantMessageID)
 	require.Equal(t, FinishReasonAwaitingToolExecution, state.FinishReason)
-	require.Equal(t, provider.StopReasonToolCalls, state.StopReason)
+	require.Equal(t, providercontract.StopReasonToolCalls, state.StopReason)
 	require.Equal(t, "changed", copied.Messages[0].Parts[0].Text)
 	require.Equal(t, "changed-plan", copied.Messages[0].Parts[1].Thinking.Content)
 	require.Equal(t, "changed-result", copied.Messages[0].Parts[2].ToolResult.Content)
@@ -870,7 +846,7 @@ func TestCopyLoopStateDeepCopiesMessages(t *testing.T) {
 }
 
 type stubTurn struct {
-	result provider.TurnResult
+	result providercontract.TurnResult
 	err    error
 }
 
@@ -878,10 +854,10 @@ type stubAgentApp struct {
 	created            []message.CreateMessageParams
 	hydratedSessionIDs []string
 	persisted          []message.Message
-	metas              []tool.Metadata
-	listToolCalls      []tool.SecurityLevel
-	callBatches        []tool.BatchRequest
-	callResults        []tool.ToolResult
+	metas              []toolcontract.Metadata
+	listToolCalls      []toolcontract.SecurityLevel
+	callBatches        []toolcontract.BatchRequest
+	callResults        []toolcontract.ToolResult
 	callErr            error
 }
 
@@ -923,33 +899,33 @@ func (s *stubAgentApp) ListHistory(_ context.Context, sessionID string) ([]messa
 	return copied, nil
 }
 
-func (s *stubAgentApp) ListTools(_ context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata {
+func (s *stubAgentApp) ListTools(_ context.Context, permissionLevel toolcontract.SecurityLevel) []toolcontract.Metadata {
 	s.listToolCalls = append(s.listToolCalls, permissionLevel)
-	out := make([]tool.Metadata, len(s.metas))
+	out := make([]toolcontract.Metadata, len(s.metas))
 	copy(out, s.metas)
 	return out
 }
 
-func (s *stubAgentApp) CallTools(_ context.Context, req tool.BatchRequest) ([]tool.ToolResult, error) {
+func (s *stubAgentApp) CallTools(_ context.Context, req toolcontract.BatchRequest) ([]toolcontract.ToolResult, error) {
 	s.callBatches = append(s.callBatches, cloneBatchRequest(req))
 	if s.callErr != nil {
 		return nil, s.callErr
 	}
-	out := make([]tool.ToolResult, len(s.callResults))
+	out := make([]toolcontract.ToolResult, len(s.callResults))
 	copy(out, s.callResults)
 	return out, nil
 }
 
 type stubProvider struct {
 	results []stubTurn
-	calls   []provider.Request
+	calls   []providercontract.Request
 }
 
-func (s *stubProvider) RunTurn(_ context.Context, req provider.Request) (provider.TurnResult, error) {
+func (s *stubProvider) RunTurn(_ context.Context, req providercontract.Request) (providercontract.TurnResult, error) {
 	s.calls = append(s.calls, cloneProviderRequest(req))
 	index := len(s.calls) - 1
 	if index >= len(s.results) {
-		return provider.TurnResult{}, nil
+		return providercontract.TurnResult{}, nil
 	}
 	return cloneTurnResult(s.results[index].result), s.results[index].err
 }
@@ -967,30 +943,27 @@ func messageRecord(id string, kind message.Kind, text string) message.Message {
 	}
 }
 
-func cloneProviderRequest(req provider.Request) provider.Request {
-	out := provider.Request{
+func cloneProviderRequest(req providercontract.Request) providercontract.Request {
+	out := providercontract.Request{
 		Context: req.Context,
 	}
 	if len(req.Messages) > 0 {
-		out.Messages = make([]provider.Message, len(req.Messages))
+		out.Messages = make([]message.Message, len(req.Messages))
 		for i := range req.Messages {
 			out.Messages[i] = req.Messages[i]
-			if len(req.Messages[i].ToolCalls) > 0 {
-				out.Messages[i].ToolCalls = append([]provider.ToolCall(nil), req.Messages[i].ToolCalls...)
-			}
 		}
 	}
 	if len(req.Tools) > 0 {
-		out.Tools = make([]provider.ToolDefinition, len(req.Tools))
+		out.Tools = make([]toolcontract.Metadata, len(req.Tools))
 		copy(out.Tools, req.Tools)
 	}
 	return out
 }
 
-func cloneTurnResult(result provider.TurnResult) provider.TurnResult {
+func cloneTurnResult(result providercontract.TurnResult) providercontract.TurnResult {
 	out := result
 	if len(result.ToolCalls) > 0 {
-		out.ToolCalls = append([]provider.ToolCall(nil), result.ToolCalls...)
+		out.ToolCalls = append([]providercontract.ToolCall(nil), result.ToolCalls...)
 	}
 	if result.Usage != nil {
 		usage := *result.Usage
@@ -999,10 +972,10 @@ func cloneTurnResult(result provider.TurnResult) provider.TurnResult {
 	return out
 }
 
-func cloneBatchRequest(req tool.BatchRequest) tool.BatchRequest {
-	out := tool.BatchRequest{}
+func cloneBatchRequest(req toolcontract.BatchRequest) toolcontract.BatchRequest {
+	out := toolcontract.BatchRequest{}
 	if len(req.Calls) > 0 {
-		out.Calls = make([]tool.ToolCallRequest, len(req.Calls))
+		out.Calls = make([]toolcontract.ToolCallRequest, len(req.Calls))
 		copy(out.Calls, req.Calls)
 	}
 	return out
@@ -1032,20 +1005,25 @@ func cloneMessagePartsForTest(parts []message.Part) []message.Part {
 	return copied
 }
 
-func countSystemMessages(messages []provider.Message) int {
+func countSystemMessages(messages []message.Message) int {
 	count := 0
 	for _, msg := range messages {
-		if msg.Role == provider.RoleSystem {
+		if msg.Kind != message.KindSystem {
+			continue
+		}
+		if firstToolResultPart(msg.Parts) == nil {
 			count++
 		}
 	}
 	return count
 }
 
-func requestContainsToolResult(req provider.Request, toolCallID string) bool {
+func requestContainsToolResult(req providercontract.Request, toolCallID string) bool {
 	for _, msg := range req.Messages {
-		if msg.Role == provider.RoleTool && msg.ToolCallID == toolCallID {
-			return true
+		for _, part := range msg.Parts {
+			if part.Type == message.PartTypeToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == toolCallID {
+				return true
+			}
 		}
 	}
 	return false
@@ -1085,33 +1063,4 @@ func findToolResultPart(parts []message.Part) *message.ToolResultPart {
 		}
 	}
 	return nil
-}
-
-type stubRuntimeProvider struct {
-	snapshot  agentcontract.RuntimeSnapshot
-	tokenizer agentcontract.TokenEncoder
-	err       error
-}
-
-func (s stubRuntimeProvider) Snapshot() agentcontract.RuntimeSnapshot {
-	return s.snapshot
-}
-
-func (s stubRuntimeProvider) TokenizerForModel(_ string) (agentcontract.TokenEncoder, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	if s.tokenizer != nil {
-		return s.tokenizer, nil
-	}
-	return stubTokenEncoder{}, nil
-}
-
-type stubTokenEncoder struct{}
-
-func (stubTokenEncoder) Encode(text string, _ []string, _ []string) []int {
-	if text == "" {
-		return nil
-	}
-	return make([]int, len(text))
 }

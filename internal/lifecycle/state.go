@@ -1,21 +1,18 @@
 package lifecycle
 
-import (
-	"encoding/json"
-	"sync"
-)
+import toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 
-type ToolSnapshot struct {
-	Name              string
-	Description       string
-	Parameters        json.RawMessage
-	Enabled           bool
-	SecurityLevel     int
-	IsConcurrencySafe bool
-}
+// State is the process-wide runtime state singleton.
+//
+// NOTE: State is intentionally public and mutable. It is not concurrency-safe.
+var State *GlobalState
 
+// GlobalState is the process-wide runtime state singleton.
+//
+// NOTE: This object is intentionally mutable and publicly writable.
+// Direct field access like `lifecycle.State.Model = "x"` is allowed by design.
+// It is not concurrency-safe and callers must not assume locked access.
 type GlobalState struct {
-	mu                      sync.RWMutex
 	AppVersion              string
 	StartTime               string
 	DebugMode               bool
@@ -38,7 +35,7 @@ type GlobalState struct {
 	EstimatedContextChars   int
 	CurrentMessageCount     int
 	Temperature             float32
-	KnownTools              []ToolSnapshot
+	KnownTools              []toolcontract.Metadata
 }
 
 type PermissionLevel int
@@ -48,103 +45,6 @@ const (
 	AttentionLevel
 	DangerLevel
 )
-
-func GetState() GlobalState {
-	if State == nil {
-		return GlobalState{}
-	}
-
-	State.mu.RLock()
-	defer State.mu.RUnlock()
-
-	snapshot := *State
-	snapshot.InitialEnv = cloneEnvMap(State.InitialEnv)
-	snapshot.KnownTools = cloneToolSnapshots(State.KnownTools)
-	return snapshot
-}
-
-func SetPermissionLevel(level PermissionLevel) {
-	if State == nil {
-		State = &GlobalState{}
-	}
-
-	State.mu.Lock()
-	defer State.mu.Unlock()
-	State.PermissionLevel = level
-}
-
-func resetGlobalStateForTest() {
-	State = &GlobalState{}
-}
-
-func (s *GlobalState) initialize(input GlobalState) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.AppVersion = input.AppVersion
-	s.StartTime = input.StartTime
-	s.Cwd = input.Cwd
-	s.ProjectRoot = input.ProjectRoot
-	s.PermissionLevel = input.PermissionLevel
-	s.SessionID = input.SessionID
-	s.InitialEnv = cloneEnvMap(input.InitialEnv)
-	s.ModelLimit = input.ModelLimit
-	s.MaxTurn = input.MaxTurn
-	s.Model = input.Model
-	s.KnownTools = cloneToolSnapshots(input.KnownTools)
-	s.CumulativeInputTokens = 0
-	s.CumulativeOutputTokens = 0
-	s.CumulativeTotalTokens = 0
-	s.CurrentTurnInputTokens = 0
-	s.CurrentTurnOutputTokens = 0
-	s.CurrentTurnTotalTokens = 0
-	s.EstimatedContextTokens = 0
-	s.ActualContextTokens = 0
-	s.EstimatedContextChars = 0
-	s.CurrentMessageCount = 0
-}
-
-func (s *GlobalState) applyUsage(inputTokens, outputTokens, totalTokens int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.CurrentTurnInputTokens = inputTokens
-	s.CurrentTurnOutputTokens = outputTokens
-	s.CurrentTurnTotalTokens = totalTokens
-	s.CumulativeInputTokens += inputTokens
-	s.CumulativeOutputTokens += outputTokens
-	s.CumulativeTotalTokens += totalTokens
-	s.ActualContextTokens = inputTokens
-}
-
-func (s *GlobalState) setContextEstimate(tokens, chars, messageCount int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.EstimatedContextTokens = tokens
-	s.EstimatedContextChars = chars
-	s.CurrentMessageCount = messageCount
-}
-
-func cloneEnvMap(input map[string]string) map[string]string {
-	if len(input) == 0 {
-		return nil
-	}
-	cloned := make(map[string]string, len(input))
-	for k, v := range input {
-		cloned[k] = v
-	}
-	return cloned
-}
-
-func cloneToolSnapshots(input []ToolSnapshot) []ToolSnapshot {
-	if len(input) == 0 {
-		return nil
-	}
-	cloned := make([]ToolSnapshot, len(input))
-	copy(cloned, input)
-	return cloned
-}
 
 // NOTE: copy from Claudecode Uncomment when using a field
 // originalCwd: string

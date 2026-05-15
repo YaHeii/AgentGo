@@ -8,32 +8,29 @@ import (
 	"io"
 	"strings"
 
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	openai "github.com/sashabaranov/go-openai"
 )
-
-type Config struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-}
 
 type OpenAIClient struct {
 	client *openai.Client
 	model  string
 }
 
-func NewOpenAIClient(cfg Config) (*OpenAIClient, error) {
-	apiKey := strings.TrimSpace(cfg.APIKey)
+func NewOpenAIClient(baseURL string, apiKey string, model string) (*OpenAIClient, error) {
+	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return nil, errors.New("openai api key is required")
 	}
-	model := strings.TrimSpace(cfg.Model)
+	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil, errors.New("openai model is required")
 	}
 
 	clientConfig := openai.DefaultConfig(apiKey)
-	if baseURL := strings.TrimSpace(cfg.BaseURL); baseURL != "" {
+	if baseURL = strings.TrimSpace(baseURL); baseURL != "" {
 		clientConfig.BaseURL = baseURL
 	}
 
@@ -43,13 +40,13 @@ func NewOpenAIClient(cfg Config) (*OpenAIClient, error) {
 	}, nil
 }
 
-func (c *OpenAIClient) Stream(ctx context.Context, req Request) <-chan StreamEvent {
+func (c *OpenAIClient) Stream(ctx context.Context, req providercontract.Request) <-chan StreamEvent {
 	ch := make(chan StreamEvent)
 
 	go func() {
 		defer close(ch)
 
-		if err := req.Validate(); err != nil {
+		if err := validateRequest(req); err != nil {
 			ch <- StreamEvent{
 				Type: StreamEventProviderError,
 				Err:  err,
@@ -98,7 +95,7 @@ func (c *OpenAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 	return ch
 }
 
-func buildChatCompletionRequest(model string, req Request) openai.ChatCompletionRequest {
+func buildChatCompletionRequest(model string, req providercontract.Request) openai.ChatCompletionRequest {
 	out := openai.ChatCompletionRequest{
 		Model:    model,
 		Stream:   true,
@@ -118,44 +115,56 @@ func buildChatCompletionRequest(model string, req Request) openai.ChatCompletion
 	}
 
 	for _, toolDef := range req.Tools {
-		out.Tools = append(out.Tools, openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
-				Name:        toolDef.Name,
-				Description: toolDef.Description,
-				Parameters:  toolParameters(toolDef.Parameters),
-			},
-		})
+		out.Tools = append(out.Tools, toolMetadataToOpenAITool(toolDef))
 	}
 
 	return out
 }
 
-func toOpenAIMessage(msg Message) openai.ChatCompletionMessage {
-	out := openai.ChatCompletionMessage{
-		Role:       string(msg.Role),
-		Content:    msg.Content,
-		ToolCallID: msg.ToolCallID,
-	}
-
-	if len(msg.ToolCalls) > 0 {
-		out.ToolCalls = make([]openai.ToolCall, 0, len(msg.ToolCalls))
-		for i := range msg.ToolCalls {
-			toolCall := msg.ToolCalls[i]
-			index := toolCall.Index
+func toOpenAIMessage(msg messagecontract.Message) openai.ChatCompletionMessage {
+	switch msg.Kind {
+	case messagecontract.KindUser:
+		return openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: flattenMessageParts(msg.Parts),
+		}
+	case messagecontract.KindAssistant:
+		out := openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: flattenMessageParts(msg.Parts),
+		}
+		for _, part := range msg.Parts {
+			if part.Type != messagecontract.PartTypeToolCall || part.ToolCall == nil {
+				continue
+			}
+			index := 0
 			out.ToolCalls = append(out.ToolCalls, openai.ToolCall{
 				Index: &index,
-				ID:    toolCall.ID,
+				ID:    part.ToolCall.ID,
 				Type:  openai.ToolTypeFunction,
 				Function: openai.FunctionCall{
-					Name:      toolCall.Name,
-					Arguments: toolCall.Arguments,
+					Name:      part.ToolCall.Name,
+					Arguments: part.ToolCall.Input,
 				},
 			})
 		}
+		return out
+	case messagecontract.KindSystem:
+		toolResult := firstToolResultPart(msg.Parts)
+		if toolResult != nil {
+			return openai.ChatCompletionMessage{
+				Role:       openai.ChatMessageRoleTool,
+				Content:    flattenMessageParts(msg.Parts),
+				ToolCallID: toolResult.ToolCallID,
+			}
+		}
+		return openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: flattenMessageParts(msg.Parts),
+		}
+	default:
+		return openai.ChatCompletionMessage{}
 	}
-
-	return out
 }
 
 func publishChoiceEvents(
@@ -208,36 +217,36 @@ func publishChoiceEvents(
 	}
 }
 
-func toUsage(usage *openai.Usage) *Usage {
+func toUsage(usage *openai.Usage) *providercontract.Usage {
 	if usage == nil {
 		return nil
 	}
 
-	return &Usage{
+	return &providercontract.Usage{
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		TotalTokens:      usage.TotalTokens,
 	}
 }
 
-func toStopReason(reason openai.FinishReason) StopReason {
+func toStopReason(reason openai.FinishReason) providercontract.StopReason {
 	switch reason {
 	case openai.FinishReasonStop:
-		return StopReasonStop
+		return providercontract.StopReasonStop
 	case openai.FinishReasonLength:
-		return StopReasonLength
+		return providercontract.StopReasonLength
 	case openai.FinishReasonFunctionCall:
-		return StopReasonFunctionCall
+		return providercontract.StopReasonFunctionCall
 	case openai.FinishReasonToolCalls:
-		return StopReasonToolCalls
+		return providercontract.StopReasonToolCalls
 	case openai.FinishReasonContentFilter:
-		return StopReasonContentFilter
+		return providercontract.StopReasonContentFilter
 	case "":
 		return ""
 	case openai.FinishReasonNull:
 		return ""
 	default:
-		return StopReasonUnknown
+		return providercontract.StopReasonUnknown
 	}
 }
 
@@ -265,6 +274,47 @@ func toolParameters(raw []byte) any {
 		return map[string]any{}
 	}
 	return schema
+}
+
+func flattenMessageParts(parts []messagecontract.Part) string {
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case messagecontract.PartTypeText:
+			if strings.TrimSpace(part.Text) != "" {
+				segments = append(segments, part.Text)
+			}
+		case messagecontract.PartTypeThinking:
+			if part.Thinking != nil && strings.TrimSpace(part.Thinking.Content) != "" {
+				segments = append(segments, part.Thinking.Content)
+			}
+		case messagecontract.PartTypeToolResult:
+			if part.ToolResult != nil && strings.TrimSpace(part.ToolResult.Content) != "" {
+				segments = append(segments, part.ToolResult.Content)
+			}
+		}
+	}
+	return strings.Join(segments, "\n")
+}
+
+func firstToolResultPart(parts []messagecontract.Part) *messagecontract.ToolResultPart {
+	for _, part := range parts {
+		if part.Type == messagecontract.PartTypeToolResult && part.ToolResult != nil {
+			return part.ToolResult
+		}
+	}
+	return nil
+}
+
+func toolMetadataToOpenAITool(toolDef toolcontract.Metadata) openai.Tool {
+	return openai.Tool{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        toolDef.Name,
+			Description: toolDef.Description,
+			Parameters:  toolParameters(toolDef.Parameters),
+		},
+	}
 }
 
 var _ streamClient = (*OpenAIClient)(nil)

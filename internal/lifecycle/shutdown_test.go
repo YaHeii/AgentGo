@@ -7,8 +7,6 @@ import (
 )
 
 func TestRuntimeCloseReturnsCloserError(t *testing.T) {
-	t.Parallel()
-
 	want := errors.New("close failed")
 	runtime := Runtime{
 		closeFn: func(context.Context) error {

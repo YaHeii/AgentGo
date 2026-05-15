@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/tool"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 )
 
 const (
@@ -60,8 +60,8 @@ func NewGrepTool(projectRoot string) *GrepTool {
 }
 
 // Metadata implements interfaces to describe capabilities to the model and policies to the system.
-func (t *GrepTool) Metadata() tool.Metadata {
-	return tool.Metadata{
+func (t *GrepTool) Metadata() toolcontract.Metadata {
+	return toolcontract.Metadata{
 		Name:        GrepToolName,
 		Description: "在项目文件内容中搜索正则表达式。支持 .gitignore 过滤并自动跳过二进制文件。",
 		Parameters: json.RawMessage(`{
@@ -75,13 +75,13 @@ func (t *GrepTool) Metadata() tool.Metadata {
 			"required": ["pattern"]
 			}`),
 		Enabled:           true,
-		SecurityLevel:     tool.SafeLevel,
+		SecurityLevel:     toolcontract.SafeLevel,
 		IsConcurrencySafe: true,
-		Requirements:      tool.RequireWorkingDir,
+		Requirements:      toolcontract.RequireWorkingDir,
 	}
 }
 
-func (t *GrepTool) Execute(ctx context.Context, req tool.ToolCallRequest) tool.ToolResult {
+func (t *GrepTool) Execute(ctx context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
 	var params struct {
 		Pattern     string `json:"pattern"`
 		Path        string `json:"path"`
@@ -89,10 +89,10 @@ func (t *GrepTool) Execute(ctx context.Context, req tool.ToolCallRequest) tool.T
 		LiteralText bool   `json:"literal_text"`
 	}
 	if err := json.Unmarshal(req.Arguments, &params); err != nil {
-		return tool.ToolResult{
+		return toolcontract.ToolResult{
 			ToolCallID: req.ToolCallID,
 			Name:       req.Name,
-			Status:     tool.StatusSystemError,
+			Status:     toolcontract.StatusSystemError,
 			Content:    "Tool argument decoding drifted from service validation.",
 			Err:        err,
 		}
@@ -100,10 +100,10 @@ func (t *GrepTool) Execute(ctx context.Context, req tool.ToolCallRequest) tool.T
 
 	searchPath, err := resolveSearchPath(req.Context.WorkingDir, params.Path)
 	if err != nil {
-		return tool.ToolResult{
+		return toolcontract.ToolResult{
 			ToolCallID: req.ToolCallID,
 			Name:       req.Name,
-			Status:     tool.StatusValidationFailed,
+			Status:     toolcontract.StatusValidationFailed,
 			Content:    "Access Denied: The search path must be within the project directory.",
 			Err:        err,
 		}
@@ -111,19 +111,19 @@ func (t *GrepTool) Execute(ctx context.Context, req tool.ToolCallRequest) tool.T
 
 	resolvedSearchPath, err := filepath.EvalSymlinks(searchPath)
 	if err != nil {
-		return tool.ToolResult{
+		return toolcontract.ToolResult{
 			ToolCallID: req.ToolCallID,
 			Name:       req.Name,
-			Status:     tool.StatusValidationFailed,
+			Status:     toolcontract.StatusValidationFailed,
 			Content:    "Access Denied: The search path must be within the project directory.",
 			Err:        err,
 		}
 	}
 	if !isWithinRoot(resolvedSearchPath, t.projectRoot) {
-		return tool.ToolResult{
+		return toolcontract.ToolResult{
 			ToolCallID: req.ToolCallID,
 			Name:       req.Name,
-			Status:     tool.StatusValidationFailed,
+			Status:     toolcontract.StatusValidationFailed,
 			Content:    "Access Denied: The search path must be within the project directory.",
 			Err:        fmt.Errorf("search path %q escapes project root %q", resolvedSearchPath, t.projectRoot),
 		}
@@ -139,22 +139,22 @@ func (t *GrepTool) Execute(ctx context.Context, req tool.ToolCallRequest) tool.T
 
 	matches, truncated, err := t.runSearch(execCtx, pattern, resolvedSearchPath, params.Include)
 	if err != nil {
-		return tool.ToolResult{
+		return toolcontract.ToolResult{
 			ToolCallID: req.ToolCallID,
 			Name:       req.Name,
-			Status:     tool.StatusSystemError,
+			Status:     toolcontract.StatusSystemError,
 			Err:        fmt.Errorf("grep system error: %w", err),
 		}
 	}
 
-	status := tool.StatusSuccess
+	status := toolcontract.StatusSuccess
 	errResult := error(nil)
 	if len(matches) == 0 {
-		status = tool.StatusExecutionError
+		status = toolcontract.StatusExecutionError
 		errResult = fmt.Errorf("no matches found")
 	}
 
-	return tool.ToolResult{
+	return toolcontract.ToolResult{
 		ToolCallID: req.ToolCallID,
 		Name:       req.Name,
 		Status:     status,

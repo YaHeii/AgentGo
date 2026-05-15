@@ -4,16 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-
-	"github.com/YaHeii/agentGo/internal/store"
+	"time"
 )
 
 func (s *Store) LoadDraft(ctx context.Context, sessionID string) (string, error) {
 	return loadDraftWithQuerier(ctx, s.q, sessionID)
 }
 
-func (s *Store) SaveDraft(ctx context.Context, params store.SaveDraftParams) error {
-	return saveDraftWithQuerier(ctx, s.q, params)
+func (s *Store) SaveDraft(ctx context.Context, sessionID string, content string, updatedAt time.Time) error {
+	return saveDraftWithQuerier(ctx, s.q, sessionID, content, updatedAt)
 }
 
 func (s *Store) DeleteDraft(ctx context.Context, sessionID string) error {
@@ -24,8 +23,8 @@ func (s *txStore) LoadDraft(ctx context.Context, sessionID string) (string, erro
 	return loadDraftWithQuerier(ctx, s.q, sessionID)
 }
 
-func (s *txStore) SaveDraft(ctx context.Context, params store.SaveDraftParams) error {
-	return saveDraftWithQuerier(ctx, s.q, params)
+func (s *txStore) SaveDraft(ctx context.Context, sessionID string, content string, updatedAt time.Time) error {
+	return saveDraftWithQuerier(ctx, s.q, sessionID, content, updatedAt)
 }
 
 func (s *txStore) DeleteDraft(ctx context.Context, sessionID string) error {
@@ -49,11 +48,11 @@ func loadDraftWithQuerier(ctx context.Context, q draftQuerier, sessionID string)
 	return content, nil
 }
 
-func saveDraftWithQuerier(ctx context.Context, q draftQuerier, params store.SaveDraftParams) error {
+func saveDraftWithQuerier(ctx context.Context, q draftQuerier, sessionID string, content string, updatedAt time.Time) error {
 	return q.UpsertDraft(ctx, UpsertDraftParams{
-		SessionID: params.SessionID,
-		Content:   params.Content,
-		UpdatedAt: params.UpdatedAt.UTC().UnixMilli(),
+		SessionID: sessionID,
+		Content:   content,
+		UpdatedAt: updatedAt.UTC().UnixMilli(),
 	})
 }
 

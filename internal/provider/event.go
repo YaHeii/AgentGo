@@ -1,13 +1,15 @@
 package provider
 
+import providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
+
 type StreamEvent struct {
 	Type              StreamEventType
 	TextDelta         string
 	ReasoningDelta    string
 	RefusalDelta      string
 	ToolCallDelta     *ToolCallDelta
-	Usage             *Usage
-	StopReason        StopReason
+	Usage             *providercontract.Usage
+	StopReason        providercontract.StopReason
 	SystemFingerprint string
 	Err               error
 }
@@ -24,34 +26,10 @@ const (
 	StreamEventProviderError  StreamEventType = "provider_error"
 )
 
-type StopReason string
-
-const (
-	StopReasonStop          StopReason = "stop"
-	StopReasonLength        StopReason = "length"
-	StopReasonFunctionCall  StopReason = "function_call"
-	StopReasonToolCalls     StopReason = "tool_calls"
-	StopReasonContentFilter StopReason = "content_filter"
-	StopReasonCancelled     StopReason = "cancelled"
-	StopReasonUnknown       StopReason = "unknown"
-)
-
-type Usage struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
-}
-
+// TODO: Requires Optimization
 type ToolCallDelta struct {
 	Index          int
 	ID             string
 	NameDelta      string
 	ArgumentsDelta string
-}
-
-type ToolCall struct {
-	Index     int
-	ID        string
-	Name      string
-	Arguments string
 }

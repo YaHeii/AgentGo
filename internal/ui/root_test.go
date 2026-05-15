@@ -9,13 +9,12 @@ import (
 	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/lifecycle"
-	"github.com/YaHeii/agentGo/internal/message"
+	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/session"
-	"github.com/YaHeii/agentGo/internal/store"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 )
 
 func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
-	t.Parallel()
 	lifecycle.State = nil
 
 	svc := newStubChatService()
@@ -24,7 +23,7 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 			T: app.EventSession,
 			Payload: session.SessionEvent{
 				Status: session.StatusRestored,
-				Session: &store.Session{
+				Session: &sessioncontract.Session{
 					ID:    "session-1",
 					Title: "demo",
 				},
@@ -63,21 +62,22 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	if len(next.messages) != 2 {
 		t.Fatalf("expected 2 hydrated messages, got %d", len(next.messages))
 	}
-	if lifecycle.GetState().PermissionLevel != lifecycle.SafeLevel {
-		t.Fatalf("expected safe permission level, got %v", lifecycle.GetState().PermissionLevel)
+	if lifecycle.State == nil {
+		t.Fatal("expected lifecycle state to be initialized")
+	}
+	if lifecycle.State.PermissionLevel != lifecycle.SafeLevel {
+		t.Fatalf("expected safe permission level, got %v", lifecycle.State.PermissionLevel)
 	}
 }
 
 func TestEnterRunsQueryAndAppliesMultiTurnEvents(t *testing.T) {
-	t.Parallel()
-
 	svc := newStubChatService()
 	svc.ensureSessionFn = func(_ context.Context) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventSession,
 			Payload: session.SessionEvent{
 				Status: session.StatusRestored,
-				Session: &store.Session{
+				Session: &sessioncontract.Session{
 					ID:    "session-1",
 					Title: "demo",
 				},
@@ -209,15 +209,13 @@ func TestEnterRunsQueryAndAppliesMultiTurnEvents(t *testing.T) {
 }
 
 func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
-	t.Parallel()
-
 	svc := newStubChatService()
 	svc.ensureSessionFn = func(_ context.Context) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventSession,
 			Payload: session.SessionEvent{
 				Status: session.StatusRestored,
-				Session: &store.Session{
+				Session: &sessioncontract.Session{
 					ID:    "session-1",
 					Title: "demo",
 				},
@@ -271,15 +269,13 @@ func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 }
 
 func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
-	t.Parallel()
-
 	svc := newStubChatService()
 	svc.ensureSessionFn = func(_ context.Context) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventSession,
 			Payload: session.SessionEvent{
 				Status: session.StatusRestored,
-				Session: &store.Session{
+				Session: &sessioncontract.Session{
 					ID:    "session-1",
 					Title: "demo",
 				},
@@ -320,15 +316,13 @@ func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
 }
 
 func TestQueryCompletedEventStopsLoading(t *testing.T) {
-	t.Parallel()
-
 	svc := newStubChatService()
 	svc.ensureSessionFn = func(_ context.Context) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventSession,
 			Payload: session.SessionEvent{
 				Status: session.StatusRestored,
-				Session: &store.Session{
+				Session: &sessioncontract.Session{
 					ID:    "session-1",
 					Title: "demo",
 				},
@@ -401,6 +395,10 @@ func (s *stubChatService) Events() <-chan app.Event {
 }
 
 func (s *stubChatService) InitializePermissionLevel(_ context.Context) error {
+	if lifecycle.State == nil {
+		lifecycle.State = &lifecycle.GlobalState{}
+	}
+	lifecycle.State.PermissionLevel = lifecycle.SafeLevel
 	return nil
 }
 

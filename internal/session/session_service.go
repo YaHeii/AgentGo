@@ -7,11 +7,12 @@ import (
 
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/store"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	"github.com/segmentio/ksuid"
 )
 
-var ErrSessionNotFound = store.ErrSessionNotFound
+var ErrSessionNotFound = sessioncontract.ErrSessionNotFound
 
 type SessionService struct {
 	sessionStore    sessionStore
@@ -21,9 +22,10 @@ type SessionService struct {
 	activeSessionID string
 	parentSessionID string
 }
+
 type RestoreResult struct {
-	Session  store.Session
-	Messages []message.Message
+	Session  sessioncontract.Session
+	Messages []messagecontract.Message
 }
 
 func NewSessionService(st sessionStore, msgs messageStore, d app.Dispatcher) *SessionService {
@@ -44,7 +46,7 @@ func (s *SessionService) Create(ctx context.Context, title string, d app.Dispatc
 	if err != nil {
 		return "", err
 	}
-	row, err := s.sessionStore.CreateSession(ctx, store.CreateSessionParams{
+	row, err := s.sessionStore.CreateSession(ctx, sessioncontract.CreateSessionParams{
 		ID:        sessionID.String(),
 		Title:     title,
 		TodosJSON: "[]",
@@ -59,16 +61,16 @@ func (s *SessionService) Create(ctx context.Context, title string, d app.Dispatc
 		T: "session",
 		Payload: SessionEvent{
 			Status:  StatusCreated,
-			Session: &row,
+			Session: sessionPtr(row),
 		},
 	})
 	return row.ID, nil
 }
 
-func (s *SessionService) Get(ctx context.Context, id string) (store.Session, error) {
+func (s *SessionService) Get(ctx context.Context, id string) (sessioncontract.Session, error) {
 	row, err := s.sessionStore.GetSession(ctx, id)
 	if err != nil {
-		return store.Session{}, mapError(err)
+		return sessioncontract.Session{}, mapError(err)
 	}
 
 	return row, nil
@@ -86,7 +88,7 @@ func (s *SessionService) GetLast(ctx context.Context) (string, error) {
 	return rows[0].ID, nil
 }
 
-func (s *SessionService) List(ctx context.Context) ([]store.Session, error) {
+func (s *SessionService) List(ctx context.Context) ([]sessioncontract.Session, error) {
 	rows, err := s.sessionStore.ListSessions(ctx)
 	if err != nil {
 		return nil, err
@@ -95,14 +97,14 @@ func (s *SessionService) List(ctx context.Context) ([]store.Session, error) {
 	return rows, nil
 }
 
-func (s *SessionService) Rename(ctx context.Context, id string, title string, d app.Dispatcher) (store.Session, error) {
+func (s *SessionService) Rename(ctx context.Context, id string, title string, d app.Dispatcher) (sessioncontract.Session, error) {
 	current, err := s.sessionStore.GetSession(ctx, id)
 	if err != nil {
-		return store.Session{}, mapError(err)
+		return sessioncontract.Session{}, mapError(err)
 	}
 
 	updatedAt := s.nowFunc().UTC()
-	row, err := s.sessionStore.UpdateSession(ctx, store.UpdateSessionParams{
+	row, err := s.sessionStore.UpdateSession(ctx, sessioncontract.UpdateSessionParams{
 		ID:               id,
 		ParentSessionID:  current.ParentSessionID,
 		Title:            title,
@@ -114,16 +116,18 @@ func (s *SessionService) Rename(ctx context.Context, id string, title string, d 
 		UpdatedAt:        updatedAt,
 	})
 	if err != nil {
-		return store.Session{}, mapError(err)
+		return sessioncontract.Session{}, mapError(err)
 	}
+
+	session := row
 	d.Dispatch(app.BaseEvent{
 		T: "session",
 		Payload: SessionEvent{
 			Status:  StatusUpdated,
-			Session: &row,
+			Session: sessionPtr(session),
 		},
 	})
-	return row, nil
+	return session, nil
 }
 
 func (s *SessionService) Delete(ctx context.Context, id string, d app.Dispatcher) error {
@@ -149,11 +153,12 @@ func (s *SessionService) SwitchSession(ctx context.Context, sessionID string, d 
 
 	s.activeSessionID = sessionID
 	s.parentSessionID = sessionRow.ParentSessionID
+	session := sessionRow
 	d.Dispatch(app.BaseEvent{
 		T: "session",
 		Payload: SessionEvent{
 			Status:  StatusUpdated,
-			Session: &sessionRow,
+			Session: sessionPtr(session),
 		},
 	})
 	return nil
@@ -167,10 +172,10 @@ func (s *SessionService) GetParentSessionID() string {
 	return s.parentSessionID
 }
 
-func (s *SessionService) CreateMessage(ctx context.Context, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error) {
+func (s *SessionService) CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams, d app.Dispatcher) (messagecontract.Message, error) {
 	msg, err := s.messageStore.CreateMessage(ctx, params)
 	if err != nil {
-		return message.Message{}, err
+		return messagecontract.Message{}, err
 	}
 
 	d.Dispatch(app.BaseEvent{
@@ -183,7 +188,7 @@ func (s *SessionService) CreateMessage(ctx context.Context, params message.Creat
 	return msg, nil
 }
 
-func (s *SessionService) ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error) {
+func (s *SessionService) ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]messagecontract.Message, error) {
 	return s.listMessages(ctx, sessionID, d)
 }
 
@@ -214,20 +219,24 @@ func (s *SessionService) restoreSession(ctx context.Context, sessionID string, d
 		T: "session",
 		Payload: SessionEvent{
 			Status:  StatusRestored,
-			Session: &sessionRow,
+			Session: sessionPtr(result.Session),
 		},
 	})
 	return result, nil
 }
 
-func (s *SessionService) listMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error) {
+func (s *SessionService) listMessages(ctx context.Context, sessionID string, d app.Dispatcher) ([]messagecontract.Message, error) {
 	return s.messageStore.ListMessages(ctx, sessionID)
 }
 
 func mapError(err error) error {
-	if errors.Is(err, store.ErrSessionNotFound) {
+	if errors.Is(err, sessioncontract.ErrSessionNotFound) {
 		return ErrSessionNotFound
 	}
 
 	return err
+}
+
+func sessionPtr(session sessioncontract.Session) *sessioncontract.Session {
+	return &session
 }

@@ -5,22 +5,22 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/YaHeii/agentGo/internal/store"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 )
 
-func (s *Store) CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error) {
+func (s *Store) CreateSession(ctx context.Context, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error) {
 	return createSessionWithQuerier(ctx, s.q, params)
 }
 
-func (s *Store) ListSessions(ctx context.Context) ([]store.Session, error) {
+func (s *Store) ListSessions(ctx context.Context) ([]sessioncontract.Session, error) {
 	return listSessionsWithQuerier(ctx, s.q)
 }
 
-func (s *Store) GetSession(ctx context.Context, id string) (store.Session, error) {
+func (s *Store) GetSession(ctx context.Context, id string) (sessioncontract.Session, error) {
 	return getSessionWithQuerier(ctx, s.q, id)
 }
 
-func (s *Store) UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error) {
+func (s *Store) UpdateSession(ctx context.Context, params sessioncontract.UpdateSessionParams) (sessioncontract.Session, error) {
 	return updateSessionWithQuerier(ctx, s.q, params)
 }
 
@@ -28,19 +28,19 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return deleteSessionWithQuerier(ctx, s.q, id)
 }
 
-func (s *txStore) CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error) {
+func (s *txStore) CreateSession(ctx context.Context, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error) {
 	return createSessionWithQuerier(ctx, s.q, params)
 }
 
-func (s *txStore) ListSessions(ctx context.Context) ([]store.Session, error) {
+func (s *txStore) ListSessions(ctx context.Context) ([]sessioncontract.Session, error) {
 	return listSessionsWithQuerier(ctx, s.q)
 }
 
-func (s *txStore) GetSession(ctx context.Context, id string) (store.Session, error) {
+func (s *txStore) GetSession(ctx context.Context, id string) (sessioncontract.Session, error) {
 	return getSessionWithQuerier(ctx, s.q, id)
 }
 
-func (s *txStore) UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error) {
+func (s *txStore) UpdateSession(ctx context.Context, params sessioncontract.UpdateSessionParams) (sessioncontract.Session, error) {
 	return updateSessionWithQuerier(ctx, s.q, params)
 }
 
@@ -56,7 +56,7 @@ type sessionQuerier interface {
 	DeleteSession(ctx context.Context, id string) (int64, error)
 }
 
-func createSessionWithQuerier(ctx context.Context, q sessionQuerier, params store.CreateSessionParams) (store.Session, error) {
+func createSessionWithQuerier(ctx context.Context, q sessionQuerier, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error) {
 	row, err := q.CreateSession(ctx, CreateSessionParams{
 		ID:               params.ID,
 		ParentSessionID:  params.ParentSessionID,
@@ -70,10 +70,10 @@ func createSessionWithQuerier(ctx context.Context, q sessionQuerier, params stor
 		UpdatedAt:        params.UpdatedAt.UTC().UnixMilli(),
 	})
 	if err != nil {
-		return store.Session{}, err
+		return sessioncontract.Session{}, err
 	}
 
-	return store.Session{
+	return sessioncontract.Session{
 		ID:               row.ID,
 		ParentSessionID:  row.ParentSessionID,
 		Title:            row.Title,
@@ -87,15 +87,15 @@ func createSessionWithQuerier(ctx context.Context, q sessionQuerier, params stor
 	}, nil
 }
 
-func listSessionsWithQuerier(ctx context.Context, q sessionQuerier) ([]store.Session, error) {
+func listSessionsWithQuerier(ctx context.Context, q sessionQuerier) ([]sessioncontract.Session, error) {
 	rows, err := q.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	sessions := make([]store.Session, 0, len(rows))
+	sessions := make([]sessioncontract.Session, 0, len(rows))
 	for _, row := range rows {
-		sessions = append(sessions, store.Session{
+		sessions = append(sessions, sessioncontract.Session{
 			ID:               row.ID,
 			ParentSessionID:  row.ParentSessionID,
 			Title:            row.Title,
@@ -112,16 +112,16 @@ func listSessionsWithQuerier(ctx context.Context, q sessionQuerier) ([]store.Ses
 	return sessions, nil
 }
 
-func getSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) (store.Session, error) {
+func getSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) (sessioncontract.Session, error) {
 	row, err := q.GetSession(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return store.Session{}, store.ErrSessionNotFound
+		return sessioncontract.Session{}, sessioncontract.ErrSessionNotFound
 	}
 	if err != nil {
-		return store.Session{}, err
+		return sessioncontract.Session{}, err
 	}
 
-	return store.Session{
+	return sessioncontract.Session{
 		ID:               row.ID,
 		ParentSessionID:  row.ParentSessionID,
 		Title:            row.Title,
@@ -135,7 +135,7 @@ func getSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) (st
 	}, nil
 }
 
-func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params store.UpdateSessionParams) (store.Session, error) {
+func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params sessioncontract.UpdateSessionParams) (sessioncontract.Session, error) {
 	row, err := q.UpdateSession(ctx, UpdateSessionParams{
 		ParentSessionID:  params.ParentSessionID,
 		Title:            params.Title,
@@ -148,13 +148,13 @@ func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params stor
 		ID:               params.ID,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
-		return store.Session{}, store.ErrSessionNotFound
+		return sessioncontract.Session{}, sessioncontract.ErrSessionNotFound
 	}
 	if err != nil {
-		return store.Session{}, err
+		return sessioncontract.Session{}, err
 	}
 
-	return store.Session{
+	return sessioncontract.Session{
 		ID:               row.ID,
 		ParentSessionID:  row.ParentSessionID,
 		Title:            row.Title,
@@ -174,7 +174,7 @@ func deleteSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) 
 		return err
 	}
 	if rows == 0 {
-		return store.ErrSessionNotFound
+		return sessioncontract.ErrSessionNotFound
 	}
 	return nil
 }

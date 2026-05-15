@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/store"
-	"github.com/YaHeii/agentGo/internal/tool"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 )
 
 type APPService struct {
@@ -30,7 +30,7 @@ func NewService(sessions sessionStore, agent agentStore, tools toolStore, dispat
 func (s *APPService) EnsureActiveSession(ctx context.Context) error {
 	sessionID, err := s.sessions.GetLast(ctx)
 	if err != nil {
-		if !errors.Is(err, store.ErrSessionNotFound) {
+		if !errors.Is(err, sessioncontract.ErrSessionNotFound) {
 			return err
 		}
 		//TODO: title should from AI
@@ -48,11 +48,11 @@ func (s *APPService) CreateSession(ctx context.Context, title string) (string, e
 	return sessionID, err
 }
 
-func (s *APPService) ListSessions(ctx context.Context) ([]store.Session, error) {
+func (s *APPService) ListSessions(ctx context.Context) ([]sessioncontract.Session, error) {
 	return s.sessions.List(ctx)
 }
 
-func (s *APPService) RenameSession(ctx context.Context, sessionID string, title string) (store.Session, error) {
+func (s *APPService) RenameSession(ctx context.Context, sessionID string, title string) (sessioncontract.Session, error) {
 	return s.sessions.Rename(ctx, sessionID, title, s.dispatcher)
 }
 
@@ -68,7 +68,7 @@ func (s *APPService) GetParentSessionID() string {
 	return s.sessions.GetParentSessionID()
 }
 
-func (s *APPService) ListTools(ctx context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata {
+func (s *APPService) ListTools(ctx context.Context, permissionLevel toolcontract.SecurityLevel) []toolcontract.Metadata {
 	if s.tools == nil {
 		return nil
 	}
@@ -79,18 +79,18 @@ func (s *APPService) DeleteSession(ctx context.Context, sessionID string) error 
 	return s.sessions.Delete(ctx, sessionID, s.dispatcher)
 }
 
-func (s *APPService) ListHistory(ctx context.Context, sessionID string) ([]message.Message, error) {
+func (s *APPService) ListHistory(ctx context.Context, sessionID string) ([]messagecontract.Message, error) {
 	return s.sessions.ListHistory(ctx, sessionID, s.dispatcher)
 }
 
-func (s *APPService) CallTools(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error) {
+func (s *APPService) CallTools(ctx context.Context, req toolcontract.BatchRequest) ([]toolcontract.ToolResult, error) {
 	if s.tools == nil {
 		return nil, nil
 	}
 	return s.tools.Call(ctx, req)
 }
 
-func (s *APPService) CreateMessage(ctx context.Context, params message.CreateMessageParams) (message.Message, error) {
+func (s *APPService) CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams) (messagecontract.Message, error) {
 	return s.sessions.CreateMessage(ctx, params, s.dispatcher)
 }
 

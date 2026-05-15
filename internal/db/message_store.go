@@ -3,22 +3,22 @@ package db
 import (
 	"context"
 
-	"github.com/YaHeii/agentGo/internal/store"
+	"github.com/YaHeii/agentGo/internal/message"
 )
 
-func (s *Store) CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error) {
+func (s *Store) CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error) {
 	return createMessageWithQuerier(ctx, s.q, params)
 }
 
-func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]store.Message, error) {
+func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error) {
 	return listMessagesWithQuerier(ctx, s.q, sessionID)
 }
 
-func (s *txStore) CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error) {
+func (s *txStore) CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error) {
 	return createMessageWithQuerier(ctx, s.q, params)
 }
 
-func (s *txStore) ListMessages(ctx context.Context, sessionID string) ([]store.Message, error) {
+func (s *txStore) ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error) {
 	return listMessagesWithQuerier(ctx, s.q, sessionID)
 }
 
@@ -27,7 +27,7 @@ type messageQuerier interface {
 	ListMessages(ctx context.Context, sessionID string) ([]Message, error)
 }
 
-func createMessageWithQuerier(ctx context.Context, q messageQuerier, params store.CreateMessageParams) (store.Message, error) {
+func createMessageWithQuerier(ctx context.Context, q messageQuerier, params message.CreateMessageRecordParams) (message.MessageRecord, error) {
 	row, err := q.CreateMessage(ctx, CreateMessageParams{
 		ID:               params.ID,
 		SessionID:        params.SessionID,
@@ -38,10 +38,10 @@ func createMessageWithQuerier(ctx context.Context, q messageQuerier, params stor
 		MessageJson:      params.MessageJSON,
 	})
 	if err != nil {
-		return store.Message{}, err
+		return message.MessageRecord{}, err
 	}
 
-	return store.Message{
+	return message.MessageRecord{
 		ID:               row.ID,
 		SessionID:        row.SessionID,
 		Kind:             row.Kind,
@@ -52,15 +52,15 @@ func createMessageWithQuerier(ctx context.Context, q messageQuerier, params stor
 	}, nil
 }
 
-func listMessagesWithQuerier(ctx context.Context, q messageQuerier, sessionID string) ([]store.Message, error) {
+func listMessagesWithQuerier(ctx context.Context, q messageQuerier, sessionID string) ([]message.MessageRecord, error) {
 	rows, err := q.ListMessages(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	messages := make([]store.Message, 0, len(rows))
+	messages := make([]message.MessageRecord, 0, len(rows))
 	for _, row := range rows {
-		messages = append(messages, store.Message{
+		messages = append(messages, message.MessageRecord{
 			ID:               row.ID,
 			SessionID:        row.SessionID,
 			Kind:             row.Kind,

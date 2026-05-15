@@ -12,7 +12,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/YaHeii/agentGo/internal/store"
+	"github.com/YaHeii/agentGo/internal/message"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 )
 
 //go:embed migrations/*.sql
@@ -27,26 +28,45 @@ type txStore struct {
 	q *Queries
 }
 
-type dbStore interface {
-	CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error)
-	ListSessions(ctx context.Context) ([]store.Session, error)
-	GetSession(ctx context.Context, id string) (store.Session, error)
-	UpdateSession(ctx context.Context, params store.UpdateSessionParams) (store.Session, error)
+type TxStore interface {
+	CreateSession(ctx context.Context, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error)
+	ListSessions(ctx context.Context) ([]sessioncontract.Session, error)
+	GetSession(ctx context.Context, id string) (sessioncontract.Session, error)
+	UpdateSession(ctx context.Context, params sessioncontract.UpdateSessionParams) (sessioncontract.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 
-	CreateMessage(ctx context.Context, params store.CreateMessageParams) (store.Message, error)
-	ListMessages(ctx context.Context, sessionID string) ([]store.Message, error)
+	CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error)
+	ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error)
 
 	LoadDraft(ctx context.Context, sessionID string) (string, error)
-	SaveDraft(ctx context.Context, params store.SaveDraftParams) error
+	SaveDraft(ctx context.Context, sessionID string, content string, updatedAt time.Time) error
+	DeleteDraft(ctx context.Context, sessionID string) error
+}
+
+type Transactor interface {
+	WithinTx(ctx context.Context, fn func(tx TxStore) error) error
+}
+
+type dbStore interface {
+	CreateSession(ctx context.Context, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error)
+	ListSessions(ctx context.Context) ([]sessioncontract.Session, error)
+	GetSession(ctx context.Context, id string) (sessioncontract.Session, error)
+	UpdateSession(ctx context.Context, params sessioncontract.UpdateSessionParams) (sessioncontract.Session, error)
+	DeleteSession(ctx context.Context, id string) error
+
+	CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error)
+	ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error)
+
+	LoadDraft(ctx context.Context, sessionID string) (string, error)
+	SaveDraft(ctx context.Context, sessionID string, content string, updatedAt time.Time) error
 	DeleteDraft(ctx context.Context, sessionID string) error
 
-	WithinTx(ctx context.Context, fn func(tx store.TxStore) error) error
+	WithinTx(ctx context.Context, fn func(tx TxStore) error) error
 	Close() error
 }
 
 var _ dbStore = (*Store)(nil)
-var _ store.TxStore = (*txStore)(nil)
+var _ TxStore = (*txStore)(nil)
 
 func Open(dbPath string) (*Store, error) {
 	dbConn, err := sql.Open("sqlite", dbPath)
@@ -71,7 +91,7 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) WithinTx(ctx context.Context, fn func(tx store.TxStore) error) error {
+func (s *Store) WithinTx(ctx context.Context, fn func(tx TxStore) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	toolpkg "github.com/YaHeii/agentGo/internal/tool"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,10 +47,10 @@ func TestExecuteRejectsSiblingPathOutsideProjectRoot(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result := tool.Execute(context.Background(), toolpkgReq("call-1", args, toolpkg.ToolCallContext{
+	result := tool.Execute(context.Background(), toolpkgReq("call-1", args, toolcontract.ToolCallContext{
 		WorkingDir: projectRoot,
 	}))
-	require.Equal(t, toolpkg.StatusValidationFailed, result.Status)
+	require.Equal(t, toolcontract.StatusValidationFailed, result.Status)
 	require.Contains(t, result.Content, "Access Denied")
 }
 
@@ -67,10 +68,10 @@ func TestExecuteFindsLiteralTextInWorkingDir(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result := tool.Execute(context.Background(), toolpkgReq("call-1", args, toolpkg.ToolCallContext{
+	result := tool.Execute(context.Background(), toolpkgReq("call-1", args, toolcontract.ToolCallContext{
 		WorkingDir: projectRoot,
 	}))
-	require.Equal(t, toolpkg.StatusSuccess, result.Status)
+	require.Equal(t, toolcontract.StatusSuccess, result.Status)
 	require.Contains(t, result.Content, "sample.txt")
 	require.Contains(t, result.Content, "needle beta")
 	require.Equal(t, 1, result.Metadata["match_count"])
@@ -90,10 +91,10 @@ func TestExecuteResolvesRelativePathFromWorkingDir(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result := tool.Execute(context.Background(), toolpkgReq("call-1", args, toolpkg.ToolCallContext{
+	result := tool.Execute(context.Background(), toolpkgReq("call-1", args, toolcontract.ToolCallContext{
 		WorkingDir: projectRoot,
 	}))
-	require.Equal(t, toolpkg.StatusSuccess, result.Status)
+	require.Equal(t, toolcontract.StatusSuccess, result.Status)
 	require.Contains(t, result.Content, "internal/sample.txt")
 }
 
@@ -118,10 +119,10 @@ func TestExecuteRejectsSymlinkPathEscapingProjectRoot(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	result := tool.Execute(context.Background(), toolpkgReq("call-1", args, toolpkg.ToolCallContext{
+	result := tool.Execute(context.Background(), toolpkgReq("call-1", args, toolcontract.ToolCallContext{
 		WorkingDir: projectRoot,
 	}))
-	require.Equal(t, toolpkg.StatusValidationFailed, result.Status)
+	require.Equal(t, toolcontract.StatusValidationFailed, result.Status)
 	require.Contains(t, result.Content, "Access Denied")
 }
 
@@ -129,15 +130,15 @@ func TestServiceRejectsInvalidGrepArgumentsBeforeExecute(t *testing.T) {
 	projectRoot := t.TempDir()
 	svc := toolpkg.NewService(NewGrepTool(projectRoot))
 
-	results, err := svc.Call(context.Background(), toolpkg.NewBatchRequest(
-		toolpkg.NewToolCallRequest(
-			"call-1",
-			GrepToolName,
-			json.RawMessage(`{"literal_text":"yes"}`),
-			toolpkg.SafeLevel,
-			toolpkg.ToolCallContext{WorkingDir: projectRoot},
-		),
-	))
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{{
+			ToolCallID:      "call-1",
+			Name:            GrepToolName,
+			Arguments:       json.RawMessage(`{"literal_text":"yes"}`),
+			PermissionLevel: toolcontract.SafeLevel,
+			Context:         toolcontract.ToolCallContext{WorkingDir: projectRoot},
+		}},
+	})
 	require.Nil(t, results)
 	require.Error(t, err)
 }
@@ -223,6 +224,12 @@ func TestParseRipgrepJSONResolvesAbsolutePathAndModTime(t *testing.T) {
 	require.WithinDuration(t, wantTime, matches[0].modTime, time.Second)
 }
 
-func toolpkgReq(id string, args json.RawMessage, ctx toolpkg.ToolCallContext) toolpkg.ToolCallRequest {
-	return toolpkg.NewToolCallRequest(id, GrepToolName, args, toolpkg.SafeLevel, ctx)
+func toolpkgReq(id string, args json.RawMessage, ctx toolcontract.ToolCallContext) toolcontract.ToolCallRequest {
+	return toolcontract.ToolCallRequest{
+		ToolCallID:      id,
+		Name:            GrepToolName,
+		Arguments:       args,
+		PermissionLevel: toolcontract.SafeLevel,
+		Context:         ctx,
+	}
 }

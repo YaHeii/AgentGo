@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/YaHeii/agentGo/internal/app"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
@@ -15,10 +18,20 @@ func TestTurnRunnerContractUsesRequestAndReturnsResult(t *testing.T) {
 	t.Parallel()
 
 	var runner TurnRunner = &ProviderService{}
-	result, err := runner.RunTurn(context.Background(), Request{})
+	result, err := runner.RunTurn(context.Background(), providercontract.Request{})
 
 	require.Error(t, err)
-	require.Equal(t, TurnResult{}, result)
+	require.Equal(t, providercontract.TurnResult{}, result)
+}
+
+func TestNewOpenAIClientRequiresAPIKeyAndModel(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewOpenAIClient("", "", "gpt-test")
+	require.EqualError(t, err, "openai api key is required")
+
+	_, err = NewOpenAIClient("", "test-key", "")
+	require.EqualError(t, err, "openai model is required")
 }
 
 func TestRunTurnReturnsErrorWhenMessagesAreEmpty(t *testing.T) {
@@ -26,9 +39,9 @@ func TestRunTurnReturnsErrorWhenMessagesAreEmpty(t *testing.T) {
 
 	svc := NewProviderService(&stubStreamClient{}, nil)
 
-	result, err := svc.RunTurn(context.Background(), Request{})
+	result, err := svc.RunTurn(context.Background(), providercontract.Request{})
 	require.Error(t, err)
-	require.Equal(t, TurnResult{}, result)
+	require.Equal(t, providercontract.TurnResult{}, result)
 }
 
 func TestRunTurnPassesAgentAssembledRequestToClient(t *testing.T) {
@@ -39,25 +52,31 @@ func TestRunTurnPassesAgentAssembledRequestToClient(t *testing.T) {
 	client := &stubStreamClient{
 		events: []StreamEvent{
 			{Type: StreamEventTextDelta, TextDelta: "hi"},
-			{Type: StreamEventTurnFinished, StopReason: StopReasonStop, SystemFingerprint: "fp-1"},
+			{Type: StreamEventTurnFinished, StopReason: providercontract.StopReasonStop, SystemFingerprint: "fp-1"},
 		},
 	}
 	svc := NewProviderService(client, dispatcher)
 
 	temperature := float32(0.2)
 	maxOutputTokens := 256
-	req := Request{
-		Messages: []Message{
-			{Role: RoleUser, Content: "hello"},
+	req := providercontract.Request{
+		Messages: []messagecontract.Message{
+			{
+				ID:   "user-1",
+				Kind: messagecontract.KindUser,
+				Parts: []messagecontract.Part{
+					{Type: messagecontract.PartTypeText, Text: "hello"},
+				},
+			},
 		},
-		Tools: []ToolDefinition{
+		Tools: []toolcontract.Metadata{
 			{
 				Name:        "grep",
 				Description: "search project",
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		Context: RequestContext{
+		Context: providercontract.RequestContext{
 			Temperature:     &temperature,
 			MaxOutputTokens: &maxOutputTokens,
 		},
@@ -68,7 +87,7 @@ func TestRunTurnPassesAgentAssembledRequestToClient(t *testing.T) {
 	require.Len(t, client.calls, 1)
 	require.Equal(t, req, client.calls[0])
 	require.Equal(t, "hi", result.Text)
-	require.Equal(t, StopReasonStop, result.StopReason)
+	require.Equal(t, providercontract.StopReasonStop, result.StopReason)
 	require.Equal(t, "fp-1", result.SystemFingerprint)
 
 	firstEvent := <-events
@@ -90,22 +109,22 @@ func TestRunTurnAggregatesStructuredTurnResult(t *testing.T) {
 			{Type: StreamEventReasoningDelta, ReasoningDelta: "think-1"},
 			{Type: StreamEventReasoningDelta, ReasoningDelta: " think-2"},
 			{Type: StreamEventRefusalDelta, RefusalDelta: "decline"},
-			{Type: StreamEventUsageAvailable, Usage: &Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}},
-			{Type: StreamEventTurnFinished, StopReason: StopReasonStop, SystemFingerprint: "fp-1"},
+			{Type: StreamEventUsageAvailable, Usage: &providercontract.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}},
+			{Type: StreamEventTurnFinished, StopReason: providercontract.StopReasonStop, SystemFingerprint: "fp-1"},
 		},
 	}
 	svc := NewProviderService(client, nil)
 
-	result, err := svc.RunTurn(context.Background(), Request{
-		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	result, err := svc.RunTurn(context.Background(), providercontract.Request{
+		Messages: []messagecontract.Message{userTextMessage("hello")},
 	})
 	require.NoError(t, err)
 	require.Equal(t, "hello world", result.Text)
 	require.Equal(t, "think-1 think-2", result.Reasoning)
 	require.Equal(t, "decline", result.Refusal)
-	require.Equal(t, StopReasonStop, result.StopReason)
+	require.Equal(t, providercontract.StopReasonStop, result.StopReason)
 	require.Equal(t, "fp-1", result.SystemFingerprint)
-	require.Equal(t, &Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}, result.Usage)
+	require.Equal(t, &providercontract.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}, result.Usage)
 }
 
 func TestRunTurnAggregatesToolCallDeltasIntoResult(t *testing.T) {
@@ -117,17 +136,17 @@ func TestRunTurnAggregatesToolCallDeltasIntoResult(t *testing.T) {
 		events: []StreamEvent{
 			{Type: StreamEventToolCallDelta, ToolCallDelta: &ToolCallDelta{Index: 0, ID: "call_1", NameDelta: "gr", ArgumentsDelta: "{\"pat"}},
 			{Type: StreamEventToolCallDelta, ToolCallDelta: &ToolCallDelta{Index: 0, NameDelta: "ep", ArgumentsDelta: "tern\":\"go\"}"}},
-			{Type: StreamEventTurnFinished, StopReason: StopReasonToolCalls},
+			{Type: StreamEventTurnFinished, StopReason: providercontract.StopReasonToolCalls},
 		},
 	}
 	svc := NewProviderService(client, dispatcher)
 
-	result, err := svc.RunTurn(context.Background(), Request{
-		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	result, err := svc.RunTurn(context.Background(), providercontract.Request{
+		Messages: []messagecontract.Message{userTextMessage("hello")},
 	})
 	require.NoError(t, err)
 	require.Len(t, result.ToolCalls, 1)
-	require.Equal(t, ToolCall{
+	require.Equal(t, providercontract.ToolCall{
 		Index:     0,
 		ID:        "call_1",
 		Name:      "grep",
@@ -155,8 +174,8 @@ func TestRunTurnReturnsPartialResultWhenProviderErrorOccurs(t *testing.T) {
 	}
 	svc := NewProviderService(client, dispatcher)
 
-	result, err := svc.RunTurn(context.Background(), Request{
-		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	result, err := svc.RunTurn(context.Background(), providercontract.Request{
+		Messages: []messagecontract.Message{userTextMessage("hello")},
 	})
 	require.EqualError(t, err, "stream failed")
 	require.Equal(t, "partial", result.Text)
@@ -179,8 +198,8 @@ func TestRunTurnReturnsContextErrorAndPartialResultWhenCanceled(t *testing.T) {
 	}
 	svc := NewProviderService(client, nil)
 
-	result, err := svc.RunTurn(ctx, Request{
-		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	result, err := svc.RunTurn(ctx, providercontract.Request{
+		Messages: []messagecontract.Message{userTextMessage("hello")},
 	})
 	require.ErrorIs(t, err, context.Canceled)
 	require.Equal(t, "partial", result.Text)
@@ -211,27 +230,48 @@ func TestBuildChatCompletionRequestMapsMessagesToolsAndContext(t *testing.T) {
 
 	temperature := float32(0.3)
 	maxOutputTokens := 128
-	req := Request{
-		Messages: []Message{
-			{Role: RoleSystem, Content: "system"},
-			{Role: RoleUser, Content: "user"},
+	req := providercontract.Request{
+		Messages: []messagecontract.Message{
+			systemTextMessage("system"),
+			userTextMessage("user"),
 			{
-				Role:    RoleAssistant,
-				Content: "assistant",
-				ToolCalls: []ToolCall{
-					{ID: "call_1", Name: "grep", Arguments: "{\"pattern\":\"go\"}"},
+				ID:   "assistant-1",
+				Kind: messagecontract.KindAssistant,
+				Parts: []messagecontract.Part{
+					{Type: messagecontract.PartTypeText, Text: "assistant"},
+					{
+						Type: messagecontract.PartTypeToolCall,
+						ToolCall: &messagecontract.ToolCallPart{
+							ID:    "call_1",
+							Name:  "grep",
+							Input: "{\"pattern\":\"go\"}",
+						},
+					},
 				},
 			},
-			{Role: RoleTool, Content: "tool-result", ToolCallID: "call_1"},
+			{
+				ID:   "system-1",
+				Kind: messagecontract.KindSystem,
+				Parts: []messagecontract.Part{
+					{Type: messagecontract.PartTypeText, Text: "tool-result"},
+					{
+						Type: messagecontract.PartTypeToolResult,
+						ToolResult: &messagecontract.ToolResultPart{
+							ToolCallID: "call_1",
+							Content:    "tool-result",
+						},
+					},
+				},
+			},
 		},
-		Tools: []ToolDefinition{
+		Tools: []toolcontract.Metadata{
 			{
 				Name:        "grep",
 				Description: "search project",
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		Context: RequestContext{
+		Context: providercontract.RequestContext{
 			Temperature:     &temperature,
 			MaxOutputTokens: &maxOutputTokens,
 		},
@@ -263,11 +303,11 @@ func TestBuildChatCompletionRequestMapsMessagesToolsAndContext(t *testing.T) {
 func TestBuildChatCompletionRequestKeepsToolParametersAsJSONObject(t *testing.T) {
 	t.Parallel()
 
-	req := Request{
-		Messages: []Message{
-			{Role: RoleUser, Content: "user"},
+	req := providercontract.Request{
+		Messages: []messagecontract.Message{
+			userTextMessage("user"),
 		},
-		Tools: []ToolDefinition{
+		Tools: []toolcontract.Metadata{
 			{
 				Name:        "grep",
 				Description: "search project",
@@ -332,11 +372,11 @@ func TestPublishChoiceEventsDoesNotEmitToolCallCompleted(t *testing.T) {
 
 type stubStreamClient struct {
 	events          []StreamEvent
-	calls           []Request
+	calls           []providercontract.Request
 	afterFirstEvent func()
 }
 
-func (s *stubStreamClient) Stream(_ context.Context, req Request) <-chan StreamEvent {
+func (s *stubStreamClient) Stream(_ context.Context, req providercontract.Request) <-chan StreamEvent {
 	s.calls = append(s.calls, req)
 	ch := make(chan StreamEvent, len(s.events))
 	for i, event := range s.events {
@@ -351,4 +391,24 @@ func (s *stubStreamClient) Stream(_ context.Context, req Request) <-chan StreamE
 
 func ptr[T any](v T) *T {
 	return &v
+}
+
+func userTextMessage(text string) messagecontract.Message {
+	return messagecontract.Message{
+		ID:   "user",
+		Kind: messagecontract.KindUser,
+		Parts: []messagecontract.Part{
+			{Type: messagecontract.PartTypeText, Text: text},
+		},
+	}
+}
+
+func systemTextMessage(text string) messagecontract.Message {
+	return messagecontract.Message{
+		ID:   "system",
+		Kind: messagecontract.KindSystem,
+		Parts: []messagecontract.Part{
+			{Type: messagecontract.PartTypeText, Text: text},
+		},
+	}
 }

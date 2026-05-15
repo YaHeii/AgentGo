@@ -2,13 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"time"
 
-	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/provider"
-	"github.com/YaHeii/agentGo/internal/tool"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 )
 
 // QueryResult is the terminal snapshot returned when a query finishes successfully.
@@ -18,7 +18,7 @@ type QueryResult struct {
 	FinalAssistantMessageID string
 	Turns                   int
 	FinishReason            FinishReason
-	PendingToolCalls        []provider.ToolCall
+	PendingToolCalls        []providercontract.ToolCall
 }
 
 // QueryConfig stores stable runtime limits and policy knobs for a query runner.
@@ -31,7 +31,6 @@ type QueryConfig struct {
 type QueryDeps struct {
 	App        appStore
 	Provider   providerStore
-	Runtime    agentcontract.RuntimeProvider
 	Now        func() time.Time
 	dispatcher app.Dispatcher
 }
@@ -47,12 +46,28 @@ const (
 )
 
 type providerStore interface {
-	RunTurn(ctx context.Context, req provider.Request) (provider.TurnResult, error)
+	RunTurn(ctx context.Context, req providercontract.Request) (providercontract.TurnResult, error)
 }
 
 type appStore interface {
-	ListHistory(ctx context.Context, sessionID string) ([]message.Message, error)
-	CreateMessage(ctx context.Context, params message.CreateMessageParams) (message.Message, error)
-	ListTools(ctx context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata
-	CallTools(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error)
+	ListHistory(ctx context.Context, sessionID string) ([]messagecontract.Message, error)
+	CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams) (messagecontract.Message, error)
+	ListTools(ctx context.Context, permissionLevel toolcontract.SecurityLevel) []toolcontract.Metadata
+	CallTools(ctx context.Context, req toolcontract.BatchRequest) ([]toolcontract.ToolResult, error)
+}
+
+type Service struct {
+	loop *QueryLoop
+}
+
+func NewService(loop *QueryLoop) *Service {
+	return &Service{loop: loop}
+}
+
+func (s *Service) RunQuery(ctx context.Context, sessionID string, prompt string) error {
+	if s == nil || s.loop == nil {
+		return errors.New("agent: query loop is required")
+	}
+	_, err := s.loop.RunQuery(ctx, sessionID, prompt)
+	return err
 }

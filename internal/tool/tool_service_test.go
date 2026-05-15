@@ -8,28 +8,29 @@ import (
 	"testing"
 	"time"
 
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCallReturnsPerRequestResultsInInputOrder(t *testing.T) {
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{Name: "grep", Enabled: true, IsConcurrencySafe: true},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
-				return ToolResult{
+			meta: toolcontract.Metadata{Name: "grep", Enabled: true, IsConcurrencySafe: true},
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 					Content:    string(req.Arguments),
 				}
 			},
 		},
 	)
 
-	results, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"q":"first"}`), SafeLevel, ToolCallContext{}),
-			NewToolCallRequest("call_2", "grep", json.RawMessage(`{"q":"second"}`), SafeLevel, ToolCallContext{}),
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "grep", Arguments: json.RawMessage(`{"q":"first"}`), PermissionLevel: toolcontract.SafeLevel},
+			{ToolCallID: "call_2", Name: "grep", Arguments: json.RawMessage(`{"q":"second"}`), PermissionLevel: toolcontract.SafeLevel},
 		},
 	})
 	require.NoError(t, err)
@@ -43,9 +44,9 @@ func TestCallReturnsPerRequestResultsInInputOrder(t *testing.T) {
 func TestCallReturnsErrorForUnknownTool(t *testing.T) {
 	svc := NewService()
 
-	results, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "missing", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "missing", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.SafeLevel},
 		},
 	})
 	require.Nil(t, results)
@@ -55,25 +56,25 @@ func TestCallReturnsErrorForUnknownTool(t *testing.T) {
 func TestCallReturnsErrorWhenRequiredWorkingDirMissing(t *testing.T) {
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{
+			meta: toolcontract.Metadata{
 				Name:              "grep",
 				Enabled:           true,
 				IsConcurrencySafe: true,
-				Requirements:      RequireWorkingDir,
+				Requirements:      toolcontract.RequireWorkingDir,
 			},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
-				return ToolResult{
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 				}
 			},
 		},
 	)
 
-	results, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "grep", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.SafeLevel},
 		},
 	})
 	require.Nil(t, results)
@@ -83,23 +84,27 @@ func TestCallReturnsErrorWhenRequiredWorkingDirMissing(t *testing.T) {
 func TestCallReturnsErrorForDisabledTool(t *testing.T) {
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{Name: "grep", Enabled: false, IsConcurrencySafe: true},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
-				return ToolResult{
+			meta: toolcontract.Metadata{Name: "grep", Enabled: false, IsConcurrencySafe: true},
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 				}
 			},
 		},
 	)
 
-	results, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), SafeLevel, ToolCallContext{
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{{
+			ToolCallID:      "call_1",
+			Name:            "grep",
+			Arguments:       json.RawMessage(`{}`),
+			PermissionLevel: toolcontract.SafeLevel,
+			Context: toolcontract.ToolCallContext{
 				WorkingDir: "/workspace",
-			}),
-		},
+			},
+		}},
 	})
 	require.Nil(t, results)
 	require.Error(t, err)
@@ -108,25 +113,25 @@ func TestCallReturnsErrorForDisabledTool(t *testing.T) {
 func TestCallReturnsErrorWhenRequiredWorkspaceRootMissing(t *testing.T) {
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{
+			meta: toolcontract.Metadata{
 				Name:              "grep",
 				Enabled:           true,
 				IsConcurrencySafe: true,
-				Requirements:      RequireWorkspaceRoot,
+				Requirements:      toolcontract.RequireWorkspaceRoot,
 			},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
-				return ToolResult{
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 				}
 			},
 		},
 	)
 
-	results, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "grep", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.SafeLevel},
 		},
 	})
 	require.Nil(t, results)
@@ -136,7 +141,7 @@ func TestCallReturnsErrorWhenRequiredWorkspaceRootMissing(t *testing.T) {
 func TestCallReturnsErrorWhenArgumentsDoNotMatchSchema(t *testing.T) {
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{
+			meta: toolcontract.Metadata{
 				Name:              "grep",
 				Enabled:           true,
 				IsConcurrencySafe: true,
@@ -149,19 +154,19 @@ func TestCallReturnsErrorWhenArgumentsDoNotMatchSchema(t *testing.T) {
 					"required": ["pattern"]
 				}`),
 			},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
-				return ToolResult{
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 				}
 			},
 		},
 	)
 
-	results, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"literal_text":"yes"}`), SafeLevel, ToolCallContext{}),
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "grep", Arguments: json.RawMessage(`{"literal_text":"yes"}`), PermissionLevel: toolcontract.SafeLevel},
 		},
 	})
 	require.Nil(t, results)
@@ -173,7 +178,7 @@ func TestCallDoesNotExecuteAnyToolWhenLaterCallFailsSchemaValidation(t *testing.
 
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{
+			meta: toolcontract.Metadata{
 				Name:              "grep",
 				Enabled:           true,
 				IsConcurrencySafe: true,
@@ -186,21 +191,21 @@ func TestCallDoesNotExecuteAnyToolWhenLaterCallFailsSchemaValidation(t *testing.
 					"required": ["pattern"]
 				}`),
 			},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
 				executed = true
-				return ToolResult{
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 				}
 			},
 		},
 	)
 
-	results, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"pattern":"ok"}`), SafeLevel, ToolCallContext{}),
-			NewToolCallRequest("call_2", "grep", json.RawMessage(`{"literal_text":"yes"}`), SafeLevel, ToolCallContext{}),
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "grep", Arguments: json.RawMessage(`{"pattern":"ok"}`), PermissionLevel: toolcontract.SafeLevel},
+			{ToolCallID: "call_2", Name: "grep", Arguments: json.RawMessage(`{"literal_text":"yes"}`), PermissionLevel: toolcontract.SafeLevel},
 		},
 	})
 	require.Nil(t, results)
@@ -218,8 +223,8 @@ func TestCallSerializesNonConcurrentToolAcrossGoroutines(t *testing.T) {
 
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{Name: "serial", Enabled: true, IsConcurrencySafe: false},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
+			meta: toolcontract.Metadata{Name: "serial", Enabled: true, IsConcurrencySafe: false},
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
 				mu.Lock()
 				active++
 				if active > maxActive {
@@ -234,20 +239,20 @@ func TestCallSerializesNonConcurrentToolAcrossGoroutines(t *testing.T) {
 				active--
 				mu.Unlock()
 
-				return ToolResult{
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 				}
 			},
 		},
 	)
 
-	req1 := BatchRequest{Calls: []ToolCallRequest{
-		NewToolCallRequest("call_1", "serial", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
+	req1 := toolcontract.BatchRequest{Calls: []toolcontract.ToolCallRequest{
+		{ToolCallID: "call_1", Name: "serial", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.SafeLevel},
 	}}
-	req2 := BatchRequest{Calls: []ToolCallRequest{
-		NewToolCallRequest("call_2", "serial", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
+	req2 := toolcontract.BatchRequest{Calls: []toolcontract.ToolCallRequest{
+		{ToolCallID: "call_2", Name: "serial", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.SafeLevel},
 	}}
 
 	var wg sync.WaitGroup
@@ -275,8 +280,8 @@ func TestCallAllowsConcurrentSafeToolToRunInParallel(t *testing.T) {
 
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{Name: "parallel", Enabled: true, IsConcurrencySafe: true},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
+			meta: toolcontract.Metadata{Name: "parallel", Enabled: true, IsConcurrencySafe: true},
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
 				mu.Lock()
 				active++
 				if active > maxActive {
@@ -290,19 +295,19 @@ func TestCallAllowsConcurrentSafeToolToRunInParallel(t *testing.T) {
 				active--
 				mu.Unlock()
 
-				return ToolResult{
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 				}
 			},
 		},
 	)
 
-	_, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "parallel", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
-			NewToolCallRequest("call_2", "parallel", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
+	_, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "parallel", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.SafeLevel},
+			{ToolCallID: "call_2", Name: "parallel", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.SafeLevel},
 		},
 	})
 	require.NoError(t, err)
@@ -312,39 +317,39 @@ func TestCallAllowsConcurrentSafeToolToRunInParallel(t *testing.T) {
 func TestListToolsFiltersByPermissionLevel(t *testing.T) {
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{Name: "safe", Enabled: true, SecurityLevel: SafeLevel},
+			meta: toolcontract.Metadata{Name: "safe", Enabled: true, SecurityLevel: toolcontract.SafeLevel},
 		},
 		&stubTool{
-			meta: Metadata{Name: "attention", Enabled: true, SecurityLevel: AttentionLevel},
+			meta: toolcontract.Metadata{Name: "attention", Enabled: true, SecurityLevel: toolcontract.AttentionLevel},
 		},
 		&stubTool{
-			meta: Metadata{Name: "danger", Enabled: true, SecurityLevel: DangerLevel},
+			meta: toolcontract.Metadata{Name: "danger", Enabled: true, SecurityLevel: toolcontract.DangerLevel},
 		},
 	)
 
-	metas := svc.ListTools(context.Background(), AttentionLevel)
+	metas := svc.ListTools(context.Background(), toolcontract.AttentionLevel)
 	require.Len(t, metas, 2)
 	require.Equal(t, "attention", metas[0].Name)
 	require.Equal(t, "safe", metas[1].Name)
 }
 
-func TestNewToolCallRequestCarriesExecutionContext(t *testing.T) {
-	req := NewToolCallRequest(
-		"call_1",
-		"grep",
-		json.RawMessage(`{"q":"hello"}`),
-		AttentionLevel,
-		ToolCallContext{
+func TestToolCallRequestCarriesExecutionContext(t *testing.T) {
+	req := toolcontract.ToolCallRequest{
+		ToolCallID:      "call_1",
+		Name:            "grep",
+		Arguments:       json.RawMessage(`{"q":"hello"}`),
+		PermissionLevel: toolcontract.AttentionLevel,
+		Context: toolcontract.ToolCallContext{
 			SessionID:     "session-1",
 			TurnID:        "turn-1",
 			WorkspaceRoot: "/workspace",
 			WorkingDir:    "/workspace/internal",
 		},
-	)
+	}
 
 	require.Equal(t, "call_1", req.ToolCallID)
 	require.Equal(t, "grep", req.Name)
-	require.Equal(t, AttentionLevel, req.PermissionLevel)
+	require.Equal(t, toolcontract.AttentionLevel, req.PermissionLevel)
 	require.Equal(t, "session-1", req.Context.SessionID)
 	require.Equal(t, "/workspace/internal", req.Context.WorkingDir)
 }
@@ -352,25 +357,25 @@ func TestNewToolCallRequestCarriesExecutionContext(t *testing.T) {
 func TestCallReturnsErrorWhenPermissionLevelIsLowerThanToolRequirement(t *testing.T) {
 	svc := NewService(
 		&stubTool{
-			meta: Metadata{
+			meta: toolcontract.Metadata{
 				Name:              "dangerous",
 				Enabled:           true,
-				SecurityLevel:     DangerLevel,
+				SecurityLevel:     toolcontract.DangerLevel,
 				IsConcurrencySafe: true,
 			},
-			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
-				return ToolResult{
+			execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
+				return toolcontract.ToolResult{
 					ToolCallID: req.ToolCallID,
 					Name:       req.Name,
-					Status:     StatusSuccess,
+					Status:     toolcontract.StatusSuccess,
 				}
 			},
 		},
 	)
 
-	results, err := svc.Call(context.Background(), BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "dangerous", json.RawMessage(`{}`), AttentionLevel, ToolCallContext{}),
+	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "dangerous", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.AttentionLevel},
 		},
 	})
 	require.Nil(t, results)
@@ -380,12 +385,12 @@ func TestCallReturnsErrorWhenPermissionLevelIsLowerThanToolRequirement(t *testin
 
 func TestCallReturnsBatchErrorWhenContextAlreadyCanceled(t *testing.T) {
 	svc := NewService(&stubTool{
-		meta: Metadata{Name: "grep", Enabled: true, IsConcurrencySafe: true},
-		execute: func(_ context.Context, req ToolCallRequest) ToolResult {
-			return ToolResult{
+		meta: toolcontract.Metadata{Name: "grep", Enabled: true, IsConcurrencySafe: true},
+		execute: func(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
+			return toolcontract.ToolResult{
 				ToolCallID: req.ToolCallID,
 				Name:       req.Name,
-				Status:     StatusSuccess,
+				Status:     toolcontract.StatusSuccess,
 			}
 		},
 	})
@@ -393,9 +398,9 @@ func TestCallReturnsBatchErrorWhenContextAlreadyCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	results, err := svc.Call(ctx, BatchRequest{
-		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
+	results, err := svc.Call(ctx, toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{
+			{ToolCallID: "call_1", Name: "grep", Arguments: json.RawMessage(`{}`), PermissionLevel: toolcontract.SafeLevel},
 		},
 	})
 	require.Nil(t, results)
@@ -403,20 +408,20 @@ func TestCallReturnsBatchErrorWhenContextAlreadyCanceled(t *testing.T) {
 }
 
 type stubTool struct {
-	meta    Metadata
-	execute func(ctx context.Context, req ToolCallRequest) ToolResult
+	meta    toolcontract.Metadata
+	execute func(ctx context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult
 }
 
-func (s *stubTool) Metadata() Metadata {
+func (s *stubTool) Metadata() toolcontract.Metadata {
 	return s.meta
 }
 
-func (s *stubTool) Execute(ctx context.Context, req ToolCallRequest) ToolResult {
+func (s *stubTool) Execute(ctx context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
 	if s.execute == nil {
-		return ToolResult{
+		return toolcontract.ToolResult{
 			ToolCallID: req.ToolCallID,
 			Name:       req.Name,
-			Status:     StatusExecutionError,
+			Status:     toolcontract.StatusExecutionError,
 			Err:        errors.New("stub execute not configured"),
 		}
 	}

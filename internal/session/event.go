@@ -3,7 +3,7 @@ package session
 import (
 	"fmt"
 
-	"github.com/YaHeii/agentGo/internal/store"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 )
 
 type SessionStatus int
@@ -34,6 +34,6 @@ func (s SessionStatus) String() string {
 }
 
 type SessionEvent struct {
-	Status  SessionStatus 
-	Session *store.Session 
+	Status  SessionStatus
+	Session *sessioncontract.Session
 }

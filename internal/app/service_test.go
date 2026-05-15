@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/store"
-	"github.com/YaHeii/agentGo/internal/tool"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -65,19 +65,19 @@ func TestServiceCreateMessageDelegatesToSessionService(t *testing.T) {
 	t.Parallel()
 
 	sessions := newStubSessionService()
-	sessions.createMessageResult = message.Message{
+	sessions.createMessageResult = messagecontract.Message{
 		ID:        "message-1",
 		SessionID: "session-1",
-		Kind:      message.KindUser,
+		Kind:      messagecontract.KindUser,
 	}
 	svc := newServiceWithDeps(sessions, newStubAgentService(), newStubToolService(), nil)
 
-	got, err := svc.CreateMessage(context.Background(), message.CreateMessageParams{
+	got, err := svc.CreateMessage(context.Background(), messagecontract.CreateMessageParams{
 		SessionID: "session-1",
-		Kind:      message.KindUser,
-		Parts: []message.Part{
+		Kind:      messagecontract.KindUser,
+		Parts: []messagecontract.Part{
 			{
-				Type: message.PartTypeText,
+				Type: messagecontract.PartTypeText,
 				Text: "hello",
 			},
 		},
@@ -85,7 +85,7 @@ func TestServiceCreateMessageDelegatesToSessionService(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, sessions.createMessageResult, got)
 	require.Equal(t, "session-1", sessions.lastCreateMessageParams.SessionID)
-	require.Equal(t, message.KindUser, sessions.lastCreateMessageParams.Kind)
+	require.Equal(t, messagecontract.KindUser, sessions.lastCreateMessageParams.Kind)
 	require.Equal(t, "hello", sessions.lastCreateMessageParams.Parts[0].Text)
 }
 
@@ -93,7 +93,7 @@ func TestServiceListSessionsDelegatesToSessionService(t *testing.T) {
 	t.Parallel()
 
 	sessions := newStubSessionService()
-	sessions.listResult = []store.Session{
+	sessions.listResult = []sessioncontract.Session{
 		{ID: "session-1", Title: "first"},
 		{ID: "session-2", Title: "second"},
 	}
@@ -108,7 +108,7 @@ func TestServiceRenameSessionDelegatesToSessionService(t *testing.T) {
 	t.Parallel()
 
 	sessions := newStubSessionService()
-	sessions.renameResult = store.Session{
+	sessions.renameResult = sessioncontract.Session{
 		ID:        "session-1",
 		Title:     "renamed",
 		UpdatedAt: time.Unix(1710005000, 0).UTC(),
@@ -137,8 +137,8 @@ func TestServiceListHistoryDelegatesToSessionService(t *testing.T) {
 	t.Parallel()
 
 	sessions := newStubSessionService()
-	sessions.listHistoryResult = []message.Message{
-		{ID: "message-1", SessionID: "session-1", Kind: message.KindUser},
+	sessions.listHistoryResult = []messagecontract.Message{
+		{ID: "message-1", SessionID: "session-1", Kind: messagecontract.KindUser},
 	}
 	svc := newServiceWithDeps(sessions, newStubAgentService(), newStubToolService(), nil)
 
@@ -164,7 +164,7 @@ func TestServiceListToolsDelegatesToToolService(t *testing.T) {
 	t.Parallel()
 
 	tools := newStubToolService()
-	tools.listResult = []tool.Metadata{
+	tools.listResult = []toolcontract.Metadata{
 		{
 			Name:              "grep",
 			Description:       "search files",
@@ -175,35 +175,35 @@ func TestServiceListToolsDelegatesToToolService(t *testing.T) {
 	}
 	svc := newServiceWithDeps(newStubSessionService(), newStubAgentService(), tools, nil)
 
-	got := svc.ListTools(context.Background(), tool.AttentionLevel)
+	got := svc.ListTools(context.Background(), toolcontract.AttentionLevel)
 	require.Equal(t, tools.listResult, got)
 	require.Equal(t, 1, tools.listCalls)
-	require.Equal(t, tool.AttentionLevel, tools.lastListPermissionLevel)
+	require.Equal(t, toolcontract.AttentionLevel, tools.lastListPermissionLevel)
 }
 
 func TestServiceCallToolsDelegatesToToolService(t *testing.T) {
 	t.Parallel()
 
 	tools := newStubToolService()
-	tools.callResult = []tool.ToolResult{
+	tools.callResult = []toolcontract.ToolResult{
 		{
 			ToolCallID: "call-1",
 			Name:       "grep",
-			Status:     tool.StatusSuccess,
+			Status:     toolcontract.StatusSuccess,
 			Content:    `{"matches":[]}`,
 		},
 	}
 	svc := newServiceWithDeps(newStubSessionService(), newStubAgentService(), tools, nil)
 
-	req := tool.NewBatchRequest(
-		tool.NewToolCallRequest(
-			"call-1",
-			"grep",
-			json.RawMessage(`{"pattern":"go"}`),
-			tool.SafeLevel,
-			tool.ToolCallContext{WorkingDir: "/workspace"},
-		),
-	)
+	req := toolcontract.BatchRequest{
+		Calls: []toolcontract.ToolCallRequest{{
+			ToolCallID:      "call-1",
+			Name:            "grep",
+			Arguments:       json.RawMessage(`{"pattern":"go"}`),
+			PermissionLevel: toolcontract.SafeLevel,
+			Context:         toolcontract.ToolCallContext{WorkingDir: "/workspace"},
+		}},
+	}
 	got, err := svc.CallTools(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, tools.callResult, got)
@@ -250,15 +250,15 @@ type stubSessionService struct {
 	createdTitles            []string
 	restoredSessionID        string
 	deletedSessionIDs        []string
-	listResult               []store.Session
-	renameResult             store.Session
+	listResult               []sessioncontract.Session
+	renameResult             sessioncontract.Session
 	lastRenameID             string
 	lastRenameTitle          string
 	switchedSessionID        string
-	listHistoryResult        []message.Message
+	listHistoryResult        []messagecontract.Message
 	lastListHistorySessionID string
-	lastCreateMessageParams  message.CreateMessageParams
-	createMessageResult      message.Message
+	lastCreateMessageParams  messagecontract.CreateMessageParams
+	createMessageResult      messagecontract.Message
 }
 
 func newStubSessionService() *stubSessionService {
@@ -280,23 +280,23 @@ func (s *stubSessionService) GetLast(_ context.Context) (string, error) {
 		return "", s.getLastErr
 	}
 	if s.lastSessionID == "" {
-		return "", store.ErrSessionNotFound
+		return "", sessioncontract.ErrSessionNotFound
 	}
 	return s.lastSessionID, nil
 }
 
-func (s *stubSessionService) List(_ context.Context) ([]store.Session, error) {
+func (s *stubSessionService) List(_ context.Context) ([]sessioncontract.Session, error) {
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
-	return append([]store.Session(nil), s.listResult...), nil
+	return append([]sessioncontract.Session(nil), s.listResult...), nil
 }
 
-func (s *stubSessionService) Rename(_ context.Context, id string, title string, _ app.Dispatcher) (store.Session, error) {
+func (s *stubSessionService) Rename(_ context.Context, id string, title string, _ app.Dispatcher) (sessioncontract.Session, error) {
 	s.lastRenameID = id
 	s.lastRenameTitle = title
 	if s.renameErr != nil {
-		return store.Session{}, s.renameErr
+		return sessioncontract.Session{}, s.renameErr
 	}
 	return s.renameResult, nil
 }
@@ -319,9 +319,9 @@ func (s *stubSessionService) GetParentSessionID() string {
 	return s.parentSessionID
 }
 
-func (s *stubSessionService) ListHistory(_ context.Context, sessionID string, _ app.Dispatcher) ([]message.Message, error) {
+func (s *stubSessionService) ListHistory(_ context.Context, sessionID string, _ app.Dispatcher) ([]messagecontract.Message, error) {
 	s.lastListHistorySessionID = sessionID
-	return append([]message.Message(nil), s.listHistoryResult...), nil
+	return append([]messagecontract.Message(nil), s.listHistoryResult...), nil
 }
 
 func (s *stubSessionService) Delete(_ context.Context, sessionID string, _ app.Dispatcher) error {
@@ -329,10 +329,10 @@ func (s *stubSessionService) Delete(_ context.Context, sessionID string, _ app.D
 	return s.deleteErr
 }
 
-func (s *stubSessionService) CreateMessage(_ context.Context, params message.CreateMessageParams, _ app.Dispatcher) (message.Message, error) {
+func (s *stubSessionService) CreateMessage(_ context.Context, params messagecontract.CreateMessageParams, _ app.Dispatcher) (messagecontract.Message, error) {
 	s.lastCreateMessageParams = params
 	if s.createMessageErr != nil {
-		return message.Message{}, s.createMessageErr
+		return messagecontract.Message{}, s.createMessageErr
 	}
 	return s.createMessageResult, nil
 }
@@ -355,29 +355,29 @@ func (s *stubAgentService) RunQuery(_ context.Context, sessionID string, prompt 
 
 type stubToolService struct {
 	listCalls               int
-	lastListPermissionLevel tool.SecurityLevel
-	listResult              []tool.Metadata
+	lastListPermissionLevel toolcontract.SecurityLevel
+	listResult              []toolcontract.Metadata
 	callErr                 error
-	lastCallReq             tool.BatchRequest
-	callResult              []tool.ToolResult
+	lastCallReq             toolcontract.BatchRequest
+	callResult              []toolcontract.ToolResult
 }
 
 func newStubToolService() *stubToolService {
 	return &stubToolService{}
 }
 
-func (s *stubToolService) ListTools(_ context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata {
+func (s *stubToolService) ListTools(_ context.Context, permissionLevel toolcontract.SecurityLevel) []toolcontract.Metadata {
 	s.listCalls++
 	s.lastListPermissionLevel = permissionLevel
-	return append([]tool.Metadata(nil), s.listResult...)
+	return append([]toolcontract.Metadata(nil), s.listResult...)
 }
 
-func (s *stubToolService) Call(_ context.Context, req tool.BatchRequest) ([]tool.ToolResult, error) {
+func (s *stubToolService) Call(_ context.Context, req toolcontract.BatchRequest) ([]toolcontract.ToolResult, error) {
 	s.lastCallReq = req
 	if s.callErr != nil {
 		return nil, s.callErr
 	}
-	return append([]tool.ToolResult(nil), s.callResult...), nil
+	return append([]toolcontract.ToolResult(nil), s.callResult...), nil
 }
 
 type fakeEvent struct {
@@ -396,15 +396,15 @@ func (e fakeEvent) Data() any {
 type sessionStore interface {
 	Create(ctx context.Context, title string, d app.Dispatcher) (string, error)
 	GetLast(ctx context.Context) (string, error)
-	List(ctx context.Context) ([]store.Session, error)
-	Rename(ctx context.Context, id string, title string, d app.Dispatcher) (store.Session, error)
+	List(ctx context.Context) ([]sessioncontract.Session, error)
+	Rename(ctx context.Context, id string, title string, d app.Dispatcher) (sessioncontract.Session, error)
 	Restore(ctx context.Context, sessionID string, d app.Dispatcher) error
 	SwitchSession(ctx context.Context, sessionID string, d app.Dispatcher) error
 	GetSessionID() string
 	GetParentSessionID() string
 	Delete(ctx context.Context, id string, d app.Dispatcher) error
-	ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error)
-	CreateMessage(ctx context.Context, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error)
+	ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]messagecontract.Message, error)
+	CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams, d app.Dispatcher) (messagecontract.Message, error)
 }
 
 type agentStore interface {
@@ -412,14 +412,14 @@ type agentStore interface {
 }
 
 type toolStore interface {
-	ListTools(ctx context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata
-	Call(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error)
+	ListTools(ctx context.Context, permissionLevel toolcontract.SecurityLevel) []toolcontract.Metadata
+	Call(ctx context.Context, req toolcontract.BatchRequest) ([]toolcontract.ToolResult, error)
 }
 
 func newServiceWithDeps(sessions sessionStore, agent agentStore, tools toolStore, dispatcher app.Dispatcher) *app.APPService {
 	if dispatcher == nil {
 		dispatcher = app.NewDispatcher(16)
 	}
-	
+
 	return app.NewService(sessions, agent, tools, dispatcher)
 }

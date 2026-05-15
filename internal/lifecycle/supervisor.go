@@ -10,9 +10,10 @@ import (
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
+	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/tool"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	grepTool "github.com/YaHeii/agentGo/internal/tool/grep"
 	"github.com/pkoukk/tiktoken-go"
 	"github.com/segmentio/ksuid"
@@ -27,6 +28,8 @@ type Supervisor struct {
 	cfg        Config
 }
 
+var CurrentSupervisor *Supervisor
+
 type contextEstimator interface {
 	Estimate(model string, messages []message.Message) (int, error)
 }
@@ -39,6 +42,20 @@ func NewSupervisor(dispatcher app.Dispatcher, config Config) *Supervisor {
 		cfg:        config,
 		estimator:  tiktokenEstimator{},
 	}
+}
+
+func (s *Supervisor) ToolService() *tool.Service {
+	if s == nil {
+		return nil
+	}
+	return s.toolSvc
+}
+
+func (s *Supervisor) EstimateTokens(model string, messages []message.Message) (int, error) {
+	if s == nil {
+		return 0, errors.New("lifecycle: supervisor is required")
+	}
+	return s.estimator.Estimate(model, messages)
 }
 
 func (s *Supervisor) Initialize(ctx context.Context) error {
@@ -62,18 +79,28 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 	}
 
 	s.toolSvc = tool.NewService(grepTool.NewGrepTool(projectRoot))
-	State.initialize(GlobalState{
-		AppVersion:  defaultAppVersion,
-		StartTime:   startTime.Format(time.RFC3339Nano),
-		Cwd:         cwd,
-		ProjectRoot: projectRoot,
-		SessionID:   sessionID.String(),
-		InitialEnv:  loadEnvironmentSnapshot(),
-		ModelLimit:  normalizeContextWindow(s.cfg.ContextWindow),
-		MaxTurn:     normalizeContextWindow(s.cfg.MaxTurn),
-		Model:       s.cfg.Model,
-		KnownTools:  toToolSnapshots(s.toolSvc.ListTools(ctx, tool.DangerLevel)),
-	})
+	State.AppVersion = defaultAppVersion
+	State.StartTime = startTime.Format(time.RFC3339Nano)
+	State.Cwd = cwd
+	State.ProjectRoot = projectRoot
+	State.PermissionLevel = 0
+	State.SessionID = sessionID.String()
+	State.InitialEnv = loadEnvironmentSnapshot()
+	State.ModelLimit = normalizeContextWindow(s.cfg.ContextWindow)
+	State.MaxTurn = normalizeContextWindow(s.cfg.MaxTurn)
+	State.Model = s.cfg.Model
+	State.KnownTools = s.toolSvc.ListTools(ctx, toolcontract.DangerLevel)
+	State.CumulativeInputTokens = 0
+	State.CumulativeOutputTokens = 0
+	State.CumulativeTotalTokens = 0
+	State.CurrentTurnInputTokens = 0
+	State.CurrentTurnOutputTokens = 0
+	State.CurrentTurnTotalTokens = 0
+	State.EstimatedContextTokens = 0
+	State.ActualContextTokens = 0
+	State.EstimatedContextChars = 0
+	State.CurrentMessageCount = 0
+	State.Temperature = 0
 	return nil
 }
 
@@ -105,11 +132,13 @@ func (s *Supervisor) handleEvent(evt app.Event) {
 			return
 		}
 		if providerEvent.Type == provider.StreamEventUsageAvailable && providerEvent.Usage != nil && State != nil {
-			State.applyUsage(
-				providerEvent.Usage.PromptTokens,
-				providerEvent.Usage.CompletionTokens,
-				providerEvent.Usage.TotalTokens,
-			)
+			State.CurrentTurnInputTokens = providerEvent.Usage.PromptTokens
+			State.CurrentTurnOutputTokens = providerEvent.Usage.CompletionTokens
+			State.CurrentTurnTotalTokens = providerEvent.Usage.TotalTokens
+			State.CumulativeInputTokens += providerEvent.Usage.PromptTokens
+			State.CumulativeOutputTokens += providerEvent.Usage.CompletionTokens
+			State.CumulativeTotalTokens += providerEvent.Usage.TotalTokens
+			State.ActualContextTokens = providerEvent.Usage.PromptTokens
 		}
 	case app.EventAgent:
 		messages, ok := extractMessagesFromAgentPayload(evt.Data())
@@ -117,7 +146,9 @@ func (s *Supervisor) handleEvent(evt app.Event) {
 			return
 		}
 		tokens, chars, messageCount := estimateContextUsage(s.cfg.Model, messages, s.estimator)
-		State.setContextEstimate(tokens, chars, messageCount)
+		State.EstimatedContextTokens = tokens
+		State.EstimatedContextChars = chars
+		State.CurrentMessageCount = messageCount
 	}
 }
 
@@ -277,25 +308,6 @@ func loadEnvironmentSnapshot() map[string]string {
 		}
 	}
 	return out
-}
-
-func toToolSnapshots(metas []tool.Metadata) []ToolSnapshot {
-	if len(metas) == 0 {
-		return nil
-	}
-
-	snapshots := make([]ToolSnapshot, 0, len(metas))
-	for _, meta := range metas {
-		snapshots = append(snapshots, ToolSnapshot{
-			Name:              meta.Name,
-			Description:       meta.Description,
-			Parameters:        append([]byte(nil), meta.Parameters...),
-			Enabled:           meta.Enabled,
-			SecurityLevel:     int(meta.SecurityLevel),
-			IsConcurrencySafe: meta.IsConcurrencySafe,
-		})
-	}
-	return snapshots
 }
 
 func normalizeContextWindow(v int64) int {

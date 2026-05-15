@@ -8,7 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
+	messageevent "github.com/YaHeii/agentGo/internal/message"
+	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/session"
 )
 
@@ -96,7 +97,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sessionID = event.Session.ID
 			}
 		case app.EventMessage:
-			if event, ok := msg.event.Data().(message.MessageEvent); ok && event.Message != nil {
+			if event, ok := msg.event.Data().(messageevent.MessageEvent); ok && event.Message != nil {
 				m.upsertMessage(*event.Message)
 			}
 		case app.EventAgent:

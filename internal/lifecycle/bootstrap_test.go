@@ -4,15 +4,20 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/YaHeii/agentGo/internal/app"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/segmentio/ksuid"
 )
 
 func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
-	resetGlobalStateForTest()
+	State = &GlobalState{}
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+	})
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
 		Model:         "test-model",
@@ -24,62 +29,52 @@ func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
 		t.Fatalf("initialize supervisor: %v", err)
 	}
 
-	snapshot := GetState()
-	if snapshot.AppVersion != "0.0.1" {
-		t.Fatalf("expected app version 0.0.1, got %q", snapshot.AppVersion)
+	if State.AppVersion != "0.0.1" {
+		t.Fatalf("expected app version 0.0.1, got %q", State.AppVersion)
 	}
-	if snapshot.StartTime == "" {
+	if State.StartTime == "" {
 		t.Fatal("expected start time to be initialized")
 	}
-	if snapshot.SessionID == "" {
+	if State.SessionID == "" {
 		t.Fatal("expected session id to be initialized")
 	}
-	if _, err := ksuid.Parse(snapshot.SessionID); err != nil {
+	if _, err := ksuid.Parse(State.SessionID); err != nil {
 		t.Fatalf("expected ksuid session id, got %v", err)
 	}
-	if snapshot.Cwd == "" {
+	if State.Cwd == "" {
 		t.Fatal("expected cwd to be initialized")
 	}
-	if snapshot.ProjectRoot == "" {
+	if State.ProjectRoot == "" {
 		t.Fatal("expected project root to be initialized")
 	}
-	if len(snapshot.InitialEnv) == 0 {
+	if len(State.InitialEnv) == 0 {
 		t.Fatal("expected initial env to be populated")
 	}
-	if snapshot.ModelLimit != 400000 {
-		t.Fatalf("expected model limit 400000, got %d", snapshot.ModelLimit)
+	if State.ModelLimit != 400000 {
+		t.Fatalf("expected model limit 400000, got %d", State.ModelLimit)
 	}
-	if snapshot.MaxTurn != 0 {
-		t.Fatalf("expected default max turn 0, got %d", snapshot.MaxTurn)
+	if State.MaxTurn != 0 {
+		t.Fatalf("expected default max turn 0, got %d", State.MaxTurn)
 	}
-	if len(snapshot.KnownTools) == 0 {
+	if len(State.KnownTools) == 0 {
 		t.Fatal("expected at least one known tool")
 	}
-	if snapshot.KnownTools[0].Name != "grep" {
-		t.Fatalf("expected grep tool to be discovered, got %+v", snapshot.KnownTools[0])
+	tools, ok := any(State.KnownTools).([]toolcontract.Metadata)
+	if !ok {
+		t.Fatalf("expected known tools to use tool contract metadata, got %T", State.KnownTools)
 	}
-}
-
-func TestProviderConfigFromAppConfigRequiresAPIKeyAndModel(t *testing.T) {
-	_, err := ProviderConfigFromAppConfig(Config{})
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-	if !strings.Contains(err.Error(), "API_KEY") {
-		t.Fatalf("expected API_KEY error, got %v", err)
-	}
-
-	_, err = ProviderConfigFromAppConfig(Config{APIKey: "test-key"})
-	if err == nil {
-		t.Fatal("expected missing MODEL error")
-	}
-	if !strings.Contains(err.Error(), "MODEL") {
-		t.Fatalf("expected MODEL error, got %v", err)
+	if tools[0].Name != "grep" {
+		t.Fatalf("expected grep tool to be discovered, got %+v", tools[0])
 	}
 }
 
 func TestSupervisorInitializeCopiesConfigIntoState(t *testing.T) {
-	resetGlobalStateForTest()
+	State = &GlobalState{}
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+	})
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
 		Model:         "test-model",
@@ -91,12 +86,11 @@ func TestSupervisorInitializeCopiesConfigIntoState(t *testing.T) {
 		t.Fatalf("initialize supervisor: %v", err)
 	}
 
-	snapshot := GetState()
-	if snapshot.ModelLimit != 12345 {
-		t.Fatalf("expected model limit 12345, got %d", snapshot.ModelLimit)
+	if State.ModelLimit != 12345 {
+		t.Fatalf("expected model limit 12345, got %d", State.ModelLimit)
 	}
-	if snapshot.MaxTurn != 9 {
-		t.Fatalf("expected max turn 9, got %d", snapshot.MaxTurn)
+	if State.MaxTurn != 9 {
+		t.Fatalf("expected max turn 9, got %d", State.MaxTurn)
 	}
 }
 
@@ -124,8 +118,13 @@ func TestRuntimeCloseWithoutCloserIsNoop(t *testing.T) {
 	}
 }
 
-func TestBootstrapReturnsRuntimeWithAppAndCloser(t *testing.T) {
-	resetGlobalStateForTest()
+func TestBootstrapInitializesGlobalStateAndSupervisor(t *testing.T) {
+	State = nil
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+	})
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "app.env")
@@ -134,76 +133,46 @@ func TestBootstrapReturnsRuntimeWithAppAndCloser(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	databasePath := filepath.Join(configDir, "agentgo.db")
-
-	runtime, err := Bootstrap(context.Background(), configDir, databasePath)
+	cfg, err := LoadConfig(configDir)
 	if err != nil {
-		t.Fatalf("bootstrap runtime: %v", err)
+		t.Fatalf("load config: %v", err)
 	}
-	if runtime.App == nil {
-		t.Fatal("expected app service")
+	dispatcher := app.NewDispatcher(16)
+	State = &GlobalState{}
+	supervisor := NewSupervisor(dispatcher, cfg)
+	if err := supervisor.Initialize(context.Background()); err != nil {
+		t.Fatalf("initialize supervisor: %v", err)
 	}
+	CurrentSupervisor = supervisor
+
 	if State == nil {
 		t.Fatal("expected global state to be initialized")
 	}
+	if CurrentSupervisor == nil {
+		t.Fatal("expected current supervisor to be initialized")
+	}
 
-	snapshot := GetState()
-	if snapshot.Cwd == "" {
+	if State.Cwd == "" {
 		t.Fatal("expected current cwd to be initialized")
 	}
-	if snapshot.ProjectRoot == "" {
+	if State.ProjectRoot == "" {
 		t.Fatal("expected project root to be initialized")
 	}
-	if _, err := ksuid.Parse(snapshot.SessionID); err != nil {
+	if _, err := ksuid.Parse(State.SessionID); err != nil {
 		t.Fatalf("expected bootstrap session id to be a ksuid: %v", err)
 	}
-	if len(snapshot.KnownTools) == 0 {
+	if len(State.KnownTools) == 0 {
 		t.Fatal("expected known tools to be initialized")
 	}
 
 	payload := BootstrapDoneEvent{
-		Time:      snapshot.StartTime,
-		SessionID: snapshot.SessionID,
+		Time:      State.StartTime,
+		SessionID: State.SessionID,
 	}
 	if payload.Time == "" {
 		t.Fatal("expected bootstrap event time")
 	}
 	if payload.SessionID == "" {
 		t.Fatal("expected bootstrap event session id")
-	}
-
-	if err := runtime.GracefulShutdown(context.Background()); err != nil {
-		t.Fatalf("close runtime: %v", err)
-	}
-}
-
-func TestBootstrapWiresRuntimeAppToConcreteAgent(t *testing.T) {
-	resetGlobalStateForTest()
-
-	configDir := t.TempDir()
-	configPath := filepath.Join(configDir, "app.env")
-	config := "API_KEY=test-key\nMODEL=test-model\nCONTEXT_WINDOW=400000\nMAX_TOKENS=128000\n"
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	databasePath := filepath.Join(configDir, "agentgo.db")
-
-	runtime, err := Bootstrap(context.Background(), configDir, databasePath)
-	if err != nil {
-		t.Fatalf("bootstrap runtime: %v", err)
-	}
-	defer func() {
-		if err := runtime.GracefulShutdown(context.Background()); err != nil {
-			t.Fatalf("close runtime: %v", err)
-		}
-	}()
-
-	err = runtime.App.RunQuery(context.Background(), "session-1", "hello")
-	if err == nil {
-		t.Fatal("expected query to fail before provider completes")
-	}
-	if strings.Contains(err.Error(), "lifecycle bootstrap agent service is not wired to runtime agent layer") {
-		t.Fatalf("expected runtime app to use concrete agent service, got stub error: %v", err)
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/store"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/segmentio/ksuid"
 	"github.com/stretchr/testify/require"
 )
@@ -17,12 +17,12 @@ func TestMessageServiceCreateMessagePersistsMessage(t *testing.T) {
 	st := newFakeStore()
 	svc := NewMessageService(st)
 
-	msg, err := svc.CreateMessage(context.Background(), CreateMessageParams{
+	msg, err := svc.CreateMessage(context.Background(), messagecontract.CreateMessageParams{
 		SessionID: "session-1",
-		Kind:      KindUser,
-		Parts: []Part{
+		Kind:      messagecontract.KindUser,
+		Parts: []messagecontract.Part{
 			{
-				Type: PartTypeText,
+				Type: messagecontract.PartTypeText,
 				Text: "hello",
 			},
 		},
@@ -34,7 +34,7 @@ func TestMessageServiceCreateMessagePersistsMessage(t *testing.T) {
 
 	require.Len(t, st.createdMessages, 1)
 	require.Equal(t, "session-1", st.createdMessages[0].SessionID)
-	require.Equal(t, string(KindUser), st.createdMessages[0].Kind)
+	require.Equal(t, string(messagecontract.KindUser), st.createdMessages[0].Kind)
 	require.NotEmpty(t, st.createdMessages[0].MessageJSON)
 }
 
@@ -44,12 +44,12 @@ func TestMessageServiceCreateMessageGeneratesKSUIDWhenIDOmitted(t *testing.T) {
 	st := newFakeStore()
 	svc := NewMessageService(st)
 
-	msg, err := svc.CreateMessage(context.Background(), CreateMessageParams{
+	msg, err := svc.CreateMessage(context.Background(), messagecontract.CreateMessageParams{
 		SessionID: "session-1",
-		Kind:      KindAssistant,
-		Parts: []Part{
+		Kind:      messagecontract.KindAssistant,
+		Parts: []messagecontract.Part{
 			{
-				Type: PartTypeText,
+				Type: messagecontract.PartTypeText,
 				Text: "hello",
 			},
 		},
@@ -67,13 +67,13 @@ func TestMessageServiceCreateMessageUsesExplicitIDWhenProvided(t *testing.T) {
 	st := newFakeStore()
 	svc := NewMessageService(st)
 
-	msg, err := svc.CreateMessage(context.Background(), CreateMessageParams{
+	msg, err := svc.CreateMessage(context.Background(), messagecontract.CreateMessageParams{
 		ID:        "assistant-stream-1",
 		SessionID: "session-1",
-		Kind:      KindAssistant,
-		Parts: []Part{
+		Kind:      messagecontract.KindAssistant,
+		Parts: []messagecontract.Part{
 			{
-				Type: PartTypeText,
+				Type: messagecontract.PartTypeText,
 				Text: "hello",
 			},
 		},
@@ -90,18 +90,18 @@ func TestMessageServiceCreateMessagePersistsFinalRichMessageRecord(t *testing.T)
 	st := newFakeStore()
 	svc := NewMessageService(st)
 
-	msg, err := svc.CreateMessage(context.Background(), CreateMessageParams{
+	msg, err := svc.CreateMessage(context.Background(), messagecontract.CreateMessageParams{
 		SessionID: "session-1",
-		Kind:      KindUser,
-		Parts: []Part{
+		Kind:      messagecontract.KindUser,
+		Parts: []messagecontract.Part{
 			{
-				Type: PartTypeText,
+				Type: messagecontract.PartTypeText,
 				Text: "hello",
 			},
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, KindUser, msg.Kind)
+	require.Equal(t, messagecontract.KindUser, msg.Kind)
 	require.NotEmpty(t, st.createdMessages)
 	require.NotEmpty(t, st.createdMessages[0].MessageJSON)
 	require.False(t, st.createdMessages[0].FinishedAt.IsZero())
@@ -118,13 +118,13 @@ func TestMessageServiceCreateMessagePersistsCompactSummaryFlagInStoreRecord(t *t
 	st := newFakeStore()
 	svc := NewMessageService(st)
 
-	msg, err := svc.CreateMessage(context.Background(), CreateMessageParams{
+	msg, err := svc.CreateMessage(context.Background(), messagecontract.CreateMessageParams{
 		SessionID:        "session-1",
-		Kind:             KindAssistant,
+		Kind:             messagecontract.KindAssistant,
 		IsCompactSummary: true,
-		Parts: []Part{
+		Parts: []messagecontract.Part{
 			{
-				Type: PartTypeText,
+				Type: messagecontract.PartTypeText,
 				Text: "summary",
 			},
 		},
@@ -139,11 +139,11 @@ func TestMessageServiceListMessagesMapsStoredMessages(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeStore()
-	st.messagesBySession["session-1"] = []store.Message{
+	st.messagesBySession["session-1"] = []MessageRecord{
 		{
 			ID:               "u1",
 			SessionID:        "session-1",
-			Kind:             string(KindUser),
+			Kind:             string(messagecontract.KindUser),
 			Provider:         "",
 			FinishedAt:       time.Unix(1710000000, 0).UTC(),
 			IsCompactSummary: false,
@@ -156,24 +156,69 @@ func TestMessageServiceListMessagesMapsStoredMessages(t *testing.T) {
 	messages, err := svc.ListMessages(context.Background(), "session-1")
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
-	require.Equal(t, KindUser, messages[0].Kind)
+	require.Equal(t, messagecontract.KindUser, messages[0].Kind)
 	require.Equal(t, "hello", messages[0].Parts[0].Text)
 	require.False(t, messages[0].IsCompactSummary)
 }
 
+func TestMessageServiceCreateMessagePreservesSystemAndProgressPayloads(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	svc := NewMessageService(st)
+
+	msg, err := svc.CreateMessage(context.Background(), messagecontract.CreateMessageParams{
+		SessionID: "session-1",
+		Kind:      messagecontract.KindSystem,
+		Parts: []messagecontract.Part{
+			{
+				Type: messagecontract.PartTypeText,
+				Text: "working",
+			},
+		},
+		System: &messagecontract.SystemPayload{
+			Subtype: "informational",
+			Level:   "info",
+		},
+		Progress: &messagecontract.ProgressPayload{
+			Stage:   "thinking",
+			Current: 1,
+			Total:   2,
+			Done:    false,
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, msg.System)
+	require.Equal(t, "informational", msg.System.Subtype)
+	require.NotNil(t, msg.Progress)
+	require.Equal(t, "thinking", msg.Progress.Stage)
+
+	require.Len(t, st.createdMessages, 1)
+
+	var payload struct {
+		System   *messagecontract.SystemPayload   `json:"system"`
+		Progress *messagecontract.ProgressPayload `json:"progress"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(st.createdMessages[0].MessageJSON), &payload))
+	require.NotNil(t, payload.System)
+	require.Equal(t, "informational", payload.System.Subtype)
+	require.NotNil(t, payload.Progress)
+	require.Equal(t, "thinking", payload.Progress.Stage)
+}
+
 type fakeStore struct {
-	messagesBySession map[string][]store.Message
-	createdMessages   []store.Message
+	messagesBySession map[string][]MessageRecord
+	createdMessages   []MessageRecord
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		messagesBySession: make(map[string][]store.Message),
+		messagesBySession: make(map[string][]MessageRecord),
 	}
 }
 
-func (s *fakeStore) CreateMessage(_ context.Context, params store.CreateMessageParams) (store.Message, error) {
-	msg := store.Message{
+func (s *fakeStore) CreateMessage(_ context.Context, params CreateMessageRecordParams) (MessageRecord, error) {
+	msg := MessageRecord{
 		ID:               params.ID,
 		SessionID:        params.SessionID,
 		Kind:             params.Kind,
@@ -187,7 +232,7 @@ func (s *fakeStore) CreateMessage(_ context.Context, params store.CreateMessageP
 	return msg, nil
 }
 
-func (s *fakeStore) ListMessages(_ context.Context, sessionID string) ([]store.Message, error) {
+func (s *fakeStore) ListMessages(_ context.Context, sessionID string) ([]MessageRecord, error) {
 	messages := s.messagesBySession[sessionID]
-	return append([]store.Message(nil), messages...), nil
+	return append([]MessageRecord(nil), messages...), nil
 }

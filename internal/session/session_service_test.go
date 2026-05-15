@@ -7,7 +7,8 @@ import (
 
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/store"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,6 +26,16 @@ func TestSessionServiceCreatePublishesCreatedEvent(t *testing.T) {
 	require.Len(t, st.sessions, 1)
 	require.Equal(t, sessionID, st.sessions[0].ID)
 	require.Equal(t, "New Session", st.sessions[0].Title)
+
+	got, err := svc.Get(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.Equal(t, sessioncontract.Session{
+		ID:        sessionID,
+		Title:     "New Session",
+		TodosJSON: "[]",
+		CreatedAt: timeNowStub().UTC(),
+		UpdatedAt: timeNowStub().UTC(),
+	}, got)
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
@@ -52,7 +63,7 @@ func TestSessionServiceRenameUpdatesSessionAndPublishesUpdatedEvent(t *testing.T
 	t.Parallel()
 
 	st := newFakeSessionStore()
-	st.sessions = []store.Session{
+	st.sessions = []sessioncontract.Session{
 		{
 			ID:        "session-1",
 			Title:     "old",
@@ -67,6 +78,13 @@ func TestSessionServiceRenameUpdatesSessionAndPublishesUpdatedEvent(t *testing.T
 
 	session, err := svc.Rename(context.Background(), "session-1", "new", dispatcher)
 	require.NoError(t, err)
+	require.Equal(t, sessioncontract.Session{
+		ID:        "session-1",
+		Title:     "new",
+		TodosJSON: "[]",
+		CreatedAt: time.Unix(1710000000, 0).UTC(),
+		UpdatedAt: timeNowStub().UTC(),
+	}, session)
 	require.Equal(t, "new", session.Title)
 
 	event := dispatcher.lastEvent
@@ -83,7 +101,7 @@ func TestSessionServiceGetLastUsesUpdatedAtOrdering(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeSessionStore()
-	st.sessions = []store.Session{
+	st.sessions = []sessioncontract.Session{
 		{
 			ID:        "session-2",
 			Title:     "latest",
@@ -105,21 +123,50 @@ func TestSessionServiceGetLastUsesUpdatedAtOrdering(t *testing.T) {
 	require.Equal(t, "session-2", got)
 }
 
+func TestSessionServiceListReturnsContractSessions(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeSessionStore()
+	st.sessions = []sessioncontract.Session{
+		{
+			ID:              "session-2",
+			ParentSessionID: "parent-1",
+			Title:           "latest",
+			CreatedAt:       time.Unix(1710000000, 0).UTC(),
+			UpdatedAt:       time.Unix(1710000500, 0).UTC(),
+		},
+	}
+	svc := NewSessionService(st, newFakeSessionMessages(), newStubDispatcher())
+	svc.nowFunc = timeNowStub
+
+	got, err := svc.List(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []sessioncontract.Session{
+		{
+			ID:              "session-2",
+			ParentSessionID: "parent-1",
+			Title:           "latest",
+			CreatedAt:       time.Unix(1710000000, 0).UTC(),
+			UpdatedAt:       time.Unix(1710000500, 0).UTC(),
+		},
+	}, got)
+}
+
 func TestSessionServiceListHistoryDelegatesToMessageDependency(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeSessionStore()
 	msgs := newFakeSessionMessages()
 	dispatcher := newStubDispatcher()
-	msgs.listResult["session-1"] = []message.Message{
-		{ID: "message-1", SessionID: "session-1", Kind: message.KindUser},
+	msgs.listResult["session-1"] = []messagecontract.Message{
+		{ID: "message-1", SessionID: "session-1", Kind: messagecontract.KindUser},
 	}
 	svc := NewSessionService(st, msgs, dispatcher)
 	svc.nowFunc = timeNowStub
 
 	got, err := svc.ListHistory(context.Background(), "session-1", dispatcher)
 	require.NoError(t, err)
-	require.Equal(t, []message.Message{{ID: "message-1", SessionID: "session-1", Kind: message.KindUser}}, got)
+	require.Equal(t, []messagecontract.Message{{ID: "message-1", SessionID: "session-1", Kind: messagecontract.KindUser}}, got)
 	require.Equal(t, "session-1", msgs.lastListSessionID)
 }
 
@@ -129,18 +176,18 @@ func TestSessionServiceCreateMessageRoutesThroughMessageDependency(t *testing.T)
 	st := newFakeSessionStore()
 	msgs := newFakeSessionMessages()
 	dispatcher := newStubDispatcher()
-	msgs.createResult = message.Message{ID: "message-1", SessionID: "session-1", Kind: message.KindAssistant}
+	msgs.createResult = messagecontract.Message{ID: "message-1", SessionID: "session-1", Kind: messagecontract.KindAssistant}
 	svc := NewSessionService(st, msgs, dispatcher)
 	svc.nowFunc = timeNowStub
 
-	got, err := svc.CreateMessage(context.Background(), message.CreateMessageParams{
+	got, err := svc.CreateMessage(context.Background(), messagecontract.CreateMessageParams{
 		SessionID: "session-1",
-		Kind:      message.KindAssistant,
+		Kind:      messagecontract.KindAssistant,
 	}, dispatcher)
 	require.NoError(t, err)
 	require.Equal(t, msgs.createResult, got)
 	require.Equal(t, "session-1", msgs.lastCreateParams.SessionID)
-	require.Equal(t, message.KindAssistant, msgs.lastCreateParams.Kind)
+	require.Equal(t, messagecontract.KindAssistant, msgs.lastCreateParams.Kind)
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
@@ -157,7 +204,7 @@ func TestSessionServiceSwitchSessionUpdatesStateAndPublishesEvent(t *testing.T) 
 	t.Parallel()
 
 	st := newFakeSessionStore()
-	st.sessions = []store.Session{
+	st.sessions = []sessioncontract.Session{
 		{
 			ID:              "session-1",
 			ParentSessionID: "parent-1",
@@ -197,7 +244,7 @@ func TestSessionServiceRestoreReturnsOnlyErrorAndPublishesEvent(t *testing.T) {
 	t.Parallel()
 
 	st := newFakeSessionStore()
-	st.sessions = []store.Session{
+	st.sessions = []sessioncontract.Session{
 		{
 			ID:        "session-1",
 			Title:     "restored",
@@ -207,8 +254,8 @@ func TestSessionServiceRestoreReturnsOnlyErrorAndPublishesEvent(t *testing.T) {
 		},
 	}
 	msgs := newFakeSessionMessages()
-	msgs.listResult["session-1"] = []message.Message{
-		{ID: "message-1", SessionID: "session-1", Kind: message.KindUser},
+	msgs.listResult["session-1"] = []messagecontract.Message{
+		{ID: "message-1", SessionID: "session-1", Kind: messagecontract.KindUser},
 	}
 	dispatcher := newStubDispatcher()
 	svc := NewSessionService(st, msgs, dispatcher)
@@ -230,15 +277,15 @@ func TestSessionServiceRestoreReturnsOnlyErrorAndPublishesEvent(t *testing.T) {
 }
 
 type fakeSessionStore struct {
-	sessions []store.Session
+	sessions []sessioncontract.Session
 }
 
 func newFakeSessionStore() *fakeSessionStore {
 	return &fakeSessionStore{}
 }
 
-func (s *fakeSessionStore) CreateSession(_ context.Context, params store.CreateSessionParams) (store.Session, error) {
-	session := store.Session{
+func (s *fakeSessionStore) CreateSession(_ context.Context, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error) {
+	session := sessioncontract.Session{
 		ID:               params.ID,
 		ParentSessionID:  params.ParentSessionID,
 		Title:            params.Title,
@@ -250,25 +297,25 @@ func (s *fakeSessionStore) CreateSession(_ context.Context, params store.CreateS
 		CreatedAt:        params.CreatedAt,
 		UpdatedAt:        params.UpdatedAt,
 	}
-	s.sessions = append([]store.Session{session}, s.sessions...)
+	s.sessions = append([]sessioncontract.Session{session}, s.sessions...)
 	return session, nil
 }
 
-func (s *fakeSessionStore) ListSessions(_ context.Context) ([]store.Session, error) {
-	return append([]store.Session(nil), s.sessions...), nil
+func (s *fakeSessionStore) ListSessions(_ context.Context) ([]sessioncontract.Session, error) {
+	return append([]sessioncontract.Session(nil), s.sessions...), nil
 }
 
-func (s *fakeSessionStore) GetSession(_ context.Context, id string) (store.Session, error) {
+func (s *fakeSessionStore) GetSession(_ context.Context, id string) (sessioncontract.Session, error) {
 	for _, session := range s.sessions {
 		if session.ID == id {
 			return session, nil
 		}
 	}
 
-	return store.Session{}, store.ErrSessionNotFound
+	return sessioncontract.Session{}, sessioncontract.ErrSessionNotFound
 }
 
-func (s *fakeSessionStore) UpdateSession(_ context.Context, params store.UpdateSessionParams) (store.Session, error) {
+func (s *fakeSessionStore) UpdateSession(_ context.Context, params sessioncontract.UpdateSessionParams) (sessioncontract.Session, error) {
 	for i := range s.sessions {
 		if s.sessions[i].ID != params.ID {
 			continue
@@ -288,7 +335,7 @@ func (s *fakeSessionStore) UpdateSession(_ context.Context, params store.UpdateS
 		return s.sessions[i], nil
 	}
 
-	return store.Session{}, store.ErrSessionNotFound
+	return sessioncontract.Session{}, sessioncontract.ErrSessionNotFound
 }
 
 func (s *fakeSessionStore) DeleteSession(_ context.Context, id string) error {
@@ -301,28 +348,28 @@ func (s *fakeSessionStore) DeleteSession(_ context.Context, id string) error {
 		return nil
 	}
 
-	return store.ErrSessionNotFound
+	return sessioncontract.ErrSessionNotFound
 }
 
 type fakeSessionMessages struct {
-	listResult        map[string][]message.Message
-	createResult      message.Message
+	listResult        map[string][]messagecontract.Message
+	createResult      messagecontract.Message
 	lastListSessionID string
-	lastCreateParams  message.CreateMessageParams
+	lastCreateParams  messagecontract.CreateMessageParams
 }
 
 func newFakeSessionMessages() *fakeSessionMessages {
 	return &fakeSessionMessages{
-		listResult: map[string][]message.Message{},
+		listResult: map[string][]messagecontract.Message{},
 	}
 }
 
-func (s *fakeSessionMessages) ListMessages(_ context.Context, sessionID string) ([]message.Message, error) {
+func (s *fakeSessionMessages) ListMessages(_ context.Context, sessionID string) ([]messagecontract.Message, error) {
 	s.lastListSessionID = sessionID
-	return append([]message.Message(nil), s.listResult[sessionID]...), nil
+	return append([]messagecontract.Message(nil), s.listResult[sessionID]...), nil
 }
 
-func (s *fakeSessionMessages) CreateMessage(_ context.Context, params message.CreateMessageParams) (message.Message, error) {
+func (s *fakeSessionMessages) CreateMessage(_ context.Context, params messagecontract.CreateMessageParams) (messagecontract.Message, error) {
 	s.lastCreateParams = params
 	msg := s.createResult
 	msg.SessionID = params.SessionID

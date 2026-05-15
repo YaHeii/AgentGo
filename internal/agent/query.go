@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/message"
-	"github.com/YaHeii/agentGo/internal/provider"
-	"github.com/YaHeii/agentGo/internal/tool"
+	"github.com/YaHeii/agentGo/internal/lifecycle"
+	message "github.com/YaHeii/agentGo/internal/message/contract"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
+	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/segmentio/ksuid"
 )
 
@@ -31,15 +31,10 @@ func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) 
 		deps: QueryDeps{
 			App:        appSvc,
 			Provider:   providerSvc,
-			Runtime:    noopRuntimeProvider{},
 			Now:        time.Now,
 			dispatcher: d,
 		},
 	}
-}
-
-func (r *QueryLoop) SetRuntimeProvider(provider agentcontract.RuntimeProvider) {
-	r.deps.Runtime = provider
 }
 
 func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt string) (QueryResult, error) {
@@ -105,7 +100,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 			continue
 		}
 
-		if loopstate.FinishReason == FinishReasonCompleted && loopstate.StopReason == provider.StopReasonLength && loopstate.TurnCount < r.config.MaxTurns {
+		if loopstate.FinishReason == FinishReasonCompleted && loopstate.StopReason == providercontract.StopReasonLength && loopstate.TurnCount < r.config.MaxTurns {
 			loopstate.TurnCount++
 		} else if loopstate.FinishReason == FinishReasonCompleted {
 			r.dispatch(QueryStatusCompleted, loopstate, nil)
@@ -115,7 +110,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 				FinalAssistantMessageID: loopstate.AssistantMessageID,
 				Turns:                   loopstate.TurnCount,
 				FinishReason:            loopstate.FinishReason,
-				PendingToolCalls:        append([]provider.ToolCall(nil), loopstate.PendingToolCalls...),
+				PendingToolCalls:        append([]providercontract.ToolCall(nil), loopstate.PendingToolCalls...),
 			}, nil
 		}
 
@@ -199,8 +194,12 @@ func cloneMessages(history []message.Message) []message.Message {
 }
 
 func (r *QueryLoop) estimateMessagesTokens(model string, messages []message.Message) (int, error) {
+	if lifecycle.CurrentSupervisor != nil {
+		return lifecycle.CurrentSupervisor.EstimateTokens(model, messages)
+	}
+
 	builder := flattenMessages(messages)
-	encoding, err := r.deps.Runtime.TokenizerForModel(model)
+	encoding, err := lifecycle.TokenizerForModel(model)
 	if err != nil {
 		return 0, err
 	}
@@ -215,7 +214,7 @@ func (r *QueryLoop) exceedsModelLimit(model string, limit int, messages []messag
 
 	tokens, err := r.estimateMessagesTokens(model, messages)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 	return tokens > limit, nil
 }
@@ -247,7 +246,7 @@ func flattenMessages(messages []message.Message) []byte {
 	return builder
 }
 
-func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.Request) (LoopState, error) {
+func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req providercontract.Request) (LoopState, error) {
 	state = copyLoopState(state)
 
 	assistantIndex := latestAssistantIndex(state.Messages)
@@ -291,7 +290,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req provider.R
 	}
 	state.Messages[assistantIndex] = persistedAssistant
 	state.AssistantMessageID = persistedAssistant.ID
-	state.PendingToolCalls = append([]provider.ToolCall(nil), turnResult.ToolCalls...)
+	state.PendingToolCalls = append([]providercontract.ToolCall(nil), turnResult.ToolCalls...)
 
 	if len(turnResult.ToolCalls) > 0 {
 		state.Transition = "awaiting_tool_execution"
@@ -316,23 +315,23 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 		return state, errors.New("agent: tool runner is required")
 	}
 
-	batch := tool.BatchRequest{
-		Calls: make([]tool.ToolCallRequest, 0, len(state.PendingToolCalls)),
+	batch := toolcontract.BatchRequest{
+		Calls: make([]toolcontract.ToolCallRequest, 0, len(state.PendingToolCalls)),
 	}
 	runtimeState := r.runtimeSnapshot()
 	for _, call := range state.PendingToolCalls {
-		batch.Calls = append(batch.Calls, tool.NewToolCallRequest(
-			call.ID,
-			call.Name,
-			json.RawMessage(call.Arguments),
-			runtimeState.PermissionLevel,
-			tool.ToolCallContext{
+		batch.Calls = append(batch.Calls, toolcontract.ToolCallRequest{
+			ToolCallID:      call.ID,
+			Name:            call.Name,
+			Arguments:       json.RawMessage(call.Arguments),
+			PermissionLevel: runtimeState.PermissionLevel,
+			Context: toolcontract.ToolCallContext{
 				SessionID:     sessionID,
 				TurnID:        fmt.Sprintf("turn-%d", state.TurnCount),
 				WorkspaceRoot: runtimeState.ProjectRoot,
 				WorkingDir:    runtimeState.Cwd,
 			},
-		))
+		})
 	}
 
 	results, err := r.deps.App.CallTools(ctx, batch)
@@ -352,23 +351,6 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 	state.Transition = "tool_results_recorded"
 	r.dispatch(QueryStatusDelta, state, nil)
 	return state, nil
-}
-
-func (r *QueryLoop) runtimeSnapshot() agentcontract.RuntimeSnapshot {
-	if r.deps.Runtime == nil {
-		return agentcontract.RuntimeSnapshot{}
-	}
-	return r.deps.Runtime.Snapshot()
-}
-
-type noopRuntimeProvider struct{}
-
-func (noopRuntimeProvider) Snapshot() agentcontract.RuntimeSnapshot {
-	return agentcontract.RuntimeSnapshot{}
-}
-
-func (noopRuntimeProvider) TokenizerForModel(_ string) (agentcontract.TokenEncoder, error) {
-	return nil, errors.New("agent: runtime provider is required")
 }
 
 func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Message {
@@ -416,7 +398,7 @@ func (r *QueryLoop) persistAssistant(ctx context.Context, assistant message.Mess
 	})
 }
 
-func (r *QueryLoop) persistToolResult(ctx context.Context, sessionID string, result tool.ToolResult) (message.Message, error) {
+func (r *QueryLoop) persistToolResult(ctx context.Context, sessionID string, result toolcontract.ToolResult) (message.Message, error) {
 	content := strings.TrimSpace(result.Content)
 	parts := []message.Part{
 		{
@@ -428,7 +410,7 @@ func (r *QueryLoop) persistToolResult(ctx context.Context, sessionID string, res
 			ToolResult: &message.ToolResultPart{
 				ToolCallID: result.ToolCallID,
 				Content:    content,
-				IsError:    result.Err != nil || result.Status != tool.StatusSuccess,
+				IsError:    result.Err != nil || result.Status != toolcontract.StatusSuccess,
 			},
 		},
 	}
@@ -483,7 +465,7 @@ func latestAssistantIndex(messages []message.Message) int {
 	return -1
 }
 
-func buildAssistantParts(turn provider.TurnResult) []message.Part {
+func buildAssistantParts(turn providercontract.TurnResult) []message.Part {
 	parts := make([]message.Part, 0, 2+len(turn.ToolCalls))
 	if turn.Text != "" || turn.Refusal != "" || len(turn.ToolCalls) == 0 {
 		parts = append(parts, message.Part{
@@ -511,6 +493,31 @@ func buildAssistantParts(turn provider.TurnResult) []message.Part {
 		})
 	}
 	return parts
+}
+
+type runtimeState struct {
+	AppVersion      string
+	ProjectRoot     string
+	Cwd             string
+	PermissionLevel toolcontract.SecurityLevel
+	ModelLimit      int
+	Model           string
+	Temperature     float32
+}
+
+func (r *QueryLoop) runtimeSnapshot() runtimeState {
+	if lifecycle.State == nil {
+		return runtimeState{}
+	}
+	return runtimeState{
+		AppVersion:      lifecycle.State.AppVersion,
+		ProjectRoot:     lifecycle.State.ProjectRoot,
+		Cwd:             lifecycle.State.Cwd,
+		PermissionLevel: toolcontract.SecurityLevel(lifecycle.State.PermissionLevel),
+		ModelLimit:      lifecycle.State.ModelLimit,
+		Model:           lifecycle.State.Model,
+		Temperature:     lifecycle.State.Temperature,
+	}
 }
 
 func buildPromptHistory(history []message.Message) []PromptMessage {
@@ -550,41 +557,14 @@ func flattenMessageParts(parts []message.Part) string {
 	return strings.Join(segments, "\n")
 }
 
-func toProviderMessage(msg message.Message) (provider.Message, bool) {
-	switch msg.Kind {
-	case message.KindUser:
-		return provider.Message{
-			Role:    provider.RoleUser,
-			Content: flattenMessageParts(msg.Parts),
-		}, true
-	case message.KindAssistant:
-		out := provider.Message{
-			Role:    provider.RoleAssistant,
-			Content: flattenMessageParts(msg.Parts),
-		}
-		for _, part := range msg.Parts {
-			if part.Type == message.PartTypeToolCall && part.ToolCall != nil {
-				out.ToolCalls = append(out.ToolCalls, provider.ToolCall{
-					ID:        part.ToolCall.ID,
-					Name:      part.ToolCall.Name,
-					Arguments: part.ToolCall.Input,
-				})
-			}
-		}
-		return out, true
-	case message.KindSystem:
-		toolResult := firstToolResultPart(msg.Parts)
-		if toolResult != nil {
-			return provider.Message{
-				Role:       provider.RoleTool,
-				ToolCallID: toolResult.ToolCallID,
-				Content:    flattenMessageParts(msg.Parts),
-			}, true
-		}
-		return provider.Message{}, false
-	default:
-		return provider.Message{}, false
+func toProviderMessage(msg message.Message) (message.Message, bool) {
+	if msg.Kind != message.KindSystem {
+		return msg, true
 	}
+	if firstToolResultPart(msg.Parts) != nil {
+		return msg, true
+	}
+	return message.Message{}, false
 }
 
 func firstToolResultPart(parts []message.Part) *message.ToolResultPart {

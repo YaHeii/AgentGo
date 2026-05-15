@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/YaHeii/agentGo/internal/store"
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/segmentio/ksuid"
 )
 
@@ -23,13 +23,13 @@ func NewMessageService(st messageStore) *MessageService {
 }
 
 // TODO:Can the sessionID be passed into the ctx file? Is the ctx reset when the agent creates a single session?
-func (s *MessageService) CreateMessage(ctx context.Context, params CreateMessageParams) (Message, error) {
+func (s *MessageService) CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams) (messagecontract.Message, error) {
 	now := time.Now().UTC()
 	if len(params.Parts) == 0 {
-		params.Parts = []Part{{Type: PartTypeText}}
+		params.Parts = []messagecontract.Part{{Type: messagecontract.PartTypeText}}
 	}
 
-	msg := Message{
+	msg := messagecontract.Message{
 		ID:               params.ID,
 		SessionID:        params.SessionID,
 		Kind:             params.Kind,
@@ -46,10 +46,10 @@ func (s *MessageService) CreateMessage(ctx context.Context, params CreateMessage
 
 	messageJSON, err := marshalMessageJSON(msg)
 	if err != nil {
-		return Message{}, err
+		return messagecontract.Message{}, err
 	}
 
-	row, err := s.messageStore.CreateMessage(ctx, store.CreateMessageParams{
+	row, err := s.messageStore.CreateMessage(ctx, CreateMessageRecordParams{
 		ID:               msg.ID,
 		SessionID:        msg.SessionID,
 		Kind:             string(params.Kind),
@@ -59,24 +59,24 @@ func (s *MessageService) CreateMessage(ctx context.Context, params CreateMessage
 		MessageJSON:      messageJSON,
 	})
 	if err != nil {
-		return Message{}, err
+		return messagecontract.Message{}, err
 	}
 
 	msg, err = toMessage(row)
 	if err != nil {
-		return Message{}, err
+		return messagecontract.Message{}, err
 	}
 
 	return msg, nil
 }
 
-func (s *MessageService) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
+func (s *MessageService) ListMessages(ctx context.Context, sessionID string) ([]messagecontract.Message, error) {
 	rows, err := s.messageStore.ListMessages(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	messages := make([]Message, 0, len(rows))
+	messages := make([]messagecontract.Message, 0, len(rows))
 	for _, row := range rows {
 		msg, err := toMessage(row)
 		if err != nil {
@@ -90,16 +90,16 @@ func (s *MessageService) ListMessages(ctx context.Context, sessionID string) ([]
 
 // NOTE:necessary, because Some fields in the business layer message
 // need to be converted to JSON and stored in the store layer.
-func toMessage(msg store.Message) (Message, error) {
+func toMessage(msg MessageRecord) (messagecontract.Message, error) {
 	payload, err := unmarshalMessageJSON(msg.MessageJSON)
 	if err != nil {
-		return Message{}, err
+		return messagecontract.Message{}, err
 	}
 
-	return Message{
+	return messagecontract.Message{
 		ID:               msg.ID,
 		SessionID:        msg.SessionID,
-		Kind:             Kind(msg.Kind),
+		Kind:             messagecontract.Kind(msg.Kind),
 		CreatedAt:        msg.FinishedAt,
 		UpdatedAt:        msg.FinishedAt,
 		IsCompactSummary: msg.IsCompactSummary,
@@ -117,25 +117,25 @@ func buildMessageID(now time.Time) string {
 	return "message-" + now.Format(time.RFC3339Nano)
 }
 
-func textContent(parts []Part) string {
+func textContent(parts []messagecontract.Part) string {
 	for _, part := range parts {
-		if part.Type == PartTypeText {
+		if part.Type == messagecontract.PartTypeText {
 			return part.Text
 		}
 	}
 	return ""
 }
 
-func cloneParts(parts []Part) []Part {
+func cloneParts(parts []messagecontract.Part) []messagecontract.Part {
 	if len(parts) == 0 {
 		return nil
 	}
-	cloned := make([]Part, len(parts))
+	cloned := make([]messagecontract.Part, len(parts))
 	copy(cloned, parts)
 	return cloned
 }
 
-func cloneSystemPayload(payload *SystemPayload) *SystemPayload {
+func cloneSystemPayload(payload *messagecontract.SystemPayload) *messagecontract.SystemPayload {
 	if payload == nil {
 		return nil
 	}
@@ -143,14 +143,21 @@ func cloneSystemPayload(payload *SystemPayload) *SystemPayload {
 	return &copied
 }
 
-func cloneProgressPayload(payload *ProgressPayload) *ProgressPayload {
+func cloneProgressPayload(payload *messagecontract.ProgressPayload) *messagecontract.ProgressPayload {
 	if payload == nil {
 		return nil
 	}
 	copied := *payload
 	return &copied
 }
-func marshalMessageJSON(msg Message) (string, error) {
+
+type persistedMessage struct {
+	Parts    []messagecontract.Part           `json:"parts"`
+	System   *messagecontract.SystemPayload   `json:"system,omitempty"`
+	Progress *messagecontract.ProgressPayload `json:"progress,omitempty"`
+}
+
+func marshalMessageJSON(msg messagecontract.Message) (string, error) {
 	payload := persistedMessage{
 		Parts:    cloneParts(msg.Parts),
 		System:   cloneSystemPayload(msg.System),
@@ -178,11 +185,11 @@ func unmarshalMessageJSON(data string) (persistedMessage, error) {
 	return payload, nil
 }
 
-func (s *MessageService) ListUserMessages(_ context.Context, _ string) ([]Message, error) {
+func (s *MessageService) ListUserMessages(_ context.Context, _ string) ([]messagecontract.Message, error) {
 	return nil, errTODO
 }
 
-func (s *MessageService) ListAllUserMessages(_ context.Context) ([]Message, error) {
+func (s *MessageService) ListAllUserMessages(_ context.Context) ([]messagecontract.Message, error) {
 	return nil, errTODO
 }
 
@@ -194,6 +201,6 @@ func (s *MessageService) DeleteSessionMessages(_ context.Context, _ string) erro
 	return errTODO
 }
 
-func (s *MessageService) Get(_ context.Context, _ string) (Message, error) {
-	return Message{}, errTODO
+func (s *MessageService) Get(_ context.Context, _ string) (messagecontract.Message, error) {
+	return messagecontract.Message{}, errTODO
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/YaHeii/agentGo/internal/app"
+	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
 )
 
 type ProviderService struct {
@@ -19,16 +20,16 @@ func NewProviderService(client streamClient, d app.Dispatcher) *ProviderService 
 	}
 }
 
-func (s *ProviderService) RunTurn(ctx context.Context, req Request) (TurnResult, error) {
+func (s *ProviderService) RunTurn(ctx context.Context, req providercontract.Request) (providercontract.TurnResult, error) {
 	if len(req.Messages) == 0 {
-		return TurnResult{}, errors.New("provider: messages cannot be empty")
+		return providercontract.TurnResult{}, errors.New("provider: messages cannot be empty")
 	}
 	if s.client == nil {
-		return TurnResult{}, errors.New("provider: stream client is required")
+		return providercontract.TurnResult{}, errors.New("provider: stream client is required")
 	}
 
 	var (
-		result      TurnResult
+		result      providercontract.TurnResult
 		accumulator toolCallAccumulator
 	)
 
@@ -99,18 +100,18 @@ func preferFingerprint(current string, next string) string {
 }
 
 type toolCallAccumulator struct {
-	calls map[int]ToolCall
+	calls map[int]providercontract.ToolCall
 	order []int
 }
 
 func (a *toolCallAccumulator) Apply(delta ToolCallDelta) {
 	if a.calls == nil {
-		a.calls = make(map[int]ToolCall)
+		a.calls = make(map[int]providercontract.ToolCall)
 	}
 
 	call, ok := a.calls[delta.Index]
 	if !ok {
-		call = ToolCall{Index: delta.Index}
+		call = providercontract.ToolCall{Index: delta.Index}
 		a.order = append(a.order, delta.Index)
 	}
 	if delta.ID != "" {
@@ -125,12 +126,12 @@ func (a *toolCallAccumulator) Apply(delta ToolCallDelta) {
 	a.calls[delta.Index] = call
 }
 
-func (a *toolCallAccumulator) Completed() []ToolCall {
+func (a *toolCallAccumulator) Completed() []providercontract.ToolCall {
 	if len(a.order) == 0 {
 		return nil
 	}
 
-	out := make([]ToolCall, 0, len(a.order))
+	out := make([]providercontract.ToolCall, 0, len(a.order))
 	for _, index := range a.order {
 		out = append(out, a.calls[index])
 	}
@@ -139,7 +140,7 @@ func (a *toolCallAccumulator) Completed() []ToolCall {
 
 var _ TurnRunner = (*ProviderService)(nil)
 
-func (r Request) Validate() error {
+func validateRequest(r providercontract.Request) error {
 	if len(r.Messages) == 0 {
 		return errors.New("provider: messages cannot be empty")
 	}

@@ -2,6 +2,8 @@ package message
 
 import (
 	"fmt"
+
+	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 )
 
 type MessageStatus int
@@ -28,5 +30,5 @@ func (s MessageStatus) String() string {
 
 type MessageEvent struct {
 	Status  MessageStatus
-	Message *Message 
+	Message *messagecontract.Message
 }
