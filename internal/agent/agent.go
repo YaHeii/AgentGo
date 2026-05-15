@@ -39,11 +39,10 @@ type QueryConfig struct {
 
 // QueryDeps groups the concrete collaborators required by the query runner.
 type QueryDeps struct {
-	Conversation sessionStore
-	Provider     providerStore
-	Tools        toolRunner
-	Now          func() time.Time
-	dispatcher   app.Dispatcher
+	App        appStore
+	Provider   providerStore
+	Now        func() time.Time
+	dispatcher app.Dispatcher
 }
 
 // FinishReason describes why a query loop reached its terminal state.
@@ -56,17 +55,13 @@ const (
 	FinishReasonAwaitingToolExecution FinishReason = "awaiting_tool_execution"
 )
 
-type sessionStore interface {
-	ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]message.Message, error)
-	CreateMessage(ctx context.Context, params message.CreateMessageParams, d app.Dispatcher) (message.Message, error)
-	// UpdateMessage(ctx context.Context, sessionID string, msg message.Message) error
-}
-
 type providerStore interface {
 	RunTurn(ctx context.Context, req provider.Request) (provider.TurnResult, error)
 }
 
-type toolRunner interface {
+type appStore interface {
+	ListHistory(ctx context.Context, sessionID string) ([]message.Message, error)
+	CreateMessage(ctx context.Context, params message.CreateMessageParams) (message.Message, error)
 	ListTools(ctx context.Context) []tool.Metadata
-	Call(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error)
+	CallTools(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error)
 }

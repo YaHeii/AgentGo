@@ -15,19 +15,19 @@ import (
 )
 
 func TestNewQueryLoopReturnsRunner(t *testing.T) {
-	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubProvider{}, app.NewDispatcher(16))
+	runner := NewQueryLoop(&stubAgentApp{}, &stubProvider{}, app.NewDispatcher(16))
 	require.NotNil(t, runner)
 }
 
 func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{}
 	dispatcher := app.NewDispatcher(16)
 
-	runner := NewQueryLoop(store, providerSvc, dispatcher)
+	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
 
 	require.Equal(t, 10, runner.config.MaxTurns)
-	require.Same(t, store, runner.deps.Conversation)
+	require.Same(t, appSvc, runner.deps.App)
 	require.Same(t, providerSvc, runner.deps.Provider)
 	require.Same(t, dispatcher, runner.deps.dispatcher)
 }
@@ -40,8 +40,8 @@ func TestRenderPromptUsesLifecycleStateToolMetadataAndUserInput(t *testing.T) {
 		Cwd:         "/workspace/project/internal",
 	}
 
-	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubProvider{}, app.NewDispatcher(16))
-	runner.deps.Tools = &stubToolRunner{
+	runner := NewQueryLoop(&stubAgentApp{}, &stubProvider{}, app.NewDispatcher(16))
+	runner.deps.App = &stubAgentApp{
 		metas: []tool.Metadata{
 			{
 				Name:        "grep",
@@ -83,10 +83,10 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	dispatcher := app.NewDispatcher(16)
 	events := dispatcher.Subscribe(context.Background())
 
-	originalStore := &stubSessionConversationPort{}
+	originalApp := &stubAgentApp{}
 	originalProvider := &stubProvider{}
 
-	depsStore := &stubSessionConversationPort{}
+	depsApp := &stubAgentApp{}
 	depsProvider := &stubProvider{
 		results: []stubTurn{
 			{
@@ -97,21 +97,16 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 			},
 		},
 	}
-	depsTools := &stubToolRunner{
-		metas: []tool.Metadata{
-			{
-				Name:        "grep",
-				Description: "search files",
-				Parameters:  json.RawMessage(`{"type":"object"}`),
-				Enabled:     true,
-			},
-		},
-	}
+	depsApp.metas = []tool.Metadata{{
+		Name:        "grep",
+		Description: "search files",
+		Parameters:  json.RawMessage(`{"type":"object"}`),
+		Enabled:     true,
+	}}
 
-	runner := NewQueryLoop(originalStore, originalProvider, dispatcher)
-	runner.deps.Conversation = depsStore
+	runner := NewQueryLoop(originalApp, originalProvider, dispatcher)
+	runner.deps.App = depsApp
 	runner.deps.Provider = depsProvider
-	runner.deps.Tools = depsTools
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -120,11 +115,11 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, originalStore.created, 0)
-	require.Len(t, depsStore.created, 2)
+	require.Len(t, originalApp.created, 0)
+	require.Len(t, depsApp.created, 2)
 	require.Len(t, originalProvider.calls, 0)
 	require.Len(t, depsProvider.calls, 1)
-	require.Len(t, depsTools.listCalls, 1)
+	require.Len(t, depsApp.listToolCalls, 1)
 	require.NotEmpty(t, depsProvider.calls[0].Messages)
 	require.Equal(t, provider.RoleSystem, depsProvider.calls[0].Messages[0].Role)
 
@@ -136,7 +131,7 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 }
 
 func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
-	runner := NewQueryLoop(&stubSessionConversationPort{}, &stubProvider{}, app.NewDispatcher(16))
+	runner := NewQueryLoop(&stubAgentApp{}, &stubProvider{}, app.NewDispatcher(16))
 	runner.config.MaxTurns = 0
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
@@ -156,9 +151,19 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 		Cwd:         "/workspace/project/subdir",
 	}
 
-	store := &stubSessionConversationPort{
+	appSvc := &stubAgentApp{
 		persisted: []message.Message{
 			messageRecord("assistant-old", message.KindAssistant, "previous answer"),
+		},
+		metas: []tool.Metadata{
+			{
+				Name:              "grep",
+				Description:       "search files",
+				Parameters:        json.RawMessage(`{"type":"object","required":["pattern"]}`),
+				Enabled:           true,
+				SecurityLevel:     tool.SafeLevel,
+				IsConcurrencySafe: true,
+			},
 		},
 	}
 	providerSvc := &stubProvider{
@@ -171,21 +176,7 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 			},
 		},
 	}
-	tools := &stubToolRunner{
-		metas: []tool.Metadata{
-			{
-				Name:              "grep",
-				Description:       "search files",
-				Parameters:        json.RawMessage(`{"type":"object","required":["pattern"]}`),
-				Enabled:           true,
-				SecurityLevel:     tool.SafeLevel,
-				IsConcurrencySafe: true,
-			},
-		},
-	}
-
-	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
-	runner.deps.Tools = tools
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -218,7 +209,7 @@ func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
 
 	dispatcher := app.NewDispatcher(16)
 	events := dispatcher.Subscribe(context.Background())
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -230,8 +221,7 @@ func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, providerSvc, dispatcher)
-	runner.deps.Tools = &stubToolRunner{}
+	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -244,10 +234,10 @@ func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
 	require.Equal(t, "user-1", result.UserMessageID)
 	require.Equal(t, 1, result.Turns)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
-	require.Len(t, store.created, 2)
-	require.Equal(t, []string{"session-1"}, store.hydratedSessionIDs)
-	require.Equal(t, "hello", findTextPart(store.created[1].Parts))
-	require.Equal(t, store.persisted[1].ID, result.FinalAssistantMessageID)
+	require.Len(t, appSvc.created, 2)
+	require.Equal(t, []string{"session-1"}, appSvc.hydratedSessionIDs)
+	require.Equal(t, "hello", findTextPart(appSvc.created[1].Parts))
+	require.Equal(t, appSvc.persisted[1].ID, result.FinalAssistantMessageID)
 
 	var sawCompleted bool
 	for i := 0; i < 6; i++ {
@@ -273,7 +263,7 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 		Cwd:         "/workspace/project",
 	}
 
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -286,8 +276,7 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
-	runner.deps.Tools = &stubToolRunner{}
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -297,10 +286,10 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Len(t, store.created, 2)
-	require.NotNil(t, findThinkingPart(store.created[1].Parts))
-	require.Equal(t, "decline", findTextPart(store.created[1].Parts))
-	require.Equal(t, "thinking", findThinkingPart(store.created[1].Parts).Content)
+	require.Len(t, appSvc.created, 2)
+	require.NotNil(t, findThinkingPart(appSvc.created[1].Parts))
+	require.Equal(t, "decline", findTextPart(appSvc.created[1].Parts))
+	require.Equal(t, "thinking", findThinkingPart(appSvc.created[1].Parts).Content)
 }
 
 func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
@@ -313,7 +302,7 @@ func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
 
 	dispatcher := app.NewDispatcher(16)
 	events := dispatcher.Subscribe(context.Background())
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -325,8 +314,7 @@ func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, providerSvc, dispatcher)
-	runner.deps.Tools = &stubToolRunner{}
+	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -335,9 +323,9 @@ func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
 		},
 	})
 	require.EqualError(t, err, "stream failed")
-	require.Len(t, store.created, 3)
-	require.Equal(t, message.KindSystem, store.created[2].Kind)
-	require.Contains(t, findTextPart(store.created[2].Parts), "stream failed")
+	require.Len(t, appSvc.created, 3)
+	require.Equal(t, message.KindSystem, appSvc.created[2].Kind)
+	require.Contains(t, findTextPart(appSvc.created[2].Parts), "stream failed")
 
 	var sawFailed bool
 	for i := 0; i < 8; i++ {
@@ -363,7 +351,7 @@ func TestQueryLoopMarksCancelledOnContextCancellation(t *testing.T) {
 		Cwd:         "/workspace/project",
 	}
 
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -372,8 +360,7 @@ func TestQueryLoopMarksCancelledOnContextCancellation(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
-	runner.deps.Tools = &stubToolRunner{}
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -393,7 +380,7 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 		SessionID:   "runtime-session",
 	}
 
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -417,28 +404,21 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 			},
 		},
 	}
-	toolSvc := &stubToolRunner{
-		metas: []tool.Metadata{
-			{
-				Name:              "grep",
-				Description:       "search files",
-				Parameters:        json.RawMessage(`{"type":"object","required":["pattern"]}`),
-				Enabled:           true,
-				IsConcurrencySafe: true,
-			},
-		},
-		callResults: []tool.ToolResult{
-			{
-				ToolCallID: "call_1",
-				Name:       "grep",
-				Status:     tool.StatusSuccess,
-				Content:    `{"matches":[{"path":"main.go"}]}`,
-			},
-		},
-	}
+	appSvc.metas = []tool.Metadata{{
+		Name:              "grep",
+		Description:       "search files",
+		Parameters:        json.RawMessage(`{"type":"object","required":["pattern"]}`),
+		Enabled:           true,
+		IsConcurrencySafe: true,
+	}}
+	appSvc.callResults = []tool.ToolResult{{
+		ToolCallID: "call_1",
+		Name:       "grep",
+		Status:     tool.StatusSuccess,
+		Content:    `{"matches":[{"path":"main.go"}]}`,
+	}}
 
-	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
-	runner.deps.Tools = toolSvc
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -449,20 +429,20 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, providerSvc.calls, 2)
-	require.Len(t, toolSvc.callBatches, 1)
-	require.Len(t, toolSvc.callBatches[0].Calls, 1)
-	require.Equal(t, "call_1", toolSvc.callBatches[0].Calls[0].ToolCallID)
-	require.Equal(t, "grep", toolSvc.callBatches[0].Calls[0].Name)
-	require.Equal(t, "session-1", toolSvc.callBatches[0].Calls[0].Context.SessionID)
-	require.Equal(t, "turn-1", toolSvc.callBatches[0].Calls[0].Context.TurnID)
-	require.Equal(t, "/workspace/project", toolSvc.callBatches[0].Calls[0].Context.WorkspaceRoot)
-	require.Equal(t, "/workspace/project/work", toolSvc.callBatches[0].Calls[0].Context.WorkingDir)
-	require.Len(t, store.created, 4)
-	require.NotNil(t, findToolCallPart(store.created[1].Parts))
-	require.Equal(t, "call_1", findToolCallPart(store.created[1].Parts).ID)
-	require.NotNil(t, findToolResultPart(store.created[2].Parts))
-	require.Equal(t, "call_1", findToolResultPart(store.created[2].Parts).ToolCallID)
-	require.Equal(t, `{"matches":[{"path":"main.go"}]}`, findTextPart(store.created[2].Parts))
+	require.Len(t, appSvc.callBatches, 1)
+	require.Len(t, appSvc.callBatches[0].Calls, 1)
+	require.Equal(t, "call_1", appSvc.callBatches[0].Calls[0].ToolCallID)
+	require.Equal(t, "grep", appSvc.callBatches[0].Calls[0].Name)
+	require.Equal(t, "session-1", appSvc.callBatches[0].Calls[0].Context.SessionID)
+	require.Equal(t, "turn-1", appSvc.callBatches[0].Calls[0].Context.TurnID)
+	require.Equal(t, "/workspace/project", appSvc.callBatches[0].Calls[0].Context.WorkspaceRoot)
+	require.Equal(t, "/workspace/project/work", appSvc.callBatches[0].Calls[0].Context.WorkingDir)
+	require.Len(t, appSvc.created, 4)
+	require.NotNil(t, findToolCallPart(appSvc.created[1].Parts))
+	require.Equal(t, "call_1", findToolCallPart(appSvc.created[1].Parts).ID)
+	require.NotNil(t, findToolResultPart(appSvc.created[2].Parts))
+	require.Equal(t, "call_1", findToolResultPart(appSvc.created[2].Parts).ToolCallID)
+	require.Equal(t, `{"matches":[{"path":"main.go"}]}`, findTextPart(appSvc.created[2].Parts))
 	require.Equal(t, provider.RoleTool, providerSvc.calls[1].Messages[len(providerSvc.calls[1].Messages)-1].Role)
 	require.Equal(t, "call_1", providerSvc.calls[1].Messages[len(providerSvc.calls[1].Messages)-1].ToolCallID)
 }
@@ -475,7 +455,7 @@ func TestQueryLoopPreservesToolResultBusinessErrorsAndContinues(t *testing.T) {
 		Cwd:         "/workspace/project",
 	}
 
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -499,28 +479,21 @@ func TestQueryLoopPreservesToolResultBusinessErrorsAndContinues(t *testing.T) {
 			},
 		},
 	}
-	toolSvc := &stubToolRunner{
-		metas: []tool.Metadata{
-			{
-				Name:        "grep",
-				Description: "search files",
-				Parameters:  json.RawMessage(`{"type":"object","required":["pattern"]}`),
-				Enabled:     true,
-			},
-		},
-		callResults: []tool.ToolResult{
-			{
-				ToolCallID: "call_1",
-				Name:       "grep",
-				Status:     tool.StatusExecutionError,
-				Content:    "path escaped workspace",
-				Err:        errors.New("path escaped workspace"),
-			},
-		},
-	}
+	appSvc.metas = []tool.Metadata{{
+		Name:        "grep",
+		Description: "search files",
+		Parameters:  json.RawMessage(`{"type":"object","required":["pattern"]}`),
+		Enabled:     true,
+	}}
+	appSvc.callResults = []tool.ToolResult{{
+		ToolCallID: "call_1",
+		Name:       "grep",
+		Status:     tool.StatusExecutionError,
+		Content:    "path escaped workspace",
+		Err:        errors.New("path escaped workspace"),
+	}}
 
-	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
-	runner.deps.Tools = toolSvc
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -531,8 +504,8 @@ func TestQueryLoopPreservesToolResultBusinessErrorsAndContinues(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, providerSvc.calls, 2)
-	require.NotNil(t, findToolResultPart(store.created[2].Parts))
-	require.True(t, findToolResultPart(store.created[2].Parts).IsError)
+	require.NotNil(t, findToolResultPart(appSvc.created[2].Parts))
+	require.True(t, findToolResultPart(appSvc.created[2].Parts).IsError)
 }
 
 func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
@@ -543,7 +516,7 @@ func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
 		Cwd:         "/workspace/project",
 	}
 
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -561,20 +534,15 @@ func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
 			},
 		},
 	}
-	toolSvc := &stubToolRunner{
-		metas: []tool.Metadata{
-			{
-				Name:        "grep",
-				Description: "search files",
-				Parameters:  json.RawMessage(`{"type":"object"}`),
-				Enabled:     true,
-			},
-		},
-		callErr: errors.New("tool batch failed"),
-	}
+	appSvc.metas = []tool.Metadata{{
+		Name:        "grep",
+		Description: "search files",
+		Parameters:  json.RawMessage(`{"type":"object"}`),
+		Enabled:     true,
+	}}
+	appSvc.callErr = errors.New("tool batch failed")
 
-	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
-	runner.deps.Tools = toolSvc
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
 	_, err := runner.RunQuery(context.Background(), QueryParams{
 		SessionID: "session-1",
@@ -593,7 +561,7 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 		Cwd:         "/workspace/project",
 	}
 
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -610,8 +578,7 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
-	runner.deps.Tools = &stubToolRunner{}
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 	runner.config.MaxTurns = 2
 
 	result, err := runner.RunQuery(context.Background(), QueryParams{
@@ -660,7 +627,7 @@ func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
 		Cwd:         "/workspace/project",
 	}
 
-	store := &stubSessionConversationPort{}
+	appSvc := &stubAgentApp{}
 	providerSvc := &stubProvider{
 		results: []stubTurn{
 			{
@@ -671,13 +638,12 @@ func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
 		},
 	}
 
-	runner := NewQueryLoop(store, providerSvc, app.NewDispatcher(16))
-	runner.deps.Tools = &stubToolRunner{}
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
 	err := runner.RunPrompt(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
-	require.Len(t, store.created, 2)
-	require.Equal(t, "hello", findTextPart(store.created[0].Parts))
+	require.Len(t, appSvc.created, 2)
+	require.Equal(t, "hello", findTextPart(appSvc.created[0].Parts))
 }
 
 func TestCopyLoopStateDeepCopiesMessages(t *testing.T) {
@@ -746,13 +712,18 @@ type stubTurn struct {
 	err    error
 }
 
-type stubSessionConversationPort struct {
+type stubAgentApp struct {
 	created            []message.CreateMessageParams
 	hydratedSessionIDs []string
 	persisted          []message.Message
+	metas              []tool.Metadata
+	listToolCalls      []struct{}
+	callBatches        []tool.BatchRequest
+	callResults        []tool.ToolResult
+	callErr            error
 }
 
-func (s *stubSessionConversationPort) CreateMessage(_ context.Context, params message.CreateMessageParams, _ app.Dispatcher) (message.Message, error) {
+func (s *stubAgentApp) CreateMessage(_ context.Context, params message.CreateMessageParams) (message.Message, error) {
 	s.created = append(s.created, params)
 	id := "user-1"
 	switch params.Kind {
@@ -776,7 +747,7 @@ func (s *stubSessionConversationPort) CreateMessage(_ context.Context, params me
 	return msg, nil
 }
 
-func (s *stubSessionConversationPort) ListHistory(_ context.Context, sessionID string, _ app.Dispatcher) ([]message.Message, error) {
+func (s *stubAgentApp) ListHistory(_ context.Context, sessionID string) ([]message.Message, error) {
 	s.hydratedSessionIDs = append(s.hydratedSessionIDs, sessionID)
 	if len(s.persisted) == 0 {
 		return nil, nil
@@ -788,6 +759,23 @@ func (s *stubSessionConversationPort) ListHistory(_ context.Context, sessionID s
 		copied[i].Parts = cloneMessagePartsForTest(s.persisted[i].Parts)
 	}
 	return copied, nil
+}
+
+func (s *stubAgentApp) ListTools(_ context.Context) []tool.Metadata {
+	s.listToolCalls = append(s.listToolCalls, struct{}{})
+	out := make([]tool.Metadata, len(s.metas))
+	copy(out, s.metas)
+	return out
+}
+
+func (s *stubAgentApp) CallTools(_ context.Context, req tool.BatchRequest) ([]tool.ToolResult, error) {
+	s.callBatches = append(s.callBatches, cloneBatchRequest(req))
+	if s.callErr != nil {
+		return nil, s.callErr
+	}
+	out := make([]tool.ToolResult, len(s.callResults))
+	copy(out, s.callResults)
+	return out, nil
 }
 
 type stubProvider struct {
@@ -802,31 +790,6 @@ func (s *stubProvider) RunTurn(_ context.Context, req provider.Request) (provide
 		return provider.TurnResult{}, nil
 	}
 	return cloneTurnResult(s.results[index].result), s.results[index].err
-}
-
-type stubToolRunner struct {
-	metas       []tool.Metadata
-	listCalls   []struct{}
-	callBatches []tool.BatchRequest
-	callResults []tool.ToolResult
-	callErr     error
-}
-
-func (s *stubToolRunner) ListTools(_ context.Context) []tool.Metadata {
-	s.listCalls = append(s.listCalls, struct{}{})
-	out := make([]tool.Metadata, len(s.metas))
-	copy(out, s.metas)
-	return out
-}
-
-func (s *stubToolRunner) Call(_ context.Context, req tool.BatchRequest) ([]tool.ToolResult, error) {
-	s.callBatches = append(s.callBatches, cloneBatchRequest(req))
-	if s.callErr != nil {
-		return nil, s.callErr
-	}
-	out := make([]tool.ToolResult, len(s.callResults))
-	copy(out, s.callResults)
-	return out, nil
 }
 
 func messageRecord(id string, kind message.Kind, text string) message.Message {

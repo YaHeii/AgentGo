@@ -21,17 +21,17 @@ type QueryLoop struct {
 	deps   QueryDeps
 }
 
-func NewQueryLoop(conversation sessionStore, providerSvc providerStore, d app.Dispatcher) *QueryLoop {
+func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) *QueryLoop {
 	return &QueryLoop{
 		// TODO:setup:
 		config: QueryConfig{
 			MaxTurns: 10,
 		},
 		deps: QueryDeps{
-			Conversation: conversation,
-			Provider:     providerSvc,
-			Now:          time.Now,
-			dispatcher:   d,
+			App:        appSvc,
+			Provider:   providerSvc,
+			Now:        time.Now,
+			dispatcher: d,
 		},
 	}
 }
@@ -55,11 +55,11 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 	}
 
 	inputParts := cloneMessageParts(params.InputParts)
-	userMessage, err := r.deps.Conversation.CreateMessage(ctx, message.CreateMessageParams{
+	userMessage, err := r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
 		SessionID: params.SessionID,
 		Kind:      message.KindUser,
 		Parts:     inputParts,
-	}, r.deps.dispatcher)
+	})
 	if err != nil {
 		return QueryResult{}, err
 	}
@@ -77,7 +77,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 		state = copyLoopState(state)
 		state.Transition = "turn_started"
 
-		history, err := r.deps.Conversation.ListHistory(ctx, params.SessionID, r.deps.dispatcher)
+		history, err := r.deps.App.ListHistory(ctx, params.SessionID)
 		if err != nil {
 			return QueryResult{}, err
 		}
@@ -211,7 +211,7 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 		state.FinishReason = FinishReasonCompleted
 		return state, nil
 	}
-	if r.deps.Tools == nil {
+	if r.deps.App == nil {
 		return state, errors.New("agent: tool runner is required")
 	}
 
@@ -232,7 +232,7 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 		))
 	}
 
-	results, err := r.deps.Tools.Call(ctx, batch)
+	results, err := r.deps.App.CallTools(ctx, batch)
 	if err != nil {
 		return state, err
 	}
@@ -294,10 +294,10 @@ func (r *QueryLoop) buildProviderRequest(history []message.Message, tools []tool
 }
 
 func (r *QueryLoop) listTools(ctx context.Context) []tool.Metadata {
-	if r.deps.Tools == nil {
+	if r.deps.App == nil {
 		return nil
 	}
-	return r.deps.Tools.ListTools(ctx)
+	return r.deps.App.ListTools(ctx)
 }
 
 func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Message {
@@ -334,7 +334,7 @@ func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Mess
 }
 
 func (r *QueryLoop) persistAssistant(ctx context.Context, assistant message.Message) (message.Message, error) {
-	return r.deps.Conversation.CreateMessage(ctx, message.CreateMessageParams{
+	return r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
 		ID:               assistant.ID,
 		SessionID:        assistant.SessionID,
 		Kind:             assistant.Kind,
@@ -342,7 +342,7 @@ func (r *QueryLoop) persistAssistant(ctx context.Context, assistant message.Mess
 		Parts:            cloneMessageParts(assistant.Parts),
 		System:           assistant.System,
 		Progress:         assistant.Progress,
-	}, r.deps.dispatcher)
+	})
 }
 
 func (r *QueryLoop) persistToolResult(ctx context.Context, sessionID string, result tool.ToolResult) (message.Message, error) {
@@ -361,11 +361,11 @@ func (r *QueryLoop) persistToolResult(ctx context.Context, sessionID string, res
 			},
 		},
 	}
-	return r.deps.Conversation.CreateMessage(ctx, message.CreateMessageParams{
+	return r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
 		SessionID: sessionID,
 		Kind:      message.KindSystem,
 		Parts:     parts,
-	}, r.deps.dispatcher)
+	})
 }
 
 func (r *QueryLoop) createSystemErrorMessage(ctx context.Context, sessionID string, providerErr error) (message.Message, error) {
@@ -373,7 +373,7 @@ func (r *QueryLoop) createSystemErrorMessage(ctx context.Context, sessionID stri
 	if providerErr != nil {
 		text = "provider error: " + providerErr.Error()
 	}
-	return r.deps.Conversation.CreateMessage(ctx, message.CreateMessageParams{
+	return r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
 		SessionID: sessionID,
 		Kind:      message.KindSystem,
 		Parts: []message.Part{
@@ -386,7 +386,7 @@ func (r *QueryLoop) createSystemErrorMessage(ctx context.Context, sessionID stri
 			Subtype: "provider_error",
 			Level:   "error",
 		},
-	}, r.deps.dispatcher)
+	})
 }
 
 func (r *QueryLoop) dispatch(status QueryStatus, state LoopState, err error) {
