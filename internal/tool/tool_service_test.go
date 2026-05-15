@@ -28,8 +28,8 @@ func TestCallReturnsPerRequestResultsInInputOrder(t *testing.T) {
 
 	results, err := svc.Call(context.Background(), BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"q":"first"}`), ToolCallContext{}),
-			NewToolCallRequest("call_2", "grep", json.RawMessage(`{"q":"second"}`), ToolCallContext{}),
+			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"q":"first"}`), SafeLevel, ToolCallContext{}),
+			NewToolCallRequest("call_2", "grep", json.RawMessage(`{"q":"second"}`), SafeLevel, ToolCallContext{}),
 		},
 	})
 	require.NoError(t, err)
@@ -45,7 +45,7 @@ func TestCallReturnsErrorForUnknownTool(t *testing.T) {
 
 	results, err := svc.Call(context.Background(), BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "missing", json.RawMessage(`{}`), ToolCallContext{}),
+			NewToolCallRequest("call_1", "missing", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
 		},
 	})
 	require.Nil(t, results)
@@ -73,7 +73,7 @@ func TestCallReturnsErrorWhenRequiredWorkingDirMissing(t *testing.T) {
 
 	results, err := svc.Call(context.Background(), BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), ToolCallContext{}),
+			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
 		},
 	})
 	require.Nil(t, results)
@@ -96,7 +96,7 @@ func TestCallReturnsErrorForDisabledTool(t *testing.T) {
 
 	results, err := svc.Call(context.Background(), BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), ToolCallContext{
+			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), SafeLevel, ToolCallContext{
 				WorkingDir: "/workspace",
 			}),
 		},
@@ -126,7 +126,7 @@ func TestCallReturnsErrorWhenRequiredWorkspaceRootMissing(t *testing.T) {
 
 	results, err := svc.Call(context.Background(), BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), ToolCallContext{}),
+			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
 		},
 	})
 	require.Nil(t, results)
@@ -161,7 +161,7 @@ func TestCallReturnsErrorWhenArgumentsDoNotMatchSchema(t *testing.T) {
 
 	results, err := svc.Call(context.Background(), BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"literal_text":"yes"}`), ToolCallContext{}),
+			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"literal_text":"yes"}`), SafeLevel, ToolCallContext{}),
 		},
 	})
 	require.Nil(t, results)
@@ -199,8 +199,8 @@ func TestCallDoesNotExecuteAnyToolWhenLaterCallFailsSchemaValidation(t *testing.
 
 	results, err := svc.Call(context.Background(), BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"pattern":"ok"}`), ToolCallContext{}),
-			NewToolCallRequest("call_2", "grep", json.RawMessage(`{"literal_text":"yes"}`), ToolCallContext{}),
+			NewToolCallRequest("call_1", "grep", json.RawMessage(`{"pattern":"ok"}`), SafeLevel, ToolCallContext{}),
+			NewToolCallRequest("call_2", "grep", json.RawMessage(`{"literal_text":"yes"}`), SafeLevel, ToolCallContext{}),
 		},
 	})
 	require.Nil(t, results)
@@ -244,10 +244,10 @@ func TestCallSerializesNonConcurrentToolAcrossGoroutines(t *testing.T) {
 	)
 
 	req1 := BatchRequest{Calls: []ToolCallRequest{
-		NewToolCallRequest("call_1", "serial", json.RawMessage(`{}`), ToolCallContext{}),
+		NewToolCallRequest("call_1", "serial", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
 	}}
 	req2 := BatchRequest{Calls: []ToolCallRequest{
-		NewToolCallRequest("call_2", "serial", json.RawMessage(`{}`), ToolCallContext{}),
+		NewToolCallRequest("call_2", "serial", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
 	}}
 
 	var wg sync.WaitGroup
@@ -301,12 +301,31 @@ func TestCallAllowsConcurrentSafeToolToRunInParallel(t *testing.T) {
 
 	_, err := svc.Call(context.Background(), BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "parallel", json.RawMessage(`{}`), ToolCallContext{}),
-			NewToolCallRequest("call_2", "parallel", json.RawMessage(`{}`), ToolCallContext{}),
+			NewToolCallRequest("call_1", "parallel", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
+			NewToolCallRequest("call_2", "parallel", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
 		},
 	})
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, maxActive, 2)
+}
+
+func TestListToolsFiltersByPermissionLevel(t *testing.T) {
+	svc := NewService(
+		&stubTool{
+			meta: Metadata{Name: "safe", Enabled: true, SecurityLevel: SafeLevel},
+		},
+		&stubTool{
+			meta: Metadata{Name: "attention", Enabled: true, SecurityLevel: AttentionLevel},
+		},
+		&stubTool{
+			meta: Metadata{Name: "danger", Enabled: true, SecurityLevel: DangerLevel},
+		},
+	)
+
+	metas := svc.ListTools(context.Background(), AttentionLevel)
+	require.Len(t, metas, 2)
+	require.Equal(t, "attention", metas[0].Name)
+	require.Equal(t, "safe", metas[1].Name)
 }
 
 func TestNewToolCallRequestCarriesExecutionContext(t *testing.T) {
@@ -314,6 +333,7 @@ func TestNewToolCallRequestCarriesExecutionContext(t *testing.T) {
 		"call_1",
 		"grep",
 		json.RawMessage(`{"q":"hello"}`),
+		AttentionLevel,
 		ToolCallContext{
 			SessionID:     "session-1",
 			TurnID:        "turn-1",
@@ -324,8 +344,38 @@ func TestNewToolCallRequestCarriesExecutionContext(t *testing.T) {
 
 	require.Equal(t, "call_1", req.ToolCallID)
 	require.Equal(t, "grep", req.Name)
+	require.Equal(t, AttentionLevel, req.PermissionLevel)
 	require.Equal(t, "session-1", req.Context.SessionID)
 	require.Equal(t, "/workspace/internal", req.Context.WorkingDir)
+}
+
+func TestCallReturnsErrorWhenPermissionLevelIsLowerThanToolRequirement(t *testing.T) {
+	svc := NewService(
+		&stubTool{
+			meta: Metadata{
+				Name:              "dangerous",
+				Enabled:           true,
+				SecurityLevel:     DangerLevel,
+				IsConcurrencySafe: true,
+			},
+			execute: func(_ context.Context, req ToolCallRequest) ToolResult {
+				return ToolResult{
+					ToolCallID: req.ToolCallID,
+					Name:       req.Name,
+					Status:     StatusSuccess,
+				}
+			},
+		},
+	)
+
+	results, err := svc.Call(context.Background(), BatchRequest{
+		Calls: []ToolCallRequest{
+			NewToolCallRequest("call_1", "dangerous", json.RawMessage(`{}`), AttentionLevel, ToolCallContext{}),
+		},
+	})
+	require.Nil(t, results)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "permission_level")
 }
 
 func TestCallReturnsBatchErrorWhenContextAlreadyCanceled(t *testing.T) {
@@ -345,7 +395,7 @@ func TestCallReturnsBatchErrorWhenContextAlreadyCanceled(t *testing.T) {
 
 	results, err := svc.Call(ctx, BatchRequest{
 		Calls: []ToolCallRequest{
-			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), ToolCallContext{}),
+			NewToolCallRequest("call_1", "grep", json.RawMessage(`{}`), SafeLevel, ToolCallContext{}),
 		},
 	})
 	require.Nil(t, results)

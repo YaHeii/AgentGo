@@ -175,9 +175,10 @@ func TestServiceListToolsDelegatesToToolService(t *testing.T) {
 	}
 	svc := newServiceWithDeps(newStubSessionService(), newStubAgentService(), tools, nil)
 
-	got := svc.ListTools(context.Background())
+	got := svc.ListTools(context.Background(), tool.AttentionLevel)
 	require.Equal(t, tools.listResult, got)
 	require.Equal(t, 1, tools.listCalls)
+	require.Equal(t, tool.AttentionLevel, tools.lastListPermissionLevel)
 }
 
 func TestServiceCallToolsDelegatesToToolService(t *testing.T) {
@@ -199,6 +200,7 @@ func TestServiceCallToolsDelegatesToToolService(t *testing.T) {
 			"call-1",
 			"grep",
 			json.RawMessage(`{"pattern":"go"}`),
+			tool.SafeLevel,
 			tool.ToolCallContext{WorkingDir: "/workspace"},
 		),
 	)
@@ -345,26 +347,28 @@ func newStubAgentService() *stubAgentService {
 	return &stubAgentService{}
 }
 
-func (s *stubAgentService) RunPrompt(_ context.Context, sessionID string, prompt string) error {
+func (s *stubAgentService) RunQuery(_ context.Context, sessionID string, prompt string) error {
 	s.lastSessionID = sessionID
 	s.lastPrompt = prompt
 	return s.runErr
 }
 
 type stubToolService struct {
-	listCalls   int
-	listResult  []tool.Metadata
-	callErr     error
-	lastCallReq tool.BatchRequest
-	callResult  []tool.ToolResult
+	listCalls               int
+	lastListPermissionLevel tool.SecurityLevel
+	listResult              []tool.Metadata
+	callErr                 error
+	lastCallReq             tool.BatchRequest
+	callResult              []tool.ToolResult
 }
 
 func newStubToolService() *stubToolService {
 	return &stubToolService{}
 }
 
-func (s *stubToolService) ListTools(_ context.Context) []tool.Metadata {
+func (s *stubToolService) ListTools(_ context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata {
 	s.listCalls++
+	s.lastListPermissionLevel = permissionLevel
 	return append([]tool.Metadata(nil), s.listResult...)
 }
 
@@ -404,11 +408,11 @@ type sessionStore interface {
 }
 
 type agentStore interface {
-	RunPrompt(ctx context.Context, sessionID string, prompt string) error
+	RunQuery(ctx context.Context, sessionID string, prompt string) error
 }
 
 type toolStore interface {
-	ListTools(ctx context.Context) []tool.Metadata
+	ListTools(ctx context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata
 	Call(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error)
 }
 

@@ -25,4 +25,5 @@ type chatService interface {
 	EnsureActiveSession(ctx context.Context) error
 	SendMessage(ctx context.Context, sessionID string, prompt string) error
 	Events() <-chan app.Event
+	InitializePermissionLevel(ctx context.Context) error
 }

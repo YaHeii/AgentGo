@@ -134,6 +134,7 @@ func TestServiceRejectsInvalidGrepArgumentsBeforeExecute(t *testing.T) {
 			"call-1",
 			GrepToolName,
 			json.RawMessage(`{"literal_text":"yes"}`),
+			toolpkg.SafeLevel,
 			toolpkg.ToolCallContext{WorkingDir: projectRoot},
 		),
 	))
@@ -223,5 +224,5 @@ func TestParseRipgrepJSONResolvesAbsolutePathAndModTime(t *testing.T) {
 }
 
 func toolpkgReq(id string, args json.RawMessage, ctx toolpkg.ToolCallContext) toolpkg.ToolCallRequest {
-	return toolpkg.NewToolCallRequest(id, GrepToolName, args, ctx)
+	return toolpkg.NewToolCallRequest(id, GrepToolName, args, toolpkg.SafeLevel, ctx)
 }

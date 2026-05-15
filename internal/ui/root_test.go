@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/lifecycle"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/session"
 	"github.com/YaHeii/agentGo/internal/store"
@@ -15,6 +16,7 @@ import (
 
 func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	t.Parallel()
+	lifecycle.State = nil
 
 	svc := newStubChatService()
 	svc.ensureSessionFn = func(_ context.Context) error {
@@ -60,6 +62,9 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	}
 	if len(next.messages) != 2 {
 		t.Fatalf("expected 2 hydrated messages, got %d", len(next.messages))
+	}
+	if lifecycle.GetState().PermissionLevel != lifecycle.SafeLevel {
+		t.Fatalf("expected safe permission level, got %v", lifecycle.GetState().PermissionLevel)
 	}
 }
 
@@ -341,6 +346,10 @@ func (s *stubChatService) SendMessage(ctx context.Context, sessionID string, pro
 
 func (s *stubChatService) Events() <-chan app.Event {
 	return s.events
+}
+
+func (s *stubChatService) InitializePermissionLevel(_ context.Context) error {
+	return nil
 }
 
 func enterKey() tea.KeyPressMsg {

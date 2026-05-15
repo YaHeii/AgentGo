@@ -68,11 +68,11 @@ func (s *APPService) GetParentSessionID() string {
 	return s.sessions.GetParentSessionID()
 }
 
-func (s *APPService) ListTools(ctx context.Context) []tool.Metadata {
+func (s *APPService) ListTools(ctx context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata {
 	if s.tools == nil {
 		return nil
 	}
-	return s.tools.ListTools(ctx)
+	return s.tools.ListTools(ctx, permissionLevel)
 }
 
 func (s *APPService) DeleteSession(ctx context.Context, sessionID string) error {
@@ -95,7 +95,7 @@ func (s *APPService) CreateMessage(ctx context.Context, params message.CreateMes
 }
 
 func (s *APPService) SendMessage(ctx context.Context, sessionID string, prompt string) error {
-	return s.agent.RunPrompt(ctx, sessionID, prompt)
+	return s.agent.RunQuery(ctx, sessionID, prompt)
 }
 
 func (s *APPService) Events() <-chan Event {

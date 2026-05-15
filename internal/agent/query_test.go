@@ -32,44 +32,74 @@ func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
 	require.Same(t, dispatcher, runner.deps.dispatcher)
 }
 
-func TestRenderPromptUsesLifecycleStateToolMetadataAndUserInput(t *testing.T) {
+func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *testing.T) {
 	resetGlobalStateForAgentTest()
 	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project/internal",
-	}
-
-	runner := NewQueryLoop(&stubAgentApp{}, &stubProvider{}, app.NewDispatcher(16))
-	runner.deps.App = &stubAgentApp{
-		metas: []tool.Metadata{
+		AppVersion:      "v0.1.0",
+		ProjectRoot:     "/workspace/project",
+		Cwd:             "/workspace/project/internal",
+		PermissionLevel: lifecycle.SafeLevel,
+		Temperature:     0.2,
+		ModelLimit:      4096,
+		KnownTools: []lifecycle.ToolSnapshot{
 			{
-				Name:        "grep",
-				Description: "search files",
-				Parameters:  json.RawMessage(`{"type":"object","required":["pattern"]}`),
+				Name:          "grep",
+				Description:   "search files",
+				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
+				Enabled:       true,
+				SecurityLevel: int(tool.SafeLevel),
+			},
+			{
+				Name:          "bash",
+				Description:   "run shell",
+				Parameters:    json.RawMessage(`{"type":"object","required":["command"]}`),
+				Enabled:       true,
+				SecurityLevel: int(tool.AttentionLevel),
 			},
 		},
 	}
 
-	rendered, err := runner.renderPrompt(PromptContext{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project/internal",
-		UserInput:   "find tests",
-		Tools: []tool.Metadata{
+	runner := NewQueryLoop(&stubAgentApp{}, &stubProvider{}, app.NewDispatcher(16))
+	req, err := runner.renderLoopstate(LoopState{
+		Messages: []message.Message{
+			messageRecord("assistant-1", message.KindAssistant, "previous answer"),
+			messageRecord("user-1", message.KindUser, "find tests"),
 			{
-				Name:        "grep",
-				Description: "search files",
-				Parameters:  json.RawMessage(`{"type":"object","required":["pattern"]}`),
+				ID:        "assistant-pending",
+				SessionID: "session-1",
+				Kind:      message.KindAssistant,
+				Parts: []message.Part{
+					{Type: message.PartTypeText, Text: ""},
+				},
+			},
+		},
+		PendingToolCalls: []provider.ToolCall{
+			{
+				ID:        "call-1",
+				Name:      "grep",
+				Arguments: `{"pattern":"*.go"}`,
 			},
 		},
 	})
 	require.NoError(t, err)
-	require.Contains(t, rendered, "/workspace/project")
-	require.Contains(t, rendered, "/workspace/project/internal")
-	require.Contains(t, rendered, "find tests")
-	require.Contains(t, rendered, "grep")
-	require.Contains(t, rendered, "search files")
+	require.Len(t, req.Messages, 3)
+	require.Equal(t, provider.RoleSystem, req.Messages[0].Role)
+	require.Contains(t, req.Messages[0].Content, "/workspace/project")
+	require.Contains(t, req.Messages[0].Content, "/workspace/project/internal")
+	require.Contains(t, req.Messages[0].Content, "find tests")
+	require.Contains(t, req.Messages[0].Content, "grep")
+	require.Contains(t, req.Messages[0].Content, "search files")
+	require.Equal(t, provider.RoleAssistant, req.Messages[1].Role)
+	require.Equal(t, "previous answer", req.Messages[1].Content)
+	require.Equal(t, provider.RoleUser, req.Messages[2].Role)
+	require.Equal(t, "find tests", req.Messages[2].Content)
+	require.Len(t, req.Tools, 1)
+	require.Equal(t, "grep", req.Tools[0].Name)
+	require.JSONEq(t, `{"type":"object","required":["pattern"]}`, string(req.Tools[0].Parameters))
+	require.NotNil(t, req.Context.Temperature)
+	require.NotNil(t, req.Context.MaxOutputTokens)
+	require.Equal(t, float32(0.2), *req.Context.Temperature)
+	require.Equal(t, 4096, *req.Context.MaxOutputTokens)
 }
 
 func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
@@ -108,18 +138,12 @@ func TestQueryLoopRunQueryUsesInjectedDeps(t *testing.T) {
 	runner.deps.App = depsApp
 	runner.deps.Provider = depsProvider
 
-	_, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Len(t, originalApp.created, 0)
 	require.Len(t, depsApp.created, 2)
 	require.Len(t, originalProvider.calls, 0)
 	require.Len(t, depsProvider.calls, 1)
-	require.Len(t, depsApp.listToolCalls, 1)
 	require.NotEmpty(t, depsProvider.calls[0].Messages)
 	require.Equal(t, provider.RoleSystem, depsProvider.calls[0].Messages[0].Role)
 
@@ -134,12 +158,7 @@ func TestQueryLoopRejectsNonPositiveMaxTurns(t *testing.T) {
 	runner := NewQueryLoop(&stubAgentApp{}, &stubProvider{}, app.NewDispatcher(16))
 	runner.config.MaxTurns = 0
 
-	_, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.EqualError(t, err, "agent: max turns must be greater than 0")
 }
 
@@ -149,21 +168,20 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 		AppVersion:  "v0.1.0",
 		ProjectRoot: "/workspace/project",
 		Cwd:         "/workspace/project/subdir",
+		KnownTools: []lifecycle.ToolSnapshot{
+			{
+				Name:          "grep",
+				Description:   "search files",
+				Parameters:    json.RawMessage(`{"type":"object","required":["pattern"]}`),
+				Enabled:       true,
+				SecurityLevel: int(tool.SafeLevel),
+			},
+		},
 	}
 
 	appSvc := &stubAgentApp{
 		persisted: []message.Message{
 			messageRecord("assistant-old", message.KindAssistant, "previous answer"),
-		},
-		metas: []tool.Metadata{
-			{
-				Name:              "grep",
-				Description:       "search files",
-				Parameters:        json.RawMessage(`{"type":"object","required":["pattern"]}`),
-				Enabled:           true,
-				SecurityLevel:     tool.SafeLevel,
-				IsConcurrencySafe: true,
-			},
 		},
 	}
 	providerSvc := &stubProvider{
@@ -178,12 +196,7 @@ func TestQueryLoopAssemblesProviderRequestWithSystemHistoryAndTools(t *testing.T
 	}
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
-	_, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Len(t, providerSvc.calls, 1)
 
@@ -223,12 +236,7 @@ func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
 
-	result, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Equal(t, "session-1", result.SessionID)
 	require.Equal(t, "user-1", result.UserMessageID)
@@ -278,12 +286,7 @@ func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
-	_, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 
 	require.Len(t, appSvc.created, 2)
@@ -316,12 +319,7 @@ func TestQueryLoopMarksAssistantFailedOnProviderError(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, dispatcher)
 
-	_, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.EqualError(t, err, "stream failed")
 	require.Len(t, appSvc.created, 3)
 	require.Equal(t, message.KindSystem, appSvc.created[2].Kind)
@@ -362,22 +360,18 @@ func TestQueryLoopMarksCancelledOnContextCancellation(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
-	_, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 	resetGlobalStateForAgentTest()
 	lifecycle.State = &lifecycle.GlobalState{
-		AppVersion:  "v0.1.0",
-		ProjectRoot: "/workspace/project",
-		Cwd:         "/workspace/project/work",
-		SessionID:   "runtime-session",
+		AppVersion:      "v0.1.0",
+		PermissionLevel: lifecycle.AttentionLevel,
+		ProjectRoot:     "/workspace/project",
+		Cwd:             "/workspace/project/work",
+		SessionID:       "runtime-session",
 	}
 
 	appSvc := &stubAgentApp{}
@@ -420,12 +414,7 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
-	result, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, providerSvc.calls, 2)
@@ -437,6 +426,7 @@ func TestQueryLoopRunsToolLoopAndFeedsToolResultsBackToProvider(t *testing.T) {
 	require.Equal(t, "turn-1", appSvc.callBatches[0].Calls[0].Context.TurnID)
 	require.Equal(t, "/workspace/project", appSvc.callBatches[0].Calls[0].Context.WorkspaceRoot)
 	require.Equal(t, "/workspace/project/work", appSvc.callBatches[0].Calls[0].Context.WorkingDir)
+	require.Equal(t, tool.AttentionLevel, appSvc.callBatches[0].Calls[0].PermissionLevel)
 	require.Len(t, appSvc.created, 4)
 	require.NotNil(t, findToolCallPart(appSvc.created[1].Parts))
 	require.Equal(t, "call_1", findToolCallPart(appSvc.created[1].Parts).ID)
@@ -495,12 +485,7 @@ func TestQueryLoopPreservesToolResultBusinessErrorsAndContinues(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
-	result, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
 	require.Len(t, providerSvc.calls, 2)
@@ -544,12 +529,7 @@ func TestQueryLoopFailsWhenToolBatchValidationFails(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
-	_, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.EqualError(t, err, "tool batch failed")
 }
 
@@ -581,12 +561,7 @@ func TestQueryLoopStopsAtConfiguredMaxTurns(t *testing.T) {
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 	runner.config.MaxTurns = 2
 
-	result, err := runner.RunQuery(context.Background(), QueryParams{
-		SessionID: "session-1",
-		InputParts: []message.Part{
-			{Type: message.PartTypeText, Text: "hello"},
-		},
-	})
+	result, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Len(t, providerSvc.calls, 2)
 	require.Equal(t, 2, result.Turns)
@@ -619,7 +594,7 @@ func TestQueryEventCarriesLoopState(t *testing.T) {
 	require.Equal(t, 2, event.State.TurnCount)
 }
 
-func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
+func TestQueryLoopRunQueryBuildsSingleTextQuery(t *testing.T) {
 	resetGlobalStateForAgentTest()
 	lifecycle.State = &lifecycle.GlobalState{
 		AppVersion:  "v0.1.0",
@@ -640,7 +615,7 @@ func TestQueryLoopRunPromptBuildsSingleTextQuery(t *testing.T) {
 
 	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
 
-	err := runner.RunPrompt(context.Background(), "session-1", "hello")
+	_, err := runner.RunQuery(context.Background(), "session-1", "hello")
 	require.NoError(t, err)
 	require.Len(t, appSvc.created, 2)
 	require.Equal(t, "hello", findTextPart(appSvc.created[0].Parts))
@@ -717,7 +692,7 @@ type stubAgentApp struct {
 	hydratedSessionIDs []string
 	persisted          []message.Message
 	metas              []tool.Metadata
-	listToolCalls      []struct{}
+	listToolCalls      []tool.SecurityLevel
 	callBatches        []tool.BatchRequest
 	callResults        []tool.ToolResult
 	callErr            error
@@ -761,8 +736,8 @@ func (s *stubAgentApp) ListHistory(_ context.Context, sessionID string) ([]messa
 	return copied, nil
 }
 
-func (s *stubAgentApp) ListTools(_ context.Context) []tool.Metadata {
-	s.listToolCalls = append(s.listToolCalls, struct{}{})
+func (s *stubAgentApp) ListTools(_ context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata {
+	s.listToolCalls = append(s.listToolCalls, permissionLevel)
 	out := make([]tool.Metadata, len(s.metas))
 	copy(out, s.metas)
 	return out

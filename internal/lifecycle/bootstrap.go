@@ -116,6 +116,6 @@ func newBootstrapAgentService() *bootstrapAgentService {
 	return &bootstrapAgentService{}
 }
 
-func (s *bootstrapAgentService) RunPrompt(_ context.Context, _ string, _ string) error {
+func (s *bootstrapAgentService) RunQuery(_ context.Context, _ string, _ string) error {
 	return errors.New("lifecycle bootstrap agent service is not wired to runtime agent layer")
 }

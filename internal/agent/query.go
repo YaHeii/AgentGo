@@ -23,7 +23,7 @@ type QueryLoop struct {
 
 func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) *QueryLoop {
 	return &QueryLoop{
-		// TODO:setup:
+		// TODO:setup from lifecycle
 		config: QueryConfig{
 			MaxTurns: 10,
 		},
@@ -36,20 +36,12 @@ func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) 
 	}
 }
 
-func (r *QueryLoop) RunPrompt(ctx context.Context, sessionID string, prompt string) error {
-	_, err := r.RunQuery(ctx, QueryParams{
-		SessionID: sessionID,
-		InputParts: []message.Part{
-			{
-				Type: message.PartTypeText,
-				Text: prompt,
-			},
-		},
-	})
-	return err
-}
-
-func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResult, error) {
+// TODO: Four-Step Preprocessing
+// first to check permission level and to Determine the Scope of Execution
+// second to get tool/ history message and precalculate the token usage use the tiktoken from lifecycle
+// third to microcompact if the token usage Exceeded the context window.
+func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt string) (QueryResult, error) {
+	
 	if r.config.MaxTurns <= 0 {
 		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
 	}
@@ -64,84 +56,82 @@ func (r *QueryLoop) RunQuery(ctx context.Context, params QueryParams) (QueryResu
 		return QueryResult{}, err
 	}
 
-	state := newLoopState(params)
-	state.Messages = []message.Message{userMessage}
-	state.Transition = "user_message_created"
-	r.dispatch(QueryStatusStarted, state, nil)
+	loopstate := newLoopState(params)
+	loopstate.Messages = []message.Message{userMessage}
+	loopstate.Transition = "user_message_created"
+	r.dispatch(QueryStatusStarted, loopstate, nil)
 
 	for {
-		if state.TurnCount > r.config.MaxTurns {
+		if loopstate.TurnCount > r.config.MaxTurns {
 			break
 		}
 
-		state = copyLoopState(state)
-		state.Transition = "turn_started"
+		loopstate.Transition = "turn_started"
 
 		history, err := r.deps.App.ListHistory(ctx, params.SessionID)
 		if err != nil {
 			return QueryResult{}, err
 		}
-		state.Messages = history
-		state.Transition = "history_loaded"
+		loopstate.Messages = history
+		loopstate.Transition = "history_loaded"
 
-		assistantMessage := r.newAssistantMessage(params.SessionID, state.TurnCount)
-		state.Messages = append(state.Messages, assistantMessage)
-		state.Transition = "assistant_turn_initialized"
-		r.dispatch(QueryStatusDelta, state, nil)
+		assistantMessage := r.newAssistantMessage(params.SessionID, loopstate.TurnCount)
+		loopstate.Messages = append(loopstate.Messages, assistantMessage)
+		loopstate.Transition = "assistant_turn_initialized"
+		r.dispatch(QueryStatusDelta, loopstate, nil)
 
-		tools := r.listTools(ctx)
-		req, err := r.buildProviderRequest(state.Messages, tools)
+		req, err := r.renderLoopstate(loopstate)
 		if err != nil {
 			return QueryResult{}, err
 		}
 
-		state, err = r.runTurn(ctx, state, req)
+		loopstate, err = r.runTurn(ctx, loopstate, req)
 		if err != nil {
-			r.dispatch(QueryStatusFailed, state, err)
+			r.dispatch(QueryStatusFailed, loopstate, err)
 			return QueryResult{}, err
 		}
 
-		if state.FinishReason == FinishReasonAwaitingToolExecution {
-			state, err = r.executePendingTools(ctx, state, params.SessionID)
+		if loopstate.FinishReason == FinishReasonAwaitingToolExecution {
+			loopstate, err = r.executePendingTools(ctx, loopstate, params.SessionID)
 			if err != nil {
-				r.dispatch(QueryStatusFailed, state, err)
+				r.dispatch(QueryStatusFailed, loopstate, err)
 				return QueryResult{}, err
 			}
 			continue
 		}
 
-		if state.FinishReason == FinishReasonCompleted && state.StopReason == provider.StopReasonLength && state.TurnCount < r.config.MaxTurns {
-			state = copyLoopState(state)
-			state.TurnCount++
+		if loopstate.FinishReason == FinishReasonCompleted && loopstate.StopReason == provider.StopReasonLength && loopstate.TurnCount < r.config.MaxTurns {
+			loopstate = copyLoopState(loopstate)
+			loopstate.TurnCount++
 			continue
 		}
 
-		if state.FinishReason == FinishReasonCompleted {
-			r.dispatch(QueryStatusCompleted, state, nil)
+		if loopstate.FinishReason == FinishReasonCompleted {
+			r.dispatch(QueryStatusCompleted, loopstate, nil)
 			return QueryResult{
 				SessionID:               params.SessionID,
 				UserMessageID:           userMessage.ID,
-				FinalAssistantMessageID: state.AssistantMessageID,
-				Turns:                   state.TurnCount,
-				FinishReason:            state.FinishReason,
-				PendingToolCalls:        append([]provider.ToolCall(nil), state.PendingToolCalls...),
+				FinalAssistantMessageID: loopstate.AssistantMessageID,
+				Turns:                   loopstate.TurnCount,
+				FinishReason:            loopstate.FinishReason,
+				PendingToolCalls:        append([]provider.ToolCall(nil), loopstate.PendingToolCalls...),
 			}, nil
 		}
 	}
 
 	lastAssistantID := ""
-	for i := len(state.Messages) - 1; i >= 0; i-- {
-		if state.Messages[i].Kind == message.KindAssistant {
-			lastAssistantID = state.Messages[i].ID
+	for i := len(loopstate.Messages) - 1; i >= 0; i-- {
+		if loopstate.Messages[i].Kind == message.KindAssistant {
+			lastAssistantID = loopstate.Messages[i].ID
 			break
 		}
 	}
-	r.dispatch(QueryStatusCompleted, state, nil)
+	r.dispatch(QueryStatusCompleted, loopstate, nil)
 	return QueryResult{
 		SessionID:               params.SessionID,
 		UserMessageID:           userMessage.ID,
 		FinalAssistantMessageID: lastAssistantID,
-		Turns:                   state.TurnCount,
+		Turns:                   loopstate.TurnCount,
 		FinishReason:            FinishReasonCompleted,
 	}, nil
 }
@@ -219,15 +209,17 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 		Calls: make([]tool.ToolCallRequest, 0, len(state.PendingToolCalls)),
 	}
 	for _, call := range state.PendingToolCalls {
+		runtimeState := lifecycle.GetState()
 		batch.Calls = append(batch.Calls, tool.NewToolCallRequest(
 			call.ID,
 			call.Name,
 			json.RawMessage(call.Arguments),
+			tool.SecurityLevel(runtimeState.PermissionLevel),
 			tool.ToolCallContext{
 				SessionID:     sessionID,
 				TurnID:        fmt.Sprintf("turn-%d", state.TurnCount),
-				WorkspaceRoot: lifecycle.GetState().ProjectRoot,
-				WorkingDir:    lifecycle.GetState().Cwd,
+				WorkspaceRoot: runtimeState.ProjectRoot,
+				WorkingDir:    runtimeState.Cwd,
 			},
 		))
 	}
@@ -248,56 +240,6 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 	state.Transition = "tool_results_recorded"
 	r.dispatch(QueryStatusDelta, state, nil)
 	return state, nil
-}
-
-func (r *QueryLoop) buildProviderRequest(history []message.Message, tools []tool.Metadata) (provider.Request, error) {
-	requestMessages := trimPendingAssistant(history)
-	state := lifecycle.GetState()
-	promptCtx := PromptContext{
-		AppVersion:  state.AppVersion,
-		ProjectRoot: state.ProjectRoot,
-		Cwd:         state.Cwd,
-		Tools:       tools,
-		History:     buildPromptHistory(requestMessages),
-		UserInput:   latestUserInput(requestMessages),
-	}
-
-	systemPrompt, err := r.renderPrompt(promptCtx)
-	if err != nil {
-		return provider.Request{}, err
-	}
-
-	req := provider.Request{
-		Messages: []provider.Message{
-			{
-				Role:    provider.RoleSystem,
-				Content: systemPrompt,
-			},
-		},
-	}
-	for _, msg := range requestMessages {
-		providerMsg, ok := toProviderMessage(msg)
-		if !ok {
-			continue
-		}
-		req.Messages = append(req.Messages, providerMsg)
-	}
-	req.Tools = make([]provider.ToolDefinition, 0, len(tools))
-	for _, meta := range tools {
-		req.Tools = append(req.Tools, provider.ToolDefinition{
-			Name:        meta.Name,
-			Description: meta.Description,
-			Parameters:  meta.Parameters,
-		})
-	}
-	return req, nil
-}
-
-func (r *QueryLoop) listTools(ctx context.Context) []tool.Metadata {
-	if r.deps.App == nil {
-		return nil
-	}
-	return r.deps.App.ListTools(ctx)
 }
 
 func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Message {

@@ -60,7 +60,7 @@ func NewService(tools ...Tool) *Service {
 	return svc
 }
 
-func (s *Service) ListTools(_ context.Context) []Metadata {
+func (s *Service) ListTools(_ context.Context, permissionLevel SecurityLevel) []Metadata {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -72,7 +72,14 @@ func (s *Service) ListTools(_ context.Context) []Metadata {
 
 	metas := make([]Metadata, 0, len(names))
 	for _, name := range names {
-		metas = append(metas, s.registry[name].Metadata())
+		meta := s.registry[name].Metadata()
+		if !meta.Enabled {
+			continue
+		}
+		if permissionLevel < meta.SecurityLevel {
+			continue
+		}
+		metas = append(metas, meta)
 	}
 	return metas
 }
@@ -133,7 +140,8 @@ func (s *Service) Call(ctx context.Context, req BatchRequest) ([]ToolResult, err
 	}
 	return results, nil
 }
-// TODO: Using zog makes the implementation even more elegant. 
+
+// TODO: Using zog makes the implementation even more elegant.
 func validateCall(meta Metadata, call ToolCallRequest) error {
 	if err := validateCallPermission(meta, call); err != nil {
 		return err
@@ -148,6 +156,9 @@ func validateCall(meta Metadata, call ToolCallRequest) error {
 func validateCallPermission(meta Metadata, call ToolCallRequest) error {
 	if !meta.Enabled {
 		return fmt.Errorf("tool %q is disabled", call.Name)
+	}
+	if call.PermissionLevel < meta.SecurityLevel {
+		return fmt.Errorf("tool %q requires a higher permission_level", call.Name)
 	}
 	if meta.Requirements&RequireWorkingDir != 0 && strings.TrimSpace(call.Context.WorkingDir) == "" {
 		return fmt.Errorf("tool %q requires working_dir", call.Name)

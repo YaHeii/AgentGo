@@ -57,6 +57,9 @@ func NewRootModel(appSvc chatService) rootModel {
 //	}
 func bootstrapSessionCmd(appSvc chatService) tea.Cmd {
 	return func() tea.Msg {
+		if err := appSvc.InitializePermissionLevel(context.Background()); err != nil {
+			return bootstrapDoneMsg{err: err}
+		}
 		err := appSvc.EnsureActiveSession(context.Background())
 		return bootstrapDoneMsg{
 			err: err,

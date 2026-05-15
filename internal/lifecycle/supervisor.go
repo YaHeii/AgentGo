@@ -71,7 +71,7 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 		InitialEnv:  loadEnvironmentSnapshot(),
 		ModelLimit:  normalizeContextWindow(s.cfg.ContextWindow),
 		MaxTurn:     normalizeContextWindow(s.cfg.MaxTurn),
-		KnownTools:  toToolSnapshots(s.toolSvc.ListTools(ctx)),
+		KnownTools:  toToolSnapshots(s.toolSvc.ListTools(ctx, tool.DangerLevel)),
 	})
 	return nil
 }
@@ -284,8 +284,9 @@ func toToolSnapshots(metas []tool.Metadata) []ToolSnapshot {
 		snapshots = append(snapshots, ToolSnapshot{
 			Name:              meta.Name,
 			Description:       meta.Description,
+			Parameters:        append([]byte(nil), meta.Parameters...),
 			Enabled:           meta.Enabled,
-			SecurityLevel:     string(meta.SecurityLevel),
+			SecurityLevel:     int(meta.SecurityLevel),
 			IsConcurrencySafe: meta.IsConcurrencySafe,
 		})
 	}

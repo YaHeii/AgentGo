@@ -1,12 +1,16 @@
 package lifecycle
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 type ToolSnapshot struct {
 	Name              string
 	Description       string
+	Parameters        json.RawMessage
 	Enabled           bool
-	SecurityLevel     string
+	SecurityLevel     int
 	IsConcurrencySafe bool
 }
 
@@ -17,6 +21,7 @@ type GlobalState struct {
 	DebugMode               bool
 	Cwd                     string
 	ProjectRoot             string
+	PermissionLevel         PermissionLevel
 	SessionID               string
 	InitialEnv              map[string]string
 	ModelLimit              int
@@ -31,8 +36,17 @@ type GlobalState struct {
 	ActualContextTokens     int
 	EstimatedContextChars   int
 	CurrentMessageCount     int
+	Temperature             float32
 	KnownTools              []ToolSnapshot
 }
+
+type PermissionLevel int
+
+const (
+	SafeLevel PermissionLevel = iota
+	AttentionLevel
+	DangerLevel
+)
 
 func GetState() GlobalState {
 	if State == nil {
@@ -48,6 +62,16 @@ func GetState() GlobalState {
 	return snapshot
 }
 
+func SetPermissionLevel(level PermissionLevel) {
+	if State == nil {
+		State = &GlobalState{}
+	}
+
+	State.mu.Lock()
+	defer State.mu.Unlock()
+	State.PermissionLevel = level
+}
+
 func resetGlobalStateForTest() {
 	State = &GlobalState{}
 }
@@ -60,6 +84,7 @@ func (s *GlobalState) initialize(input GlobalState) {
 	s.StartTime = input.StartTime
 	s.Cwd = input.Cwd
 	s.ProjectRoot = input.ProjectRoot
+	s.PermissionLevel = input.PermissionLevel
 	s.SessionID = input.SessionID
 	s.InitialEnv = cloneEnvMap(input.InitialEnv)
 	s.ModelLimit = input.ModelLimit

@@ -10,19 +10,8 @@ import (
 	"github.com/YaHeii/agentGo/internal/tool"
 )
 
-// QueryParams contains the minimal external inputs required to run a query.
-type QueryParams struct {
-	SessionID  string
-	InputParts []message.Part
-
-	// TODO: Add CanUseTool once tool capability gating is designed.
-	// TODO: Add UserContext once caller-supplied user context injection is designed.
-	// TODO: Add SystemContext once system prompt layering is designed.
-	// TODO: Add ToolUseContext once tool loop state ownership is designed.
-}
 
 // QueryResult is the terminal snapshot returned when a query finishes successfully.
-
 type QueryResult struct {
 	SessionID               string
 	UserMessageID           string
@@ -62,6 +51,6 @@ type providerStore interface {
 type appStore interface {
 	ListHistory(ctx context.Context, sessionID string) ([]message.Message, error)
 	CreateMessage(ctx context.Context, params message.CreateMessageParams) (message.Message, error)
-	ListTools(ctx context.Context) []tool.Metadata
+	ListTools(ctx context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata
 	CallTools(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error)
 }

@@ -20,12 +20,12 @@ type Metadata struct {
 	Requirements      ResourceRequirement
 }
 
-type SecurityLevel string
+type SecurityLevel int
 
 const (
-	SafeLevel      SecurityLevel = "safe"
-	AttentionLevel SecurityLevel = "attention"
-	DangerLevel    SecurityLevel = "danger"
+	SafeLevel SecurityLevel = iota
+	AttentionLevel
+	DangerLevel
 )
 
 type ResourceRequirement uint32
@@ -49,10 +49,11 @@ type ToolCallContext struct {
 }
 
 type ToolCallRequest struct {
-	ToolCallID string
-	Name       string
-	Arguments  json.RawMessage
-	Context    ToolCallContext
+	ToolCallID      string
+	Name            string
+	Arguments       json.RawMessage
+	PermissionLevel SecurityLevel
+	Context         ToolCallContext
 }
 
 type BatchRequest struct {
@@ -63,13 +64,15 @@ func NewToolCallRequest(
 	toolCallID string,
 	name string,
 	args json.RawMessage,
+	permissionLevel SecurityLevel,
 	callCtx ToolCallContext,
 ) ToolCallRequest {
 	return ToolCallRequest{
-		ToolCallID: toolCallID,
-		Name:       name,
-		Arguments:  args,
-		Context:    callCtx,
+		ToolCallID:      toolCallID,
+		Name:            name,
+		Arguments:       args,
+		PermissionLevel: permissionLevel,
+		Context:         callCtx,
 	}
 }
 

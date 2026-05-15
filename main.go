@@ -24,7 +24,7 @@ func main() {
 		}
 	}()
 
-	p := tea.NewProgram(ui.NewRootModel(runtime.App))
+	p := tea.NewProgram(ui.NewRootModel(ui.NewChatService(runtime.App)))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "run program: %v\n", err)
 		os.Exit(1)

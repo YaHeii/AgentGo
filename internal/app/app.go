@@ -23,10 +23,10 @@ type sessionStore interface {
 }
 
 type agentStore interface {
-	RunPrompt(ctx context.Context, sessionID string, prompt string) error
+	RunQuery(ctx context.Context, sessionID string, prompt string) error
 }
 
 type toolStore interface {
-	ListTools(ctx context.Context) []tool.Metadata
+	ListTools(ctx context.Context, permissionLevel tool.SecurityLevel) []tool.Metadata
 	Call(ctx context.Context, req tool.BatchRequest) ([]tool.ToolResult, error)
 }
