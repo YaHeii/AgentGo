@@ -17,7 +17,7 @@ type QueryResult struct {
 	UserMessageID           string
 	FinalAssistantMessageID string
 	Turns                   int
-	FinishReason            FinishReason
+	FinishReason            LoopStatus
 	PendingToolCalls        []providercontract.ToolCall
 }
 
@@ -29,14 +29,14 @@ type QueryDeps struct {
 	dispatcher app.Dispatcher
 }
 
-// FinishReason describes why a query loop reached its terminal state.
-type FinishReason string
+// LoopStatus describes why a query loop reached its terminal state.
+type LoopStatus string
 
 const (
-	FinishReasonCompleted             FinishReason = "completed"
-	FinishReasonFailed                FinishReason = "failed"
-	FinishReasonCancelled             FinishReason = "cancelled"
-	FinishReasonAwaitingToolExecution FinishReason = "awaiting_tool_execution"
+	FinishReasonCompleted             LoopStatus = "completed"
+	FinishReasonFailed                LoopStatus = "failed"
+	FinishReasonCancelled             LoopStatus = "cancelled"
+	FinishReasonAwaitingToolExecution LoopStatus = "awaiting_tool_execution"
 )
 
 type providerStore interface {

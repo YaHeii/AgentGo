@@ -86,6 +86,7 @@ func (s *Service) Call(ctx context.Context, req toolcontract.BatchRequest) ([]to
 	}
 
 	validated := make([]validatedToolCall, len(req.Calls))
+	//TODO: Using `go func` for concurrent coroutines, but blocking until all return.
 	for i := range req.Calls {
 		if err := ctx.Err(); err != nil {
 			return nil, err

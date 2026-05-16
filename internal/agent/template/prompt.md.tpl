@@ -64,11 +64,5 @@
 - 运行环境建议：优先使用绝对路径或基于项目根目录的相对路径。
 - 项目根目录：`{{.ProjectRoot}}`
 
-
-# Interaction History
-{{range .History}}
-**{{.Role}}**: {{.Content}}
-{{end}}
-
 # Current Task
 User: {{.UserInput}}

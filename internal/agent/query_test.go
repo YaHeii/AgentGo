@@ -805,8 +805,8 @@ func TestCopyLoopStateDeepCopiesMessages(t *testing.T) {
 		TurnCount:          2,
 		Transition:         "assistant_delta_received",
 		AssistantMessageID: "assistant-1",
-		FinishReason:       FinishReasonAwaitingToolExecution,
-		StopReason:         providercontract.StopReasonToolCalls,
+		LoopStatus:         FinishReasonAwaitingToolExecution,
+		ProviderStopReason: providercontract.StopReasonToolCalls,
 		PendingToolCalls: []providercontract.ToolCall{
 			{
 				ID:        "call-1",
@@ -829,8 +829,8 @@ func TestCopyLoopStateDeepCopiesMessages(t *testing.T) {
 	require.Equal(t, "{\"q\":\"go\"}", state.PendingToolCalls[0].Arguments)
 	require.Equal(t, "assistant_delta_received", state.Transition)
 	require.Equal(t, "assistant-1", state.AssistantMessageID)
-	require.Equal(t, FinishReasonAwaitingToolExecution, state.FinishReason)
-	require.Equal(t, providercontract.StopReasonToolCalls, state.StopReason)
+	require.Equal(t, FinishReasonAwaitingToolExecution, state.LoopStatus)
+	require.Equal(t, providercontract.StopReasonToolCalls, state.ProviderStopReason)
 	require.Equal(t, "changed", copied.Messages[0].Parts[0].Text)
 	require.Equal(t, "changed-plan", copied.Messages[0].Parts[1].Thinking.Content)
 	require.Equal(t, "changed-result", copied.Messages[0].Parts[2].ToolResult.Content)

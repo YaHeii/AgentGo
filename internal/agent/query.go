@@ -33,47 +33,49 @@ func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) 
 	}
 }
 
+// RunQuery orchestrates the full query loop, including history loading,
+// provider turns, optional tool execution, and terminal result assembly.
 func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt string) (QueryResult, error) {
-	maxTurns := r.maxTurns()
+	maxTurns := lifecycle.State.MaxTurn
 	if maxTurns <= 0 {
 		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
 	}
 
+	//Once a query begins, the pre-rendered template is first added to the loop state.
+	initPrompt, err := r.renderPrompt(prompt)
 	inputParts := []message.Part{
 		{
 			Type: message.PartTypeText,
-			Text: prompt,
+			Text: initPrompt,
 		},
 	}
 	userMessage, err := r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
-		SessionID: sessionID,
-		Kind:      message.KindUser,
-		Parts:     inputParts,
+		SessionID:        sessionID,
+		Kind:             message.KindUser,
+		Provider:         lifecycle.State.Model,
+		IsCompactSummary: false,
+		Parts:            inputParts,
 	})
 	if err != nil {
 		return QueryResult{}, err
 	}
-	loopstate := newLoopState(sessionID, inputParts)
-	loopstate.Messages = []message.Message{userMessage}
-	loopstate.Transition = "user_message_created"
-	r.dispatch(QueryStatusStarted, loopstate, nil)
 
+	//load history
 	history, err := r.deps.App.ListHistory(ctx, sessionID)
 	if err != nil {
 		return QueryResult{}, err
 	}
-	loopstate.Messages = r.preprocessHistory(history)
-	loopstate.Transition = "history_loaded"
+	historyMessages := r.preprocessHistory(history)
 
-	assistantMessage := r.newAssistantMessage(sessionID, loopstate.TurnCount)
-	loopstate.Messages = append(loopstate.Messages, assistantMessage)
-	loopstate.Transition = "assistant_turn_initialized"
-	r.dispatch(QueryStatusDelta, loopstate, nil)
-
-	initPrompt, err := r.renderPrompt(loopstate, prompt)
-	if err != nil {
-		return QueryResult{}, err
+	//Assemble loopstate
+	loopstate := LoopState{
+		Messages: append(historyMessages, userMessage),
 	}
+	loopstate.Messages = []message.Message{userMessage}
+	loopstate.Transition = "user_message_created"
+
+	r.dispatch(QueryStatusStarted, loopstate, nil)
+
 	firstReq, err := r.buildInitialRequest(loopstate, initPrompt)
 	if err != nil {
 		return QueryResult{}, err
@@ -86,7 +88,9 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 	}
 
 	for {
-		if loopstate.FinishReason == FinishReasonAwaitingToolExecution {
+		// Tool calls are executed between provider turns and their outputs are
+		// persisted as system messages before the next request is rendered.
+		if loopstate.LoopStatus == FinishReasonAwaitingToolExecution {
 			loopstate, err = r.executePendingTools(ctx, loopstate, sessionID)
 			if err != nil {
 				r.dispatch(QueryStatusFailed, loopstate, err)
@@ -95,20 +99,23 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 			continue
 		}
 
-		if loopstate.FinishReason == FinishReasonCompleted && loopstate.StopReason == providercontract.StopReasonLength && loopstate.TurnCount < maxTurns {
+		// A length stop means the provider has more to say, so the loop advances
+		// to the next assistant turn until the configured turn budget is exhausted.
+		if loopstate.LoopStatus == FinishReasonCompleted && loopstate.ProviderStopReason == providercontract.StopReasonLength && loopstate.TurnCount < maxTurns {
 			loopstate.TurnCount++
-		} else if loopstate.FinishReason == FinishReasonCompleted {
+		} else if loopstate.LoopStatus == FinishReasonCompleted {
 			r.dispatch(QueryStatusCompleted, loopstate, nil)
 			return QueryResult{
 				SessionID:               sessionID,
 				UserMessageID:           userMessage.ID,
-				FinalAssistantMessageID: loopstate.AssistantMessageID,
 				Turns:                   loopstate.TurnCount,
-				FinishReason:            loopstate.FinishReason,
+				FinishReason:            loopstate.LoopStatus,
 				PendingToolCalls:        append([]providercontract.ToolCall(nil), loopstate.PendingToolCalls...),
 			}, nil
 		}
 
+		// Exiting here preserves the latest assistant state instead of failing
+		// when the loop hit the turn budget after a valid provider response.
 		if loopstate.TurnCount > maxTurns {
 			break
 		}
@@ -126,6 +133,8 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 
 		r.dispatch(QueryStatusDelta, loopstate, nil)
 
+		// Later turns reuse persisted history and tool results instead of rebuilding
+		// the initial system prompt on every iteration.
 		req, err := r.renderLoopstate(loopstate)
 		if err != nil {
 			return QueryResult{}, err
@@ -190,6 +199,26 @@ func cloneMessages(history []message.Message) []message.Message {
 	return copied
 }
 
+func flattenHistoryParts(history []message.Message) []message.Part {
+	if len(history) == 0 {
+		return nil
+	}
+
+	var total int
+	for i := range history {
+		total += len(history[i].Parts)
+	}
+	if total == 0 {
+		return nil
+	}
+
+	parts := make([]message.Part, 0, total)
+	for i := range history {
+		parts = append(parts, cloneMessageParts(history[i].Parts)...)
+	}
+	return parts
+}
+
 func (r *QueryLoop) estimateMessagesTokens(model string, messages []message.Message) (int, error) {
 	if lifecycle.CurrentSupervisor == nil {
 		return 0, errors.New("agent: supervisor is required for token estimation")
@@ -237,6 +266,8 @@ func flattenMessages(messages []message.Message) []byte {
 	return builder
 }
 
+// runTurn executes one provider turn against the latest assistant placeholder,
+// persists the assistant output, and translates provider outcomes into loop state.
 func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req providercontract.Request) (LoopState, error) {
 	state = copyLoopState(state)
 
@@ -246,7 +277,7 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req providerco
 	}
 
 	turnResult, err := r.deps.Provider.RunTurn(ctx, req)
-	state.StopReason = turnResult.StopReason
+	state.ProviderStopReason = turnResult.StopReason
 
 	assistantMessage := state.Messages[assistantIndex]
 	assistantMessage.Parts = buildAssistantParts(turnResult)
@@ -254,16 +285,17 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req providerco
 	state.Messages[assistantIndex] = assistantMessage
 
 	if err != nil {
+		// Persist partial assistant output before surfacing the provider failure so
+		// the transcript still reflects what was produced before the error.
 		persistedAssistant, persistErr := r.persistAssistant(ctx, assistantMessage)
 		if persistErr != nil {
 			return state, persistErr
 		}
 		state.Messages[assistantIndex] = persistedAssistant
-		state.AssistantMessageID = persistedAssistant.ID
 		state.Transition = "stream_failed"
-		state.FinishReason = FinishReasonFailed
+		state.LoopStatus = FinishReasonFailed
 		if errors.Is(err, context.Canceled) {
-			state.FinishReason = FinishReasonCancelled
+			state.LoopStatus = FinishReasonCancelled
 		}
 
 		systemMessage, persistErr := r.createSystemErrorMessage(ctx, assistantMessage.SessionID, err)
@@ -280,26 +312,28 @@ func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req providerco
 		return state, err
 	}
 	state.Messages[assistantIndex] = persistedAssistant
-	state.AssistantMessageID = persistedAssistant.ID
 	state.PendingToolCalls = append([]providercontract.ToolCall(nil), turnResult.ToolCalls...)
 
 	if len(turnResult.ToolCalls) > 0 {
+		// Tool calls pause the provider loop until the tool runner records results.
 		state.Transition = "awaiting_tool_execution"
-		state.FinishReason = FinishReasonAwaitingToolExecution
+		state.LoopStatus = FinishReasonAwaitingToolExecution
 		r.dispatch(QueryStatusDelta, state, nil)
 		return state, nil
 	}
 
 	state.Transition = "assistant_completed"
-	state.FinishReason = FinishReasonCompleted
+	state.LoopStatus = FinishReasonCompleted
 	r.dispatch(QueryStatusDelta, state, nil)
 	return state, nil
 }
 
+// executePendingTools resolves the queued tool calls and appends each result to
+// the persisted transcript as a system message for the next provider turn.
 func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, sessionID string) (LoopState, error) {
 	state = copyLoopState(state)
 	if len(state.PendingToolCalls) == 0 {
-		state.FinishReason = FinishReasonCompleted
+		state.LoopStatus = FinishReasonCompleted
 		return state, nil
 	}
 	if r.deps.App == nil {
@@ -345,12 +379,14 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 		state.Messages = append(state.Messages, msg)
 	}
 	state.PendingToolCalls = nil
-	state.FinishReason = ""
+	state.LoopStatus = ""
 	state.Transition = "tool_results_recorded"
 	r.dispatch(QueryStatusDelta, state, nil)
 	return state, nil
 }
 
+// newAssistantMessage creates the placeholder message that will be filled with
+// provider output and then persisted as the assistant turn record.
 func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Message {
 	now := r.deps.Now().UTC()
 	id, err := ksuid.NewRandomWithTime(now)
@@ -384,6 +420,7 @@ func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Mess
 	}
 }
 
+// persistAssistant writes the latest assistant snapshot back to the message store.
 func (r *QueryLoop) persistAssistant(ctx context.Context, assistant message.Message) (message.Message, error) {
 	return r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
 		ID:               assistant.ID,
@@ -396,6 +433,8 @@ func (r *QueryLoop) persistAssistant(ctx context.Context, assistant message.Mess
 	})
 }
 
+// persistToolResult records a tool execution outcome as a system message so it
+// can be replayed into later provider turns.
 func (r *QueryLoop) persistToolResult(ctx context.Context, sessionID string, result toolcontract.ToolResult) (message.Message, error) {
 	content := strings.TrimSpace(result.Content)
 	parts := []message.Part{
@@ -419,6 +458,8 @@ func (r *QueryLoop) persistToolResult(ctx context.Context, sessionID string, res
 	})
 }
 
+// createSystemErrorMessage stores provider failures in the transcript so the
+// UI and later debugging flows can inspect the terminal error context.
 func (r *QueryLoop) createSystemErrorMessage(ctx context.Context, sessionID string, providerErr error) (message.Message, error) {
 	text := "provider error"
 	if providerErr != nil {
@@ -440,6 +481,7 @@ func (r *QueryLoop) createSystemErrorMessage(ctx context.Context, sessionID stri
 	})
 }
 
+// dispatch mirrors query-loop state changes onto the shared app event bus.
 func (r *QueryLoop) dispatch(status QueryStatus, state LoopState, err error) {
 	if r.deps.dispatcher == nil {
 		return
@@ -575,11 +617,4 @@ func cloneMessageParts(parts []message.Part) []message.Part {
 		}
 	}
 	return copied
-}
-
-func (r *QueryLoop) maxTurns() int {
-	if lifecycle.State != nil && lifecycle.State.MaxTurn > 0 {
-		return lifecycle.State.MaxTurn
-	}
-	return 10
 }

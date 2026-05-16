@@ -10,25 +10,23 @@ type LoopState struct {
 	Messages           []messagecontract.Message
 	TurnCount          int
 	Transition         string // Transition records the latest control-flow transition inside the query loop.
-	AssistantMessageID string
-	FinishReason       FinishReason
-	StopReason         providercontract.StopReason
+	LoopStatus         LoopStatus
+	ProviderStopReason providercontract.StopReason
 	PendingToolCalls   []providercontract.ToolCall
+	// stopHookActive
 }
 
-func newLoopState(sessionID string, inputParts []messagecontract.Part) LoopState {
+func (l *LoopState) Continue(msg messagecontract.Message, transition string, finish LoopStatus) LoopState {
 	return LoopState{
-		Messages: []messagecontract.Message{
-			{
-				SessionID: sessionID,
-				Kind:      messagecontract.KindUser,
-				Parts:     append([]messagecontract.Part(nil), inputParts...),
-			},
-		},
-		TurnCount: 1,
+		Messages:   append(l.Messages, msg),
+		TurnCount:  l.TurnCount + 1,
+		Transition: transition,
+		LoopStatus: finish,
 	}
 }
 
+// copyLoopState deep-copies mutable slices so event subscribers and later turns
+// cannot observe in-place mutations from the active loop.
 func copyLoopState(state LoopState) LoopState {
 	copied := state
 	copied.PendingToolCalls = append([]providercontract.ToolCall(nil), state.PendingToolCalls...)

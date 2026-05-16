@@ -30,8 +30,9 @@ type PromptMessage struct {
 	Content string
 }
 
-func (r *QueryLoop) renderPrompt(state LoopState, usrPrompt string) (string, error) {
-	requestMessages := trimPendingAssistant(state.Messages)
+// renderPrompt builds the initial system prompt that wraps runtime context,
+// available tools, prior history, and the latest user input.
+func (r *QueryLoop) renderPrompt(usrPrompt string) (string, error) {
 	var tools []toolcontract.Metadata
 	permissionLevel := toolcontract.SecurityLevel(0)
 	if lifecycle.State != nil {
@@ -53,7 +54,6 @@ func (r *QueryLoop) renderPrompt(state LoopState, usrPrompt string) (string, err
 		ProjectRoot: projectRoot,
 		Cwd:         cwd,
 		Tools:       tools,
-		History:     buildPromptHistory(requestMessages),
 		UserInput:   usrPrompt,
 	}
 
@@ -69,6 +69,8 @@ func (r *QueryLoop) renderPrompt(state LoopState, usrPrompt string) (string, err
 	return strings.TrimSpace(buf.String()), nil
 }
 
+// buildInitialRequest prepends the rendered system prompt to the normal
+// provider request used for the first turn.
 func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (providercontract.Request, error) {
 	req := providercontract.Request{
 		Messages: []message.Message{
@@ -87,10 +89,13 @@ func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (provide
 	return req, nil
 }
 
+// renderLoopstate converts the current loop state into the next provider request.
 func (r *QueryLoop) renderLoopstate(state LoopState) (providercontract.Request, error) {
 	return r.buildRequest(state), nil
 }
 
+// buildRequest replays persisted conversation state into the provider format
+// and attaches the currently allowed tool metadata.
 func (r *QueryLoop) buildRequest(state LoopState) providercontract.Request {
 	requestMessages := trimPendingAssistant(state.Messages)
 	permissionLevel := toolcontract.SecurityLevel(0)
