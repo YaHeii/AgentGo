@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -209,6 +210,60 @@ func TestStoreWithinTxRollsBackOnError(t *testing.T) {
 	require.Len(t, sessions, 0)
 }
 
+func TestOpenPreservesSessionsAcrossReopen(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agentgo.db")
+	now := time.Unix(1710004000, 0).UTC()
+
+	first, err := db.Open(dbPath)
+	require.NoError(t, err)
+
+	_, err = first.CreateSession(ctx, sessioncontract.CreateSessionParams{
+		ID:        "session-1",
+		Title:     "persisted",
+		TodosJSON: "[]",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	require.NoError(t, first.Close())
+
+	second, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, second.Close())
+	})
+
+	sessions, err := second.ListSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	require.Equal(t, "session-1", sessions[0].ID)
+}
+
+func TestMigrateDownRollsBackLatestMigration(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agentgo.db")
+
+	store, err := db.Open(dbPath)
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	require.NoError(t, db.MigrateDown(ctx, dbPath, 1))
+	require.False(t, tableExists(t, dbPath, "sessions"))
+
+	reopened, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, reopened.Close())
+	})
+
+	require.True(t, tableExists(t, dbPath, "sessions"))
+}
+
 func newTestStore(t *testing.T) *db.Store {
 	t.Helper()
 
@@ -221,4 +276,22 @@ func newTestStore(t *testing.T) *db.Store {
 	})
 
 	return s
+}
+
+func tableExists(t *testing.T, dbPath string, tableName string) bool {
+	t.Helper()
+
+	conn, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, conn.Close())
+	})
+
+	var count int
+	err = conn.QueryRow(
+		`SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?`,
+		tableName,
+	).Scan(&count)
+	require.NoError(t, err)
+	return count == 1
 }

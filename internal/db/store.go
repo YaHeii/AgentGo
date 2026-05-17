@@ -3,11 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"fmt"
-	"io/fs"
-	"path"
-	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -15,9 +11,6 @@ import (
 	"github.com/YaHeii/agentGo/internal/message"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 )
-
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
 
 type Store struct {
 	db *sql.DB
@@ -69,14 +62,11 @@ var _ dbStore = (*Store)(nil)
 var _ TxStore = (*txStore)(nil)
 
 func Open(dbPath string) (*Store, error) {
-	dbConn, err := sql.Open("sqlite", dbPath)
+	dbConn, err := openSQLite(dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, err
 	}
-
-	dbConn.SetMaxOpenConns(1)
-
-	if err := initSchema(context.Background(), dbConn); err != nil {
+	if err := migrateUp(context.Background(), dbConn, 0); err != nil {
 		_ = dbConn.Close()
 		return nil, err
 	}
@@ -106,35 +96,19 @@ func (s *Store) WithinTx(ctx context.Context, fn func(tx TxStore) error) error {
 	return tx.Commit()
 }
 
-func initSchema(ctx context.Context, dbConn *sql.DB) error {
+func openSQLite(dbPath string) (*sql.DB, error) {
+	dbConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	dbConn.SetMaxOpenConns(1)
+	return dbConn, nil
+}
+
+func enableForeignKeys(ctx context.Context, dbConn *sql.DB) error {
 	if _, err := dbConn.ExecContext(ctx, "PRAGMA foreign_keys = ON;"); err != nil {
 		return fmt.Errorf("enable foreign keys: %w", err)
 	}
-
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
-	if err != nil {
-		return fmt.Errorf("read migrations: %w", err)
-	}
-
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		names = append(names, entry.Name())
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		sqlBytes, err := migrationsFS.ReadFile(path.Join("migrations", name))
-		if err != nil {
-			return fmt.Errorf("read migration %s: %w", name, err)
-		}
-		if _, err := dbConn.ExecContext(ctx, string(sqlBytes)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", name, err)
-		}
-	}
-
 	return nil
 }
 

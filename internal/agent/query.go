@@ -73,6 +73,10 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 	}
 	loopstate.Messages = []message.Message{userMessage}
 	loopstate.Transition = "user_message_created"
+	
+	// setup AssitantMessage Placeholder
+	assistantMessage := r.newAssistantMessage(sessionID, loopstate.TurnCount)
+	loopstate.Messages = append(loopstate.Messages, assistantMessage)
 
 	r.dispatch(QueryStatusStarted, loopstate, nil)
 

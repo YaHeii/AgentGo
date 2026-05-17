@@ -10,18 +10,18 @@ test:
 	go test -v -cover -short ./...
 
 migrateup:
-	migrate -path internal/db/migration -database "$(DB_URL)" -verbose up
+	go run ./cmd/migrate -db "$(DB_URL)" up
 
 migrateup1:
-	migrate -path internal/db/migration -database "$(DB_URL)" -verbose up 1
+	go run ./cmd/migrate -db "$(DB_URL)" up 1
 
 migratedown:
-	migrate -path internal/db/migration -database "$(DB_URL)" -verbose down
+	go run ./cmd/migrate -db "$(DB_URL)" down
 
 migratedown1:
-	migrate -path internal/db/migration -database "$(DB_URL)" -verbose down 1
+	go run ./cmd/migrate -db "$(DB_URL)" down 1
 
 new_migration:
-	migrate create -ext sql -dir internal/db/migrationn -seq $(name)
+	@echo "Create internal/db/migrations/<seq>_<name>.up.sql and .down.sql manually"
 
 .PHONY:sqlc main test migrateup

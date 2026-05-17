@@ -10,6 +10,7 @@ type LoopState struct {
 	Messages           []messagecontract.Message
 	TurnCount          int
 	Transition         string // Transition records the latest control-flow transition inside the query loop.
+	AssistantMessageID string
 	LoopStatus         LoopStatus
 	ProviderStopReason providercontract.StopReason
 	PendingToolCalls   []providercontract.ToolCall
