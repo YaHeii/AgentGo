@@ -1,4 +1,4 @@
-package grep
+package tool
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	toolpkg "github.com/YaHeii/agentGo/internal/tool"
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/stretchr/testify/require"
 )
@@ -128,7 +127,7 @@ func TestExecuteRejectsSymlinkPathEscapingProjectRoot(t *testing.T) {
 
 func TestServiceRejectsInvalidGrepArgumentsBeforeExecute(t *testing.T) {
 	projectRoot := t.TempDir()
-	svc := toolpkg.NewService(NewGrepTool(projectRoot))
+	svc := NewService(NewGrepTool(projectRoot))
 
 	results, err := svc.Call(context.Background(), toolcontract.BatchRequest{
 		Calls: []toolcontract.ToolCallRequest{{

@@ -13,8 +13,8 @@ import (
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/tool"
+	grepTool "github.com/YaHeii/agentGo/internal/tool"
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
-	grepTool "github.com/YaHeii/agentGo/internal/tool/grep"
 	"github.com/pkoukk/tiktoken-go"
 	"github.com/segmentio/ksuid"
 )

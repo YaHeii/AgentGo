@@ -1,4 +1,4 @@
-package grep
+package tool
 
 // https://zhuanlan.zhihu.com/p/2028510583213835970
 // as the article says
