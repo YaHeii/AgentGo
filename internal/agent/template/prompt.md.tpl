@@ -63,6 +63,8 @@
 - 当前工作目录 (CWD)：`{{.Cwd}}`
 - 运行环境建议：优先使用绝对路径或基于项目根目录的相对路径。
 - 项目根目录：`{{.ProjectRoot}}`
+- Agents.md: `{{.AGENTSMD}}`
+
 
 # Current Task
 User: {{.UserInput}}

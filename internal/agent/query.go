@@ -73,9 +73,9 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 	}
 	loopstate.Messages = []message.Message{userMessage}
 	loopstate.Transition = "user_message_created"
-	
+
 	// setup AssitantMessage Placeholder
-	assistantMessage := r.newAssistantMessage(sessionID, loopstate.TurnCount)
+	assistantMessage, err := r.newAssistantMessage(sessionID, loopstate.TurnCount)
 	loopstate.Messages = append(loopstate.Messages, assistantMessage)
 
 	r.dispatch(QueryStatusStarted, loopstate, nil)
@@ -110,11 +110,11 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 		} else if loopstate.LoopStatus == FinishReasonCompleted {
 			r.dispatch(QueryStatusCompleted, loopstate, nil)
 			return QueryResult{
-				SessionID:               sessionID,
-				UserMessageID:           userMessage.ID,
-				Turns:                   loopstate.TurnCount,
-				FinishReason:            loopstate.LoopStatus,
-				PendingToolCalls:        append([]providercontract.ToolCall(nil), loopstate.PendingToolCalls...),
+				SessionID:        sessionID,
+				UserMessageID:    userMessage.ID,
+				Turns:            loopstate.TurnCount,
+				FinishReason:     loopstate.LoopStatus,
+				PendingToolCalls: append([]providercontract.ToolCall(nil), loopstate.PendingToolCalls...),
 			}, nil
 		}
 
@@ -131,7 +131,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 		loopstate.Messages = r.preprocessHistory(history)
 		loopstate.Transition = "history_loaded"
 
-		assistantMessage := r.newAssistantMessage(sessionID, loopstate.TurnCount)
+		assistantMessage, err := r.newAssistantMessage(sessionID, loopstate.TurnCount)
 		loopstate.Messages = append(loopstate.Messages, assistantMessage)
 		loopstate.Transition = "assistant_turn_initialized"
 
@@ -139,10 +139,7 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 
 		// Later turns reuse persisted history and tool results instead of rebuilding
 		// the initial system prompt on every iteration.
-		req, err := r.renderLoopstate(loopstate)
-		if err != nil {
-			return QueryResult{}, err
-		}
+		req := r.buildRequest(loopstate)
 
 		loopstate, err = r.runTurn(ctx, loopstate, req)
 		if err != nil {
@@ -166,28 +163,6 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 		Turns:                   loopstate.TurnCount,
 		FinishReason:            FinishReasonCompleted,
 	}, nil
-}
-
-func (r *QueryLoop) preprocessHistory(history []message.Message) []message.Message {
-	processed := cloneMessages(history)
-	if r.messageWindow > 0 && len(processed) > r.messageWindow {
-		processed = processed[len(processed)-r.messageWindow:]
-	}
-	if lifecycle.State == nil || lifecycle.CurrentSupervisor == nil {
-		return processed
-	}
-	if lifecycle.State.ModelLimit <= 0 || strings.TrimSpace(lifecycle.State.Model) == "" {
-		return processed
-	}
-
-	for len(processed) > 1 {
-		exceeded, err := r.exceedsModelLimit(lifecycle.State.Model, lifecycle.State.ModelLimit, processed)
-		if err == nil && !exceeded {
-			return processed
-		}
-		processed = processed[1:]
-	}
-	return processed
 }
 
 func cloneMessages(history []message.Message) []message.Message {
@@ -275,8 +250,16 @@ func flattenMessages(messages []message.Message) []byte {
 func (r *QueryLoop) runTurn(ctx context.Context, state LoopState, req providercontract.Request) (LoopState, error) {
 	state = copyLoopState(state)
 
-	assistantIndex := latestAssistantIndex(state.Messages)
-	if assistantIndex < 0 {
+	// find the Placeholder Data
+	assistantIndex := -1
+	for i := len(state.Messages) - 1; i >= 0; i-- {
+		if state.Messages[i].Kind == message.KindAssistant {
+			assistantIndex = i
+			break
+		}
+	}
+
+	if assistantIndex == -1 {
 		return state, errors.New("agent: assistant message not found")
 	}
 
@@ -391,24 +374,22 @@ func (r *QueryLoop) executePendingTools(ctx context.Context, state LoopState, se
 
 // newAssistantMessage creates the placeholder message that will be filled with
 // provider output and then persisted as the assistant turn record.
-func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Message {
+func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) (message.Message, error) {
 	now := r.deps.Now().UTC()
-	id, err := ksuid.NewRandomWithTime(now)
-	if err != nil {
-		return message.Message{
-			ID:        fmt.Sprintf("assistant-turn-%d-%d", turn, now.UnixNano()),
-			SessionID: sessionID,
-			Kind:      message.KindAssistant,
-			CreatedAt: now,
-			UpdatedAt: now,
-			Parts: []message.Part{
-				{
-					Type: message.PartTypeText,
-					Text: "",
-				},
-			},
+	var id ksuid.KSUID
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		id, err = ksuid.NewRandomWithTime(now)
+		if err == nil {
+			break
 		}
+		time.Sleep(time.Millisecond * time.Duration(10*(attempt+1)))
 	}
+
+	if err != nil {
+		return message.Message{}, fmt.Errorf("generate assistant message ID: %w", err)
+	}
+
 	return message.Message{
 		ID:        id.String(),
 		SessionID: sessionID,
@@ -421,7 +402,7 @@ func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) message.Mess
 				Text: "",
 			},
 		},
-	}
+	},nil
 }
 
 // persistAssistant writes the latest assistant snapshot back to the message store.
@@ -500,15 +481,6 @@ func (r *QueryLoop) dispatch(status QueryStatus, state LoopState, err error) {
 	})
 }
 
-func latestAssistantIndex(messages []message.Message) int {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Kind == message.KindAssistant {
-			return i
-		}
-	}
-	return -1
-}
-
 func buildAssistantParts(turn providercontract.TurnResult) []message.Part {
 	parts := make([]message.Part, 0, 2+len(turn.ToolCalls))
 	if turn.Text != "" || turn.Refusal != "" || len(turn.ToolCalls) == 0 {
@@ -537,22 +509,6 @@ func buildAssistantParts(turn providercontract.TurnResult) []message.Part {
 		})
 	}
 	return parts
-}
-
-func buildPromptHistory(history []message.Message) []PromptMessage {
-	out := make([]PromptMessage, 0, len(history))
-	for _, msg := range history {
-		role := string(msg.Kind)
-		content := flattenMessageParts(msg.Parts)
-		if content == "" {
-			continue
-		}
-		out = append(out, PromptMessage{
-			Role:    role,
-			Content: content,
-		})
-	}
-	return out
 }
 
 func flattenMessageParts(parts []message.Part) string {

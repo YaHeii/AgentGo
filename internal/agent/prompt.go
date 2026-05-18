@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"text/template"
 
@@ -21,6 +24,7 @@ type promptTemplateData struct {
 	ProjectRoot string
 	Cwd         string
 	Tools       []toolcontract.Metadata
+	AGENTSMD    string
 	History     []PromptMessage
 	UserInput   string
 }
@@ -41,9 +45,13 @@ func (r *QueryLoop) renderPrompt(usrPrompt string) (string, error) {
 	if r.deps.App != nil {
 		tools = r.deps.App.ListTools(context.Background(), permissionLevel)
 	}
-	appVersion := ""
-	projectRoot := ""
-	cwd := ""
+
+	agentsMD, err := LoadAggregateInstructions()
+
+	appVersion := lifecycle.State.AppVersion
+	projectRoot := lifecycle.State.ProjectRoot
+	cwd := lifecycle.State.Cwd
+
 	if lifecycle.State != nil {
 		appVersion = lifecycle.State.AppVersion
 		projectRoot = lifecycle.State.ProjectRoot
@@ -54,6 +62,7 @@ func (r *QueryLoop) renderPrompt(usrPrompt string) (string, error) {
 		ProjectRoot: projectRoot,
 		Cwd:         cwd,
 		Tools:       tools,
+		AGENTSMD:    agentsMD,
 		UserInput:   usrPrompt,
 	}
 
@@ -67,6 +76,99 @@ func (r *QueryLoop) renderPrompt(usrPrompt string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(buf.String()), nil
+}
+
+func (r *QueryLoop) preprocessHistory(history []message.Message) []message.Message {
+	processed := cloneMessages(history)
+	if r.messageWindow > 0 && len(processed) > r.messageWindow {
+		processed = processed[len(processed)-r.messageWindow:]
+	}
+	if lifecycle.State == nil || lifecycle.CurrentSupervisor == nil {
+		return processed
+	}
+	if lifecycle.State.ModelLimit <= 0 || strings.TrimSpace(lifecycle.State.Model) == "" {
+		return processed
+	}
+
+	for len(processed) > 1 {
+		exceeded, err := r.exceedsModelLimit(lifecycle.State.Model, lifecycle.State.ModelLimit, processed)
+		if err == nil && !exceeded {
+			return processed
+		}
+		processed = processed[1:]
+	}
+	return processed
+}
+
+// Load AGENTS.md
+func LoadAggregateInstructions() (string, error) {
+	var sb strings.Builder
+
+	// homelevel
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+
+		homeDir = ""
+	}
+
+	// Level 1: Managed Memory (System-wide Hardcoded Constraint — Lowest Priority)
+	appendFileIfExists(&sb, "/etc/agentgo/AGENTS.md", "Managed Global Rules")
+
+	// Level 2: User Memory (User-Specific Private Constraints Across Projects)
+	if homeDir != "" {
+		userPath := filepath.Join(homeDir, ".agents", "AGENTS.md")
+		appendFileIfExists(&sb, userPath, "User Private Rules")
+	}
+
+	// Level 3: Project Memory (Constraints Shared within the Version Control Repository)
+	projectRoot := lifecycle.State.ProjectRoot
+	if projectRoot != "" {
+		appendFileIfExists(&sb, filepath.Join(projectRoot, "AGENTS.md"), "Project Core Rules")
+
+		appendFileIfExists(&sb, filepath.Join(projectRoot, ".agents", "AGENTS.md"), "Project Specific Rules")
+
+		rulesPattern := filepath.Join(projectRoot, ".agents", "rules", "*.md")
+		appendGlobFilesIfExists(&sb, rulesPattern)
+	}
+
+	// Level 4: Local Memory (Private Overrides — Not Committed — Highest Priority)
+	if projectRoot != "" {
+		localPath := filepath.Join(projectRoot, "AGENTS.local.md")
+		appendFileIfExists(&sb, localPath, "Local Overrides")
+	}
+
+	return sb.String(), nil
+}
+
+func appendFileIfExists(sb *strings.Builder, path string, sectionName string) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		// Whether the file does not exist (os.IsNotExist) or there are insufficient permissions to read it,
+		//  both are treated here as valid branches to be ignored.
+		return
+	}
+
+	trimmed := strings.TrimSpace(string(content))
+	if trimmed == "" {
+		return
+	}
+
+	sb.WriteString(fmt.Sprintf("\n## %s (%s)\n", sectionName, path))
+	sb.WriteString(trimmed)
+	sb.WriteString("\n")
+}
+
+func appendGlobFilesIfExists(sb *strings.Builder, pattern string) {
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return
+	}
+
+	for _, path := range matches {
+		filename := filepath.Base(path)
+		sectionName := fmt.Sprintf("Project Rule: %s", filename)
+		appendFileIfExists(sb, path, sectionName)
+	}
 }
 
 // buildInitialRequest prepends the rendered system prompt to the normal
@@ -87,11 +189,6 @@ func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (provide
 	req.Tools = loopReq.Tools
 	req.Context = loopReq.Context
 	return req, nil
-}
-
-// renderLoopstate converts the current loop state into the next provider request.
-func (r *QueryLoop) renderLoopstate(state LoopState) (providercontract.Request, error) {
-	return r.buildRequest(state), nil
 }
 
 // buildRequest replays persisted conversation state into the provider format
