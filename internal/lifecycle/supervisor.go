@@ -24,6 +24,8 @@ const defaultAppVersion = "0.0.1"
 type Supervisor struct {
 	dispatcher app.Dispatcher
 	toolSvc    *tool.Service
+	tools      []tool.Tool
+	mcpClients []mcpClient
 	estimator  contextEstimator
 	cfg        Config
 }
@@ -78,7 +80,11 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	s.toolSvc = tool.NewService(grepTool.NewGrepTool(projectRoot))
+	s.tools = []tool.Tool{grepTool.NewGrepTool(projectRoot)}
+	if err := s.initializeMCPTools(ctx, s.cfg.ConfigDir); err != nil {
+		return err
+	}
+	s.toolSvc = tool.NewService(s.tools...)
 	State.AppVersion = defaultAppVersion
 	State.StartTime = startTime.Format(time.RFC3339Nano)
 	State.Cwd = cwd

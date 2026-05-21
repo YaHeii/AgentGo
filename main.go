@@ -57,6 +57,9 @@ func main() {
 	agentSvc := agent.NewService(queryLoop)
 	appSvc := app.NewService(sessionSvc, agentSvc, toolSvc, dispatcher)
 	defer func() {
+		if err := supervisor.Close(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "close supervisor: %v\n", err)
+		}
 		if err := st.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "close runtime: %v\n", err)
 		}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/YaHeii/agentGo/internal/app"
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
+	"github.com/YaHeii/agentGo/internal/tool/mcp"
 	"github.com/segmentio/ksuid"
 )
 
@@ -65,6 +66,82 @@ func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
 	}
 	if tools[0].Name != "grep" {
 		t.Fatalf("expected grep tool to be discovered, got %+v", tools[0])
+	}
+}
+
+func TestSupervisorInitializeRegistersMCPToolsFromConfigFile(t *testing.T) {
+	State = &GlobalState{}
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+		mcpClientFactory = newMCPClient
+	})
+
+	configDir := t.TempDir()
+	mcpConfig := `{
+		"servers": [
+			{
+				"name": "fs",
+				"kind": "stdio",
+				"command": "mcp-server"
+			}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(configDir, "MCP.json"), []byte(mcpConfig), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+
+	mcpClientFactory = func(mcp.Config) (mcpClient, error) {
+		return &stubMCPClient{
+			tools: []toolcontract.Metadata{{
+				Name:          "read_file",
+				Description:   "Read a file",
+				Parameters:    []byte(`{"type":"object"}`),
+				Enabled:       true,
+				SecurityLevel: toolcontract.AttentionLevel,
+			}},
+		}, nil
+	}
+
+	dispatcher := app.NewDispatcher(16)
+	supervisor := NewSupervisor(dispatcher, Config{
+		Model:         "test-model",
+		ContextWindow: 400000,
+		ConfigDir:     configDir,
+	})
+
+	if err := supervisor.Initialize(context.Background()); err != nil {
+		t.Fatalf("initialize supervisor: %v", err)
+	}
+
+	var found bool
+	for _, meta := range State.KnownTools {
+		if meta.Name == "fs__read_file" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected MCP tool in known tools, got %+v", State.KnownTools)
+	}
+}
+
+func TestLoadConfigStoresConfigDir(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "app.env")
+	config := "API_KEY=test-key\nMODEL=test-model\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configDir)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.ConfigDir != configDir {
+		t.Fatalf("expected config dir %q, got %q", configDir, cfg.ConfigDir)
 	}
 }
 

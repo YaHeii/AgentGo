@@ -15,6 +15,7 @@ type Config struct {
 	MaxToken      int64  `mapstructure:"MAX_TOKENS"`
 	ContextWindow int64  `mapstructure:"CONTEXT_WINDOW"`
 	MaxTurn       int64  `mapstructure:"MAX_TURN"`
+	ConfigDir     string
 }
 
 type Runtime struct {
@@ -42,5 +43,6 @@ func LoadConfig(path string) (config Config, err error) {
 	}
 
 	err = v.Unmarshal(&config)
+	config.ConfigDir = path
 	return
 }

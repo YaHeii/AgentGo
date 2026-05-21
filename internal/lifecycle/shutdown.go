@@ -21,3 +21,19 @@ func (r Runtime) GracefulShutdown(ctx context.Context) error {
 
 	return r.closeFn(ctx)
 }
+
+func (s *Supervisor) Close(_ context.Context) error {
+	if s == nil {
+		return nil
+	}
+	for _, client := range s.mcpClients {
+		if client == nil {
+			continue
+		}
+		if err := client.Close(); err != nil {
+			return err
+		}
+	}
+	s.mcpClients = nil
+	return nil
+}
