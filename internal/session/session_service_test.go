@@ -97,6 +97,35 @@ func TestSessionServiceRenameUpdatesSessionAndPublishesUpdatedEvent(t *testing.T
 	require.Equal(t, "new", payload.Session.Title)
 }
 
+func TestSessionServiceSaveUpdatesSessionTodosJSON(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeSessionStore()
+	st.sessions = []sessioncontract.Session{
+		{
+			ID:        "session-1",
+			Title:     "chat",
+			TodosJSON: "[]",
+			CreatedAt: time.Unix(1710000000, 0).UTC(),
+			UpdatedAt: time.Unix(1710000000, 0).UTC(),
+		},
+	}
+	svc := NewSessionService(st, newFakeSessionMessages(), newStubDispatcher())
+	svc.nowFunc = timeNowStub
+
+	saved, err := svc.Save(context.Background(), sessioncontract.Session{
+		ID:        "session-1",
+		Title:     "chat",
+		TodosJSON: `[{"content":"wire todos","status":"completed"}]`,
+		CreatedAt: time.Unix(1710000000, 0).UTC(),
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "session-1", saved.ID)
+	require.JSONEq(t, `[{"content":"wire todos","status":"completed"}]`, saved.TodosJSON)
+	require.Equal(t, timeNowStub().UTC(), saved.UpdatedAt)
+}
+
 func TestSessionServiceGetLastUsesUpdatedAtOrdering(t *testing.T) {
 	t.Parallel()
 

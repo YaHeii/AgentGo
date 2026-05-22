@@ -76,6 +76,25 @@ func (s *SessionService) Get(ctx context.Context, id string) (sessioncontract.Se
 	return row, nil
 }
 
+func (s *SessionService) Save(ctx context.Context, session sessioncontract.Session) (sessioncontract.Session, error) {
+	updatedAt := s.nowFunc().UTC()
+	row, err := s.sessionStore.UpdateSession(ctx, sessioncontract.UpdateSessionParams{
+		ID:               session.ID,
+		ParentSessionID:  session.ParentSessionID,
+		Title:            session.Title,
+		MessageCount:     session.MessageCount,
+		CompletionTokens: session.CompletionTokens,
+		CostMicros:       session.CostMicros,
+		SummaryMessageID: session.SummaryMessageID,
+		TodosJSON:        session.TodosJSON,
+		UpdatedAt:        updatedAt,
+	})
+	if err != nil {
+		return sessioncontract.Session{}, mapError(err)
+	}
+	return row, nil
+}
+
 func (s *SessionService) GetLast(ctx context.Context) (string, error) {
 	rows, err := s.sessionStore.ListSessions(ctx)
 	if err != nil {

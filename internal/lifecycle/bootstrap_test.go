@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/YaHeii/agentGo/internal/app"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/YaHeii/agentGo/internal/tool/mcp"
 	"github.com/segmentio/ksuid"
@@ -64,8 +65,8 @@ func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected known tools to use tool contract metadata, got %T", State.KnownTools)
 	}
-	if tools[0].Name != "grep" {
-		t.Fatalf("expected grep tool to be discovered, got %+v", tools[0])
+	if !hasTool(tools, "grep") {
+		t.Fatalf("expected grep tool to be discovered, got %+v", tools)
 	}
 }
 
@@ -127,6 +128,67 @@ func TestSupervisorInitializeRegistersMCPToolsFromConfigFile(t *testing.T) {
 	}
 }
 
+func TestSupervisorInitializeRegistersLocalTools(t *testing.T) {
+	State = &GlobalState{}
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+	})
+
+	dispatcher := app.NewDispatcher(16)
+	supervisor := NewSupervisor(dispatcher, Config{
+		Model:         "test-model",
+		ContextWindow: 400000,
+	})
+
+	if err := supervisor.Initialize(context.Background()); err != nil {
+		t.Fatalf("initialize supervisor: %v", err)
+	}
+
+	attentionTools := supervisor.ToolService().ListTools(context.Background(), toolcontract.AttentionLevel)
+	for _, name := range []string{"grep", "bash", "edit"} {
+		if !hasTool(attentionTools, name) {
+			t.Fatalf("expected %s tool at attention level, got %+v", name, attentionTools)
+		}
+	}
+
+	safeTools := supervisor.ToolService().ListTools(context.Background(), toolcontract.SafeLevel)
+	for _, name := range []string{"bash", "edit"} {
+		if hasTool(safeTools, name) {
+			t.Fatalf("did not expect %s tool at safe level, got %+v", name, safeTools)
+		}
+	}
+}
+
+func TestSupervisorInitializeRegistersTodosToolWhenSessionStoreConfigured(t *testing.T) {
+	State = &GlobalState{}
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+	})
+
+	dispatcher := app.NewDispatcher(16)
+	supervisor := NewSupervisor(
+		dispatcher,
+		Config{Model: "test-model", ContextWindow: 400000},
+		WithTodosSessionStore(&stubLifecycleTodosStore{}),
+	)
+
+	if err := supervisor.Initialize(context.Background()); err != nil {
+		t.Fatalf("initialize supervisor: %v", err)
+	}
+
+	safeTools := supervisor.ToolService().ListTools(context.Background(), toolcontract.SafeLevel)
+	if !hasTool(safeTools, "todos") {
+		t.Fatalf("expected todos tool at safe level, got %+v", safeTools)
+	}
+	if !hasTool(State.KnownTools, "todos") {
+		t.Fatalf("expected todos tool in known tools, got %+v", State.KnownTools)
+	}
+}
+
 func TestLoadConfigStoresConfigDir(t *testing.T) {
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "app.env")
@@ -143,6 +205,25 @@ func TestLoadConfigStoresConfigDir(t *testing.T) {
 	if cfg.ConfigDir != configDir {
 		t.Fatalf("expected config dir %q, got %q", configDir, cfg.ConfigDir)
 	}
+}
+
+func hasTool(tools []toolcontract.Metadata, name string) bool {
+	for _, meta := range tools {
+		if meta.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+type stubLifecycleTodosStore struct{}
+
+func (s *stubLifecycleTodosStore) Get(context.Context, string) (sessioncontract.Session, error) {
+	return sessioncontract.Session{}, nil
+}
+
+func (s *stubLifecycleTodosStore) Save(context.Context, sessioncontract.Session) (sessioncontract.Session, error) {
+	return sessioncontract.Session{}, nil
 }
 
 func TestSupervisorInitializeCopiesConfigIntoState(t *testing.T) {

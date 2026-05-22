@@ -27,13 +27,6 @@ func main() {
 
 	dispatcher := app.NewDispatcher(128)
 	lifecycle.State = &lifecycle.GlobalState{}
-	supervisor := lifecycle.NewSupervisor(dispatcher, cfg)
-	if err := supervisor.Initialize(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "init lifecycle state: %v\n", err)
-		os.Exit(1)
-	}
-	lifecycle.CurrentSupervisor = supervisor
-	go supervisor.Run(ctx)
 
 	st, err := db.Open("agentgo.db")
 	if err != nil {
@@ -49,6 +42,14 @@ func main() {
 
 	messageSvc := message.NewMessageService(st)
 	sessionSvc := session.NewSessionService(st, messageSvc, dispatcher)
+	supervisor := lifecycle.NewSupervisor(dispatcher, cfg, lifecycle.WithTodosSessionStore(sessionSvc))
+	if err := supervisor.Initialize(ctx); err != nil {
+		_ = st.Close()
+		fmt.Fprintf(os.Stderr, "init lifecycle state: %v\n", err)
+		os.Exit(1)
+	}
+	lifecycle.CurrentSupervisor = supervisor
+	go supervisor.Run(ctx)
 	providerSvc := provider.NewProviderService(providerClient, dispatcher)
 	toolSvc := supervisor.ToolService()
 	queryApp := app.NewService(sessionSvc, nil, toolSvc, dispatcher)

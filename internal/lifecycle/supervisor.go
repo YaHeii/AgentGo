@@ -12,6 +12,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/app"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/provider"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	"github.com/YaHeii/agentGo/internal/tool"
 	grepTool "github.com/YaHeii/agentGo/internal/tool"
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
@@ -27,6 +28,7 @@ type Supervisor struct {
 	tools      []tool.Tool
 	mcpClients []mcpClient
 	estimator  contextEstimator
+	todosStore todosSessionStore
 	cfg        Config
 }
 
@@ -38,12 +40,32 @@ type contextEstimator interface {
 
 type tiktokenEstimator struct{}
 
-func NewSupervisor(dispatcher app.Dispatcher, config Config) *Supervisor {
-	return &Supervisor{
+type Option func(*Supervisor)
+
+// TODO: Requires Optimization
+type todosSessionStore interface {
+	Get(ctx context.Context, id string) (sessioncontract.Session, error)
+	Save(ctx context.Context, session sessioncontract.Session) (sessioncontract.Session, error)
+}
+
+func WithTodosSessionStore(store todosSessionStore) Option {
+	return func(s *Supervisor) {
+		s.todosStore = store
+	}
+}
+
+func NewSupervisor(dispatcher app.Dispatcher, config Config, opts ...Option) *Supervisor {
+	supervisor := &Supervisor{
 		dispatcher: dispatcher,
 		cfg:        config,
 		estimator:  tiktokenEstimator{},
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(supervisor)
+		}
+	}
+	return supervisor
 }
 
 func (s *Supervisor) ToolService() *tool.Service {
@@ -80,7 +102,14 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	s.tools = []tool.Tool{grepTool.NewGrepTool(projectRoot)}
+	s.tools = []tool.Tool{
+		grepTool.NewGrepTool(projectRoot),
+		tool.NewBashTool(),
+		tool.NewEditTool(),
+	}
+	if s.todosStore != nil {
+		s.tools = append(s.tools, tool.NewTodosTool(s.todosStore))
+	}
 	if err := s.initializeMCPTools(ctx, s.cfg.ConfigDir); err != nil {
 		return err
 	}
