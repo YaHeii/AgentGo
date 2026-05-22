@@ -9,13 +9,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
+	"github.com/YaHeii/agentGo/internal/tool/sandbox"
 )
 
 const BashToolName = "bash"
@@ -23,31 +22,35 @@ const BashToolName = "bash"
 const maxBashOutputLength = 30000
 
 type BashParams struct {
-	Description         string `json:"description"`
-	Command             string `json:"command"`
-	WorkingDir          string `json:"working_dir,omitempty"`
-	RunInBackground     bool   `json:"run_in_background,omitempty"`
-	AutoBackgroundAfter int    `json:"auto_background_after,omitempty"`
+	Command string `json:"command"`
 }
 
-type BashTool struct{}
+type BashTool struct {
+	runner sandbox.Runner
+}
 
 func NewBashTool() *BashTool {
-	return &BashTool{}
+	return NewBashToolWithRunner(sandbox.NewRunner())
+}
+
+func NewBashToolWithRunner(runner sandbox.Runner) *BashTool {
+	if runner == nil {
+		runner = sandbox.NewRunner()
+	}
+	return &BashTool{runner: runner}
 }
 
 func (t *BashTool) Metadata() toolcontract.Metadata {
 	return toolcontract.Metadata{
 		Name:        BashToolName,
-		Description: "在工作区内执行 shell 命令。",
+		Description: "在受限的沙箱环境中执行系统命令或脚本。支持标准的 POSIX shell 语法。工作目录固定为 /workspace。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"description": { "type": "string" },
-				"command": { "type": "string" },
-				"working_dir": { "type": "string" },
-				"run_in_background": { "type": "boolean" },
-				"auto_background_after": { "type": "integer" }
+				"command": {
+					"type": "string",
+					"description": "需要执行的命令或多行脚本，例如: 'go test ./...' 或 'python test.py'"
+				}
 			},
 			"required": ["command"]
 		}`),
@@ -58,7 +61,7 @@ func (t *BashTool) Metadata() toolcontract.Metadata {
 	}
 }
 
-func (t *BashTool) Execute(_ context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
+func (t *BashTool) Execute(ctx context.Context, req toolcontract.ToolCallRequest) toolcontract.ToolResult {
 	var params BashParams
 	if err := json.Unmarshal(req.Arguments, &params); err != nil {
 		return toolcontract.ToolResult{
@@ -79,17 +82,8 @@ func (t *BashTool) Execute(_ context.Context, req toolcontract.ToolCallRequest) 
 			Err:        fmt.Errorf("missing command"),
 		}
 	}
-	if params.RunInBackground {
-		return toolcontract.ToolResult{
-			ToolCallID: req.ToolCallID,
-			Name:       req.Name,
-			Status:     toolcontract.StatusValidationFailed,
-			Content:    "background execution is not implemented yet",
-			Err:        fmt.Errorf("background execution is not supported"),
-		}
-	}
 
-	workingDir, err := resolveBashWorkingDir(req.Context.WorkingDir, req.Context.WorkspaceRoot, params.WorkingDir)
+	workspaceDir, err := resolveBashWorkspaceDir(req.Context.WorkingDir, req.Context.WorkspaceRoot)
 	if err != nil {
 		return toolcontract.ToolResult{
 			ToolCallID: req.ToolCallID,
@@ -101,21 +95,35 @@ func (t *BashTool) Execute(_ context.Context, req toolcontract.ToolCallRequest) 
 	}
 
 	start := time.Now().UTC()
-	cmd := exec.CommandContext(context.Background(), "bash", "-lc", params.Command)
-	cmd.Dir = workingDir
-	output, err := cmd.CombinedOutput()
+	result, err := t.runner.Run(ctx, sandbox.Spec{
+		Executable:   "bash",
+		Args:         []string{"-lc", params.Command},
+		WorkspaceDir: workspaceDir,
+	})
 	end := time.Now().UTC()
+	if err != nil {
+		return toolcontract.ToolResult{
+			ToolCallID: req.ToolCallID,
+			Name:       req.Name,
+			Status:     toolcontract.StatusSystemError,
+			Content:    "sandbox command failed",
+			Metadata: map[string]any{
+				"start_time":          start.UnixMilli(),
+				"end_time":            end.UnixMilli(),
+				"workspace_directory": workspaceDir,
+				"executor":            "sandbox",
+			},
+			Err: err,
+		}
+	}
 
-	text := strings.TrimSpace(string(output))
+	text := formatBashOutput(result.Stdout, result.Stderr)
 	if len(text) > maxBashOutputLength {
 		text = text[:maxBashOutputLength]
 	}
-	if text == "" {
-		text = "no output"
-	}
 
 	status := toolcontract.StatusSuccess
-	if err != nil {
+	if result.ExitCode != 0 {
 		status = toolcontract.StatusExecutionError
 	}
 
@@ -125,18 +133,17 @@ func (t *BashTool) Execute(_ context.Context, req toolcontract.ToolCallRequest) 
 		Status:     status,
 		Content:    text,
 		Metadata: map[string]any{
-			"start_time":        start.UnixMilli(),
-			"end_time":          end.UnixMilli(),
-			"working_directory": workingDir,
-			"output":            text,
-			"description":       params.Description,
-			"background":        false,
+			"start_time":          start.UnixMilli(),
+			"end_time":            end.UnixMilli(),
+			"workspace_directory": workspaceDir,
+			"exit_code":           result.ExitCode,
+			"output":              text,
+			"executor":            "sandbox",
 		},
-		Err: err,
 	}
 }
 
-func resolveBashWorkingDir(defaultWorkingDir, workspaceRoot, requested string) (string, error) {
+func resolveBashWorkspaceDir(defaultWorkingDir, workspaceRoot string) (string, error) {
 	base := strings.TrimSpace(defaultWorkingDir)
 	if base == "" {
 		base = strings.TrimSpace(workspaceRoot)
@@ -149,20 +156,19 @@ func resolveBashWorkingDir(defaultWorkingDir, workspaceRoot, requested string) (
 	if err != nil {
 		return "", err
 	}
+	return baseAbs, nil
+}
 
-	target := strings.TrimSpace(requested)
-	if target == "" {
-		target = baseAbs
-	} else if !filepath.IsAbs(target) {
-		target = filepath.Join(baseAbs, target)
+func formatBashOutput(stdout string, stderr string) string {
+	parts := make([]string, 0, 2)
+	if text := strings.TrimSpace(stdout); text != "" {
+		parts = append(parts, text)
 	}
-
-	targetAbs, err := filepath.Abs(target)
-	if err != nil {
-		return "", err
+	if text := strings.TrimSpace(stderr); text != "" {
+		parts = append(parts, text)
 	}
-	if targetAbs != baseAbs && !strings.HasPrefix(targetAbs, baseAbs+string(os.PathSeparator)) {
-		return "", fmt.Errorf("working dir %q escapes base %q", targetAbs, baseAbs)
+	if len(parts) == 0 {
+		return "no output"
 	}
-	return targetAbs, nil
+	return strings.Join(parts, "\n")
 }
