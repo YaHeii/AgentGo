@@ -161,6 +161,35 @@ func TestSupervisorInitializeRegistersLocalTools(t *testing.T) {
 	}
 }
 
+func TestSupervisorInitializeRegistersWebSearchWhenConfigured(t *testing.T) {
+	State = &GlobalState{}
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+	})
+
+	dispatcher := app.NewDispatcher(16)
+	supervisor := NewSupervisor(dispatcher, Config{
+		Model:            "test-model",
+		ContextWindow:    400000,
+		AnySearchBaseUrl: "https://api.anysearch.com/v1/search",
+		AnySearchAPIKey:  "test-key",
+	})
+
+	if err := supervisor.Initialize(context.Background()); err != nil {
+		t.Fatalf("initialize supervisor: %v", err)
+	}
+
+	attentionTools := supervisor.ToolService().ListTools(context.Background(), toolcontract.AttentionLevel)
+	if !hasTool(attentionTools, "websearch") {
+		t.Fatalf("expected websearch tool at attention level, got %+v", attentionTools)
+	}
+	if !hasTool(State.KnownTools, "websearch") {
+		t.Fatalf("expected websearch tool in known tools, got %+v", State.KnownTools)
+	}
+}
+
 func TestSupervisorInitializeRegistersTodosToolWhenSessionStoreConfigured(t *testing.T) {
 	State = &GlobalState{}
 	CurrentSupervisor = nil

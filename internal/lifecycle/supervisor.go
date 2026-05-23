@@ -107,6 +107,9 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 		tool.NewBashTool(),
 		tool.NewEditTool(),
 	}
+	if strings.TrimSpace(s.cfg.AnySearchBaseUrl) != "" {
+		s.tools = append(s.tools, tool.NewWebSearchTool(s.cfg.AnySearchBaseUrl, s.cfg.AnySearchAPIKey))
+	}
 	if s.todosStore != nil {
 		s.tools = append(s.tools, tool.NewTodosTool(s.todosStore))
 	}

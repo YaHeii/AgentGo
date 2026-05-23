@@ -8,14 +8,16 @@ import (
 )
 
 type Config struct {
-	Environment   string `mapstructure:"ENVIRONMENT"`
-	BaseURL       string `mapstructure:"BASE_URL"`
-	APIKey        string `mapstructure:"API_KEY"`
-	Model         string `mapstructure:"MODEL"`
-	MaxToken      int64  `mapstructure:"MAX_TOKENS"`
-	ContextWindow int64  `mapstructure:"CONTEXT_WINDOW"`
-	MaxTurn       int64  `mapstructure:"MAX_TURN"`
-	ConfigDir     string
+	Environment      string `mapstructure:"ENVIRONMENT"`
+	BaseURL          string `mapstructure:"BASE_URL"`
+	APIKey           string `mapstructure:"API_KEY"`
+	Model            string `mapstructure:"MODEL"`
+	MaxToken         int64  `mapstructure:"MAX_TOKENS"`
+	ContextWindow    int64  `mapstructure:"CONTEXT_WINDOW"`
+	MaxTurn          int64  `mapstructure:"MAX_TURN"`
+	AnySearchBaseUrl string `mapstructure:"ANYSEARCH_BASE_URL"`
+	AnySearchAPIKey  string `mapstructure:"ANYSEARCH_API_KEY"`
+	ConfigDir        string
 }
 
 type Runtime struct {
