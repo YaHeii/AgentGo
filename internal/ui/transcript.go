@@ -78,6 +78,9 @@ func (m transcriptModel) Update(msg tea.Msg) transcriptModel {
 			return m
 		}
 		item := m.items[m.selected]
+		if !itemCanExpand(item) {
+			return m
+		}
 		m.expanded[item.ID] = !m.expanded[item.ID]
 		m.syncViewport()
 	case "pgdown":
@@ -91,6 +94,13 @@ func (m transcriptModel) Update(msg tea.Msg) transcriptModel {
 
 func (m transcriptModel) View() string {
 	return m.viewport.View()
+}
+
+func (m transcriptModel) selectedItem() (transcriptItem, bool) {
+	if len(m.items) == 0 || m.selected < 0 || m.selected >= len(m.items) {
+		return transcriptItem{}, false
+	}
+	return m.items[m.selected], true
 }
 
 func (m *transcriptModel) syncViewport() {
@@ -126,11 +136,22 @@ func (m *transcriptModel) ensureSelectionVisible() {
 	}
 }
 
-func buildTranscriptItems(messages []message.Message, markdown map[string]string, expanded map[string]bool) []transcriptItem {
+func buildTranscriptItems(messages []message.Message, markdown map[string]string, quietMarkdown map[string]string, expanded map[string]bool) []transcriptItem {
 	items := make([]transcriptItem, 0, len(messages))
 	for _, msg := range messages {
+		if msg.Kind == message.KindAssistant {
+			item, ok := buildAssistantTranscriptItem(msg, markdown, quietMarkdown)
+			if ok {
+				if expanded != nil {
+					item.Expanded = expanded[item.ID]
+				}
+				items = append(items, item)
+			}
+			continue
+		}
+
 		for partIndex, part := range msg.Parts {
-			item, ok := buildPartTranscriptItem(msg, partIndex, part, markdown)
+			item, ok := buildPartTranscriptItem(msg, partIndex, part, markdown, quietMarkdown)
 			if ok {
 				if expanded != nil {
 					item.Expanded = expanded[item.ID]
@@ -173,7 +194,89 @@ func buildTranscriptItems(messages []message.Message, markdown map[string]string
 	return items
 }
 
-func buildPartTranscriptItem(msg message.Message, partIndex int, part message.Part, markdown map[string]string) (transcriptItem, bool) {
+func buildAssistantTranscriptItem(msg message.Message, markdown map[string]string, quietMarkdown map[string]string) (transcriptItem, bool) {
+	textBody := ""
+	detailLines := make([]string, 0, len(msg.Parts))
+	summaryParts := make([]string, 0, len(msg.Parts))
+	hasRenderedDetails := false
+
+	if renderedDetails, ok := quietMarkdown[msg.ID]; ok && renderedDetails != "" {
+		detailLines = append(detailLines, renderedDetails)
+		hasRenderedDetails = true
+	}
+
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case message.PartTypeText:
+			body := normalizeDisplayText(part.Text)
+			if rendered, ok := markdown[msg.ID]; ok && rendered != "" {
+				body = normalizeDisplayText(rendered)
+			}
+			if body != "" {
+				textBody = body
+			}
+		case message.PartTypeThinking:
+			summaryParts = append(summaryParts, "thinking")
+			if part.Thinking != nil && !hasRenderedDetails {
+				body := normalizeDisplayText(part.Thinking.Content)
+				if body == "" {
+					body = normalizeDisplayText(part.Thinking.Summary)
+				}
+				if body != "" {
+					detailLines = append(detailLines, "thinking", body)
+				}
+			}
+		case message.PartTypeToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			summaryParts = append(summaryParts, fmt.Sprintf("tool call: %s", part.ToolCall.Name))
+			if hasRenderedDetails {
+				continue
+			}
+			detailLines = append(detailLines, fmt.Sprintf("tool call: %s", part.ToolCall.Name))
+			if body := normalizeDisplayText(part.ToolCall.Input); body != "" {
+				detailLines = append(detailLines, body)
+			}
+		case message.PartTypeToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			summaryParts = append(summaryParts, fmt.Sprintf("tool result: %s", part.ToolResult.ToolCallID))
+			if hasRenderedDetails {
+				continue
+			}
+			detailLines = append(detailLines, fmt.Sprintf("tool result: %s", part.ToolResult.ToolCallID))
+			if body := normalizeDisplayText(part.ToolResult.Content); body != "" {
+				detailLines = append(detailLines, body)
+			}
+		}
+	}
+
+	item := transcriptItem{
+		ID:        msg.ID,
+		MessageID: msg.ID,
+		Kind:      msg.Kind,
+		PartType:  message.PartTypeText,
+		Final:     textBody != "",
+	}
+
+	if textBody != "" {
+		item.Summary = fmt.Sprintf("%s %s", kindLabel(msg.Kind), summarizeText(textBody))
+		item.Body = strings.TrimSpace(strings.Join(append([]string{textBody}, detailLines...), "\n"))
+		return item, true
+	}
+
+	if len(summaryParts) == 0 {
+		return transcriptItem{}, false
+	}
+
+	item.Summary = fmt.Sprintf("%s %s", kindLabel(msg.Kind), strings.Join(summaryParts, " / "))
+	item.Body = strings.TrimSpace(strings.Join(detailLines, "\n"))
+	return item, true
+}
+
+func buildPartTranscriptItem(msg message.Message, partIndex int, part message.Part, markdown map[string]string, quietMarkdown map[string]string) (transcriptItem, bool) {
 	item := transcriptItem{
 		ID:        fmt.Sprintf("%s:%d:%s", msg.ID, partIndex, part.Type),
 		MessageID: msg.ID,
@@ -186,9 +289,9 @@ func buildPartTranscriptItem(msg message.Message, partIndex int, part message.Pa
 		if msg.Kind == message.KindSystem && (msg.System != nil || msg.Progress != nil) {
 			return transcriptItem{}, false
 		}
-		body := part.Text
+		body := normalizeDisplayText(part.Text)
 		if rendered, ok := markdown[msg.ID]; ok && rendered != "" {
-			body = rendered
+			body = normalizeDisplayText(rendered)
 		}
 		item.Summary = fmt.Sprintf("%s %s", kindLabel(msg.Kind), summarizeText(body))
 		item.Body = body
@@ -196,6 +299,10 @@ func buildPartTranscriptItem(msg message.Message, partIndex int, part message.Pa
 		return item, true
 	case message.PartTypeThinking:
 		item.Summary = "thinking"
+		if rendered, ok := quietMarkdown[msg.ID]; ok && rendered != "" {
+			item.Body = rendered
+			return item, true
+		}
 		if part.Thinking != nil {
 			item.Body = strings.TrimSpace(part.Thinking.Content)
 			if item.Body == "" {
@@ -208,6 +315,10 @@ func buildPartTranscriptItem(msg message.Message, partIndex int, part message.Pa
 			return transcriptItem{}, false
 		}
 		item.Summary = fmt.Sprintf("tool call: %s", part.ToolCall.Name)
+		if rendered, ok := quietMarkdown[msg.ID]; ok && rendered != "" {
+			item.Body = rendered
+			return item, true
+		}
 		item.Body = strings.TrimSpace(part.ToolCall.Input)
 		return item, true
 	case message.PartTypeToolResult:
@@ -215,6 +326,10 @@ func buildPartTranscriptItem(msg message.Message, partIndex int, part message.Pa
 			return transcriptItem{}, false
 		}
 		item.Summary = fmt.Sprintf("tool result: %s", part.ToolResult.ToolCallID)
+		if rendered, ok := quietMarkdown[msg.ID]; ok && rendered != "" {
+			item.Body = rendered
+			return item, true
+		}
 		item.Body = strings.TrimSpace(part.ToolResult.Content)
 		return item, true
 	}
@@ -256,4 +371,19 @@ func buildProgressSummary(payload *message.ProgressPayload) string {
 		return fmt.Sprintf("progress: %s %d/%d", stage, payload.Current, payload.Total)
 	}
 	return fmt.Sprintf("progress: %s", stage)
+}
+
+func normalizeDisplayText(text string) string {
+	normalized := strings.ReplaceAll(text, "\\n", "\n")
+	return strings.TrimSpace(normalized)
+}
+
+func itemCanExpand(item transcriptItem) bool {
+	if strings.TrimSpace(item.Body) == "" {
+		return false
+	}
+	if item.Kind == message.KindAssistant {
+		return true
+	}
+	return item.PartType != message.PartTypeText
 }

@@ -10,49 +10,55 @@ import (
 	messageevent "github.com/YaHeii/agentGo/internal/message"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/session"
+	"github.com/YaHeii/agentGo/internal/ui/common"
 	"github.com/charmbracelet/lipgloss"
 )
 
+type markdownRenderer interface {
+	Render(string) (string, error)
+}
+
 type rootModel struct {
-	app        chatService
-	events     <-chan app.Event
-	sessionID  string
-	messages   []message.Message
-	items      []transcriptItem
-	markdown   map[string]string
-	renderer   markdownRenderer
-	errMessage string
-	loading    bool
-	width      int
-	height     int
-	transcript transcriptModel
-	composer   composerModel
-	status     statusModel
+	app           appService
+	events        <-chan app.Event
+	sessionID     string
+	messages      []message.Message
+	items         []transcriptItem
+	markdown      map[string]string
+	quietMarkdown map[string]string
+	renderer      markdownRenderer
+	quietRenderer markdownRenderer
+	errMessage    string
+	loading       bool
+	width         int
+	height        int
+	transcript    transcriptModel
+	composer      composerModel
+	status        statusModel
 }
 
 type bootstrapDoneMsg struct {
 	err error
 }
 
-func NewRootModel(appSvc chatService) rootModel {
+func NewRootModel(appSvc appService) rootModel {
 	return rootModel{
-		app:        appSvc,
-		events:     appSvc.Events(),
-		width:      defaultWidth,
-		height:     defaultHeight,
-		markdown:   make(map[string]string),
-		renderer:   newDefaultMarkdownRenderer(),
-		transcript: newTranscriptModel(defaultWidth, defaultHeight),
-		composer:   newComposerModel(),
-		status:     newStatusModel(),
+		app:           appSvc,
+		events:        appSvc.Events(),
+		width:         defaultWidth,
+		height:        defaultHeight,
+		markdown:      make(map[string]string),
+		quietMarkdown: make(map[string]string),
+		renderer:      common.MarkdownRenderer(defaultWidth),
+		quietRenderer: common.QuietMarkdownRenderer(defaultWidth),
+		transcript:    newTranscriptModel(defaultWidth, defaultHeight),
+		composer:      newComposerModel(),
+		status:        newStatusModel(),
 	}
 }
 
-func bootstrapSessionCmd(appSvc chatService) tea.Cmd {
+func bootstrapSessionCmd(appSvc appService) tea.Cmd {
 	return func() tea.Msg {
-		if err := appSvc.InitializePermissionLevel(context.Background()); err != nil {
-			return bootstrapDoneMsg{err: err}
-		}
 		err := appSvc.EnsureActiveSession(context.Background())
 		return bootstrapDoneMsg{
 			err: err,
@@ -69,6 +75,8 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.renderer = common.MarkdownRenderer(max(1, msg.Width))
+		m.quietRenderer = common.QuietMarkdownRenderer(max(1, msg.Width))
 		m.transcript = m.transcript.updateSize(msg.Width, msg.Height)
 	case bootstrapDoneMsg:
 		if msg.err != nil {
@@ -93,6 +101,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitAppEventCmd(m.events)
 		}
 		m.messages = append([]message.Message(nil), msg.messages...)
+		m.renderStableMarkdown(m.messages)
 		m.refreshTranscript()
 		return m, waitAppEventCmd(m.events)
 	case appEventMsg:
@@ -139,6 +148,10 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "enter":
+			if item, ok := m.transcript.selectedItem(); ok && itemCanExpand(item) {
+				m.transcript = m.transcript.Update(msg)
+				return m, nil
+			}
 			if m.loading {
 				return m, nil
 			}
@@ -182,7 +195,7 @@ func (m rootModel) View() tea.View {
 	header := lipgloss.NewStyle().
 		Bold(true).
 		Width(m.width).
-		Render(strings.Join([]string{"agentGo", "Enter to send. ctrl+c to quit."}, "\n"))
+		Render(strings.Join([]string{"agentGo", "j/k to scroll. Enter to send. ctrl+c to quit."}, "\n"))
 
 	statusText := m.status.View()
 	if statusText == "" {
@@ -209,14 +222,14 @@ func (m rootModel) View() tea.View {
 }
 
 // UI layer only sends the raw user prompt. Query assembly stays below app/agent.
-func runQueryCmd(appSvc chatService, sessionID string, prompt string) tea.Cmd {
+func runQueryCmd(appSvc appService, sessionID string, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		err := appSvc.RunQuery(context.Background(), sessionID, prompt)
 		return sendMessageDoneMsg{err: err}
 	}
 }
 
-func loadHistoryCmd(appSvc chatService, sessionID string) tea.Cmd {
+func loadHistoryCmd(appSvc appService, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		messages, err := appSvc.ListHistory(context.Background(), sessionID)
 		return historyLoadedMsg{
@@ -246,34 +259,95 @@ func (m *rootModel) upsertMessage(msg message.Message) {
 }
 
 func (m *rootModel) refreshTranscript() {
-	m.items = buildTranscriptItems(m.messages, m.markdown, m.transcript.expanded)
+	m.items = buildTranscriptItems(m.messages, m.markdown, m.quietMarkdown, m.transcript.expanded)
 	m.transcript = m.transcript.setItems(m.items)
 }
 
 func (m *rootModel) clearMarkdownForMessages(messages []message.Message) {
 	for _, msg := range messages {
 		delete(m.markdown, msg.ID)
+		delete(m.quietMarkdown, msg.ID)
+	}
+}
+
+func (m *rootModel) renderStableMarkdown(messages []message.Message) {
+	for _, msg := range messages {
+		m.renderMessageMarkdown(msg)
 	}
 }
 
 func (m *rootModel) renderTerminalMarkdown(messages []message.Message) {
-	if m.renderer == nil {
+	m.renderStableMarkdown(messages)
+}
+
+func (m *rootModel) renderMessageMarkdown(msg message.Message) {
+	if text := textContent(msg.Parts); strings.TrimSpace(text) != "" {
+		if rendered, ok := renderMarkdown(m.renderer, text); ok {
+			m.markdown[msg.ID] = rendered
+		}
+	}
+
+	if msg.Kind != message.KindAssistant {
 		return
 	}
-	for _, msg := range messages {
-		if msg.Kind != message.KindAssistant {
-			continue
+
+	detailParts := make([]string, 0, len(msg.Parts))
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case message.PartTypeThinking:
+			if part.Thinking == nil {
+				continue
+			}
+			body := normalizeDisplayText(part.Thinking.Content)
+			if body == "" {
+				body = normalizeDisplayText(part.Thinking.Summary)
+			}
+			if body != "" {
+				if rendered, ok := renderMarkdown(m.quietRenderer, body); ok {
+					detailParts = append(detailParts, "thinking", rendered)
+				}
+			}
+		case message.PartTypeToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			detailParts = append(detailParts, "tool call: "+part.ToolCall.Name)
+			if body := normalizeDisplayText(part.ToolCall.Input); body != "" {
+				if rendered, ok := renderMarkdown(m.quietRenderer, body); ok {
+					detailParts = append(detailParts, rendered)
+				} else {
+					detailParts = append(detailParts, body)
+				}
+			}
+		case message.PartTypeToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			detailParts = append(detailParts, "tool result: "+part.ToolResult.ToolCallID)
+			if body := normalizeDisplayText(part.ToolResult.Content); body != "" {
+				if rendered, ok := renderMarkdown(m.quietRenderer, body); ok {
+					detailParts = append(detailParts, rendered)
+				} else {
+					detailParts = append(detailParts, body)
+				}
+			}
 		}
-		text := textContent(msg.Parts)
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
-		rendered, err := m.renderer.Render(text)
-		if err != nil {
-			continue
-		}
-		m.markdown[msg.ID] = rendered
 	}
+
+	if len(detailParts) > 0 {
+		m.quietMarkdown[msg.ID] = strings.TrimSpace(strings.Join(detailParts, "\n"))
+	}
+}
+
+func renderMarkdown(renderer markdownRenderer, input string) (string, bool) {
+	if renderer == nil || strings.TrimSpace(input) == "" {
+		return "", false
+	}
+	rendered, err := renderer.Render(input)
+	if err != nil {
+		return "", false
+	}
+	return rendered, true
 }
 
 func kindLabel(kind message.Kind) string {

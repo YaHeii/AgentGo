@@ -33,6 +33,9 @@ func TestNewQueryLoopSeedsConfigAndDeps(t *testing.T) {
 
 func setRuntimeStateForTest(t *testing.T, state lifecycle.GlobalState) {
 	t.Helper()
+	if state.MaxTurn <= 0 {
+		state.MaxTurn = 1
+	}
 	lifecycle.State = &state
 	lifecycle.CurrentSupervisor = nil
 	t.Cleanup(func() {
@@ -41,7 +44,7 @@ func setRuntimeStateForTest(t *testing.T, state lifecycle.GlobalState) {
 	})
 }
 
-func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *testing.T) {
+func TestBuildRequestBuildsProviderRequestFromLoopStateAndRuntimeState(t *testing.T) {
 	appSvc := &stubAgentApp{
 		metas: []toolcontract.Metadata{
 			{
@@ -62,7 +65,7 @@ func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *tes
 		Temperature:     0.2,
 		ModelLimit:      4096,
 	})
-	req, err := runner.renderLoopstate(LoopState{
+	req := runner.buildRequest(LoopState{
 		Messages: []message.Message{
 			messageRecord("assistant-1", message.KindAssistant, "previous answer"),
 			messageRecord("user-1", message.KindUser, "find tests"),
@@ -83,7 +86,6 @@ func TestRenderLoopstateBuildsProviderRequestFromLoopStateAndRuntimeState(t *tes
 			},
 		},
 	})
-	require.NoError(t, err)
 	require.Len(t, req.Messages, 2)
 	require.Equal(t, message.KindAssistant, req.Messages[0].Kind)
 	require.Equal(t, "previous answer", findTextPart(req.Messages[0].Parts))
@@ -117,20 +119,7 @@ func TestRenderPromptBuildsSystemPromptFromRuntimeState(t *testing.T) {
 		Cwd:             "/workspace/project/internal",
 		PermissionLevel: lifecycle.SafeLevel,
 	})
-	prompt, err := runner.renderPrompt(LoopState{
-		Messages: []message.Message{
-			messageRecord("assistant-1", message.KindAssistant, "previous answer"),
-			messageRecord("user-1", message.KindUser, "find tests"),
-			{
-				ID:        "assistant-pending",
-				SessionID: "session-1",
-				Kind:      message.KindAssistant,
-				Parts: []message.Part{
-					{Type: message.PartTypeText, Text: ""},
-				},
-			},
-		},
-	}, "find tests")
+	prompt, err := runner.renderPrompt("find tests")
 	require.NoError(t, err)
 	require.Contains(t, prompt, "/workspace/project")
 	require.Contains(t, prompt, "/workspace/project/internal")
@@ -321,6 +310,42 @@ func TestQueryLoopCreatesMessagesAndPersistsAssistantReply(t *testing.T) {
 		}
 	}
 	require.True(t, sawCompleted)
+}
+
+func TestQueryLoopPersistsRawPromptButSendsRenderedPromptToProvider(t *testing.T) {
+	appSvc := &stubAgentApp{}
+	providerSvc := &stubProvider{
+		results: []stubTurn{
+			{
+				result: providercontract.TurnResult{
+					Text:       "hello",
+					StopReason: providercontract.StopReasonStop,
+				},
+			},
+		},
+	}
+
+	runner := NewQueryLoop(appSvc, providerSvc, app.NewDispatcher(16))
+	setRuntimeStateForTest(t, lifecycle.GlobalState{
+		AppVersion:  "v0.1.0",
+		ProjectRoot: "/workspace/project",
+		Cwd:         "/workspace/project",
+	})
+
+	_, err := runner.RunQuery(context.Background(), "session-1", "raw prompt")
+	require.NoError(t, err)
+
+	require.Len(t, appSvc.created, 2)
+	require.Equal(t, message.KindUser, appSvc.created[0].Kind)
+	require.Equal(t, "raw prompt", findTextPart(appSvc.created[0].Parts))
+
+	require.Len(t, providerSvc.calls, 1)
+	require.Len(t, providerSvc.calls[0].Messages, 2)
+	require.Equal(t, message.KindSystem, providerSvc.calls[0].Messages[0].Kind)
+	require.Contains(t, findTextPart(providerSvc.calls[0].Messages[0].Parts), "raw prompt")
+	require.NotEqual(t, "raw prompt", findTextPart(providerSvc.calls[0].Messages[0].Parts))
+	require.Equal(t, message.KindUser, providerSvc.calls[0].Messages[1].Kind)
+	require.Equal(t, "raw prompt", findTextPart(providerSvc.calls[0].Messages[1].Parts))
 }
 
 func TestQueryLoopStoresReasoningAndRefusalParts(t *testing.T) {
@@ -617,16 +642,6 @@ func TestQueryLoopStopsAtRuntimeMaxTurn(t *testing.T) {
 	require.Len(t, providerSvc.calls, 1)
 	require.Equal(t, 1, result.Turns)
 	require.Equal(t, FinishReasonCompleted, result.FinishReason)
-}
-
-func TestNewLoopStateSeedsMessagesAndTurnCount(t *testing.T) {
-	state := newLoopState("session-1", []message.Part{
-		{Type: message.PartTypeText, Text: "hello"},
-	})
-
-	require.Len(t, state.Messages, 1)
-	require.Equal(t, 1, state.TurnCount)
-	require.Equal(t, "hello", findTextPart(state.Messages[0].Parts))
 }
 
 func TestQueryLoopMicroCompactsHistoryWhenEstimatedTokensExceedModelLimit(t *testing.T) {

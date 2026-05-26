@@ -41,12 +41,16 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 		return QueryResult{}, errors.New("agent: max turns must be greater than 0")
 	}
 
-	//Once a query begins, the pre-rendered template is first added to the loop state.
+	// Render the full system prompt for the LLM, but keep persisted user content raw.
 	initPrompt, err := r.renderPrompt(prompt)
+	if err != nil {
+		return QueryResult{}, err
+	}
+
 	inputParts := []message.Part{
 		{
 			Type: message.PartTypeText,
-			Text: initPrompt,
+			Text: prompt,
 		},
 	}
 	userMessage, err := r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
@@ -68,10 +72,14 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 	historyMessages := r.preprocessHistory(history)
 
 	//Assemble loopstate
-	loopstate := LoopState{
-		Messages: append(historyMessages, userMessage),
+	if !containsMessage(historyMessages, userMessage.ID) {
+		historyMessages = append(historyMessages, userMessage)
 	}
-	loopstate.Messages = []message.Message{userMessage}
+
+	loopstate := LoopState{
+		Messages:  historyMessages,
+		TurnCount: 1,
+	}
 	loopstate.Transition = "user_message_created"
 
 	// setup AssitantMessage Placeholder
@@ -110,11 +118,12 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 		} else if loopstate.LoopStatus == FinishReasonCompleted {
 			r.dispatch(QueryStatusCompleted, loopstate, nil)
 			return QueryResult{
-				SessionID:        sessionID,
-				UserMessageID:    userMessage.ID,
-				Turns:            loopstate.TurnCount,
-				FinishReason:     loopstate.LoopStatus,
-				PendingToolCalls: append([]providercontract.ToolCall(nil), loopstate.PendingToolCalls...),
+				SessionID:               sessionID,
+				UserMessageID:           userMessage.ID,
+				FinalAssistantMessageID: lastAssistantMessageID(loopstate.Messages),
+				Turns:                   loopstate.TurnCount,
+				FinishReason:            loopstate.LoopStatus,
+				PendingToolCalls:        append([]providercontract.ToolCall(nil), loopstate.PendingToolCalls...),
 			}, nil
 		}
 
@@ -163,6 +172,24 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 		Turns:                   loopstate.TurnCount,
 		FinishReason:            FinishReasonCompleted,
 	}, nil
+}
+
+func containsMessage(messages []message.Message, id string) bool {
+	for i := range messages {
+		if messages[i].ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func lastAssistantMessageID(messages []message.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Kind == message.KindAssistant {
+			return messages[i].ID
+		}
+	}
+	return ""
 }
 
 func cloneMessages(history []message.Message) []message.Message {
@@ -402,7 +429,7 @@ func (r *QueryLoop) newAssistantMessage(sessionID string, turn int) (message.Mes
 				Text: "",
 			},
 		},
-	},nil
+	}, nil
 }
 
 // persistAssistant writes the latest assistant snapshot back to the message store.

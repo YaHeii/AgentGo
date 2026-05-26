@@ -9,15 +9,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/YaHeii/agentGo/internal/agent"
 	"github.com/YaHeii/agentGo/internal/app"
-	"github.com/YaHeii/agentGo/internal/lifecycle"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/session"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 )
 
 func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
-	lifecycle.State = nil
-
 	svc := newStubChatService()
 	svc.history = []message.Message{
 		messageRecord("u1", message.KindUser, "hello"),
@@ -53,12 +50,6 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	}
 	if len(next.messages) != 2 {
 		t.Fatalf("expected 2 hydrated messages, got %d", len(next.messages))
-	}
-	if lifecycle.State == nil {
-		t.Fatal("expected lifecycle state to be initialized")
-	}
-	if lifecycle.State.PermissionLevel != lifecycle.SafeLevel {
-		t.Fatalf("expected safe permission level, got %v", lifecycle.State.PermissionLevel)
 	}
 }
 
@@ -128,6 +119,14 @@ func TestRootLoadsHistoryAfterSessionRestore(t *testing.T) {
 func TestTranscriptBuildsCollapsibleItemsForStructuredParts(t *testing.T) {
 	messages := []message.Message{
 		{
+			ID:        "user-1",
+			SessionID: "session-1",
+			Kind:      message.KindUser,
+			Parts: []message.Part{
+				{Type: message.PartTypeText, Text: "   show me status   "},
+			},
+		},
+		{
 			ID:        "assistant-1",
 			SessionID: "session-1",
 			Kind:      message.KindAssistant,
@@ -176,38 +175,124 @@ func TestTranscriptBuildsCollapsibleItemsForStructuredParts(t *testing.T) {
 		},
 	}
 
-	items := buildTranscriptItems(messages, nil, nil)
+	items := buildTranscriptItems(messages, nil, nil, nil)
 
-	if len(items) != 6 {
-		t.Fatalf("expected 6 transcript items, got %d", len(items))
+	if len(items) != 4 {
+		t.Fatalf("expected 4 transcript items, got %d", len(items))
 	}
-	if items[0].Summary != "ai: final answer" {
-		t.Fatalf("expected assistant text summary, got %q", items[0].Summary)
+	if items[0].Summary != "you: show me status" {
+		t.Fatalf("expected user summary trimmed to input, got %q", items[0].Summary)
 	}
-	if items[1].Summary != "thinking" {
-		t.Fatalf("expected thinking summary, got %q", items[1].Summary)
+	if items[0].Body != "show me status" {
+		t.Fatalf("expected user body trimmed to input, got %q", items[0].Body)
 	}
-	if items[1].Body != "expanded reasoning" {
-		t.Fatalf("expected thinking body, got %q", items[1].Body)
+	if items[0].Expanded {
+		t.Fatal("expected user item to never be expandable")
 	}
-	if items[2].Summary != "tool call: grep" {
-		t.Fatalf("expected tool call summary, got %q", items[2].Summary)
+	if items[1].Summary != "ai: final answer" {
+		t.Fatalf("expected assistant text summary, got %q", items[1].Summary)
 	}
-	if items[3].Summary != "tool result: call-1" {
-		t.Fatalf("expected tool result summary, got %q", items[3].Summary)
+	if items[1].PartType != message.PartTypeText {
+		t.Fatalf("expected assistant main item to be final text, got %q", items[1].PartType)
 	}
-	if items[4].Summary != "system: provider_error" {
-		t.Fatalf("expected system summary, got %q", items[4].Summary)
+	if !strings.Contains(items[1].Body, "expanded reasoning") {
+		t.Fatalf("expected assistant detail body to include reasoning, got %q", items[1].Body)
 	}
-	if items[5].Summary != "progress: tool_call 1/3" {
-		t.Fatalf("expected progress summary, got %q", items[5].Summary)
+	if !strings.Contains(items[1].Body, "tool call: grep") {
+		t.Fatalf("expected assistant detail body to include tool call, got %q", items[1].Body)
+	}
+	if !strings.Contains(items[1].Body, "tool result: call-1") {
+		t.Fatalf("expected assistant detail body to include tool result, got %q", items[1].Body)
+	}
+	if items[2].Summary != "system: provider_error" {
+		t.Fatalf("expected system summary, got %q", items[2].Summary)
+	}
+	if items[3].Summary != "progress: tool_call 1/3" {
+		t.Fatalf("expected progress summary, got %q", items[3].Summary)
+	}
+}
+
+func TestTranscriptBuildsAssistantProcessOnlyMessageAsCollapsibleSummary(t *testing.T) {
+	messages := []message.Message{
+		{
+			ID:        "assistant-1",
+			SessionID: "session-1",
+			Kind:      message.KindAssistant,
+			Parts: []message.Part{
+				{
+					Type: message.PartTypeThinking,
+					Thinking: &message.ThinkingPart{
+						Content: "reasoning only",
+					},
+				},
+				{
+					Type: message.PartTypeToolCall,
+					ToolCall: &message.ToolCallPart{
+						ID:    "call-1",
+						Name:  "grep",
+						Input: "{\"pattern\":\"agentGo\"}",
+					},
+				},
+			},
+		},
+	}
+
+	items := buildTranscriptItems(messages, nil, nil, nil)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 transcript item, got %d", len(items))
+	}
+	if items[0].Summary != "ai: thinking / tool call: grep" {
+		t.Fatalf("expected assistant process summary, got %q", items[0].Summary)
+	}
+	if !strings.Contains(items[0].Body, "reasoning only") {
+		t.Fatalf("expected assistant process body to include reasoning, got %q", items[0].Body)
+	}
+}
+
+func TestTranscriptNormalizesEscapedNewlinesInAssistantDetails(t *testing.T) {
+	messages := []message.Message{
+		{
+			ID:        "assistant-1",
+			SessionID: "session-1",
+			Kind:      message.KindAssistant,
+			Parts: []message.Part{
+				{Type: message.PartTypeText, Text: "final answer"},
+				{
+					Type: message.PartTypeThinking,
+					Thinking: &message.ThinkingPart{
+						Content: "line1\\nline2",
+					},
+				},
+				{
+					Type: message.PartTypeToolCall,
+					ToolCall: &message.ToolCallPart{
+						ID:    "call-1",
+						Name:  "grep",
+						Input: "{\"pattern\":\"a\\\\nb\"}",
+					},
+				},
+			},
+		},
+	}
+
+	items := buildTranscriptItems(messages, nil, nil, nil)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 transcript item, got %d", len(items))
+	}
+	if strings.Contains(items[0].Body, "\\n") {
+		t.Fatalf("expected escaped newlines to be normalized, got %q", items[0].Body)
+	}
+	if !strings.Contains(items[0].Body, "line1\nline2") {
+		t.Fatalf("expected actual newline in thinking body, got %q", items[0].Body)
 	}
 }
 
 func TestTranscriptTogglesSelectedItemExpansion(t *testing.T) {
 	items := []transcriptItem{
-		{ID: "assistant-1:0:text", Summary: "ai: hello", Body: "hello"},
-		{ID: "assistant-1:1:thinking", Summary: "thinking", Body: "expanded reasoning"},
+		{ID: "user-1:0:text", PartType: message.PartTypeText, Kind: message.KindUser, Summary: "you: hello", Body: "hello"},
+		{ID: "assistant-1", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: hello", Body: "hello\nthinking\nexpanded reasoning"},
 	}
 
 	model := newTranscriptModel(defaultWidth, defaultHeight).setItems(items)
@@ -217,7 +302,7 @@ func TestTranscriptTogglesSelectedItemExpansion(t *testing.T) {
 	}
 
 	model = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	if !model.expanded["assistant-1:1:thinking"] {
+	if !model.expanded["assistant-1"] {
 		t.Fatal("expected selected item to be expanded")
 	}
 	if !strings.Contains(model.View(), "expanded reasoning") {
@@ -225,15 +310,74 @@ func TestTranscriptTogglesSelectedItemExpansion(t *testing.T) {
 	}
 
 	model = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}))
-	if model.expanded["assistant-1:1:thinking"] {
+	if model.expanded["assistant-1"] {
 		t.Fatal("expected selected item to collapse after space")
+	}
+}
+
+func TestRootEnterPrefersTranscriptExpansionOverSubmit(t *testing.T) {
+	model := NewRootModel(newStubChatService())
+	model.sessionID = "session-1"
+	model.composer.value = "pending send"
+	model.transcript = model.transcript.setItems([]transcriptItem{
+		{ID: "user-1", PartType: message.PartTypeText, Kind: message.KindUser, Summary: "you: hi", Body: "hi"},
+		{ID: "assistant-1", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: hello", Body: "hello\nthinking\nexpanded reasoning"},
+	})
+	model.transcript.selected = 1
+
+	updated, cmd := model.Update(enterKey())
+	model = updated.(rootModel)
+
+	if cmd != nil {
+		t.Fatal("expected no submit command when expanding transcript item")
+	}
+	if !model.transcript.expanded["assistant-1"] {
+		t.Fatal("expected enter to expand selected assistant transcript item")
+	}
+	if model.composer.value != "pending send" {
+		t.Fatalf("expected composer value unchanged, got %q", model.composer.value)
+	}
+}
+
+func TestRootAllowsScrollingTranscriptWhenMessagesOverflowMainView(t *testing.T) {
+	model := NewRootModel(newStubChatService())
+	model.width = 40
+	model.height = 8
+	model.transcript = model.transcript.updateSize(40, 3)
+	model.transcript = model.transcript.setItems([]transcriptItem{
+		{ID: "user-1", PartType: message.PartTypeText, Kind: message.KindUser, Summary: "you: one", Body: "one"},
+		{ID: "assistant-1", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: two", Body: "two\nthinking\nreasoning one"},
+		{ID: "assistant-2", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: three", Body: "three\nthinking\nreasoning two"},
+		{ID: "assistant-3", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: four", Body: "four\nthinking\nreasoning three"},
+		{ID: "assistant-4", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: five", Body: "five\nthinking\nreasoning four"},
+	})
+
+	initial := model.View().Content
+	if strings.Contains(initial, "ai: five") {
+		t.Fatalf("expected overflow item hidden before scrolling, got %q", initial)
+	}
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	model = updated.(rootModel)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	model = updated.(rootModel)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	model = updated.(rootModel)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	model = updated.(rootModel)
+
+	scrolled := model.View().Content
+	if !strings.Contains(scrolled, "ai: five") {
+		t.Fatalf("expected overflow item visible after scrolling, got %q", scrolled)
 	}
 }
 
 func TestMarkdownRendersOnlyOnAgentTerminalEvent(t *testing.T) {
 	renderer := &stubMarkdownRenderer{rendered: "rendered markdown"}
+	quietRenderer := &stubMarkdownRenderer{rendered: "quiet markdown"}
 	model := NewRootModel(newStubChatService())
 	model.renderer = renderer
+	model.quietRenderer = quietRenderer
 
 	deltaEvent := appEventMsg{
 		event: app.BaseEvent{
@@ -282,11 +426,95 @@ func TestMarkdownRendersOnlyOnAgentTerminalEvent(t *testing.T) {
 	if renderer.calls != 1 {
 		t.Fatalf("expected one markdown render on completion, got %d", renderer.calls)
 	}
+	if quietRenderer.calls != 0 {
+		t.Fatalf("expected no quiet render for plain assistant text, got %d", quietRenderer.calls)
+	}
 	if model.markdown["assistant-1"] != "rendered markdown" {
 		t.Fatalf("expected cached markdown, got %q", model.markdown["assistant-1"])
 	}
 	if model.transcript.items[0].Body != "rendered markdown" {
 		t.Fatalf("expected rendered body after completion, got %q", model.transcript.items[0].Body)
+	}
+}
+
+func TestHistoryLoadRendersMarkdownForStableUserMessages(t *testing.T) {
+	renderer := &stubMarkdownRenderer{rendered: "rendered user markdown"}
+	model := NewRootModel(newStubChatService())
+	model.renderer = renderer
+	model.quietRenderer = &stubMarkdownRenderer{rendered: "quiet markdown"}
+	model.sessionID = "session-1"
+
+	updated, _ := model.Update(historyLoadedMsg{
+		sessionID: "session-1",
+		messages: []message.Message{
+			messageRecord("user-1", message.KindUser, "**hello**"),
+		},
+	})
+	model = updated.(rootModel)
+
+	if renderer.calls != 1 {
+		t.Fatalf("expected one markdown render for stable user message, got %d", renderer.calls)
+	}
+	if model.transcript.items[0].Body != "rendered user markdown" {
+		t.Fatalf("expected rendered user body, got %q", model.transcript.items[0].Body)
+	}
+}
+
+func TestTranscriptUsesQuietMarkdownForAssistantThinkingAndToolDetails(t *testing.T) {
+	renderer := &stubMarkdownRenderer{rendered: "final markdown"}
+	quietRenderer := &stubMarkdownRenderer{rendered: "detail markdown"}
+	model := NewRootModel(newStubChatService())
+	model.renderer = renderer
+	model.quietRenderer = quietRenderer
+
+	completedEvent := appEventMsg{
+		event: app.BaseEvent{
+			T: app.EventAgent,
+			Payload: agent.QueryEvent{
+				Status: agent.QueryStatusCompleted,
+				State: agent.LoopState{
+					Messages: []message.Message{
+						{
+							ID:        "assistant-1",
+							SessionID: "session-1",
+							Kind:      message.KindAssistant,
+							Parts: []message.Part{
+								{Type: message.PartTypeText, Text: "```go\nfmt.Println(\"hi\")\n```"},
+								{
+									Type: message.PartTypeThinking,
+									Thinking: &message.ThinkingPart{
+										Content: "- step 1\n- step 2",
+									},
+								},
+								{
+									Type: message.PartTypeToolResult,
+									ToolResult: &message.ToolResultPart{
+										ToolCallID: "call-1",
+										Content:    "```json\n{\"ok\":true}\n```",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	updated, _ := model.Update(completedEvent)
+	model = updated.(rootModel)
+
+	if renderer.calls != 1 {
+		t.Fatalf("expected one primary markdown render, got %d", renderer.calls)
+	}
+	if quietRenderer.calls != 2 {
+		t.Fatalf("expected quiet renderer for thinking and tool detail, got %d", quietRenderer.calls)
+	}
+	if !strings.Contains(model.transcript.items[0].Body, "final markdown") {
+		t.Fatalf("expected rendered final body, got %q", model.transcript.items[0].Body)
+	}
+	if !strings.Contains(model.transcript.items[0].Body, "detail markdown") {
+		t.Fatalf("expected rendered detail body, got %q", model.transcript.items[0].Body)
 	}
 }
 
@@ -318,8 +546,10 @@ func TestRootStateMachineKeepsNetworkIOInCommands(t *testing.T) {
 
 func TestViewIsPure(t *testing.T) {
 	renderer := &stubMarkdownRenderer{rendered: "rendered markdown"}
+	quietRenderer := &stubMarkdownRenderer{rendered: "quiet markdown"}
 	model := NewRootModel(newStubChatService())
 	model.renderer = renderer
+	model.quietRenderer = quietRenderer
 	model.markdown["assistant-1"] = "cached markdown"
 	model.transcript = model.transcript.setItems([]transcriptItem{
 		{ID: "assistant-1:0:text", Summary: "ai: hello", Body: "cached markdown"},
@@ -341,6 +571,9 @@ func TestViewIsPure(t *testing.T) {
 	}
 	if renderer.calls != beforeCalls {
 		t.Fatalf("expected View to not render markdown, got %d calls", renderer.calls-beforeCalls)
+	}
+	if quietRenderer.calls != 0 {
+		t.Fatalf("expected View to not render quiet markdown, got %d calls", quietRenderer.calls)
 	}
 	if model.transcript.selected != beforeSelected {
 		t.Fatalf("expected selected item unchanged, got %d", model.transcript.selected)
@@ -682,14 +915,6 @@ func (s *stubChatService) ListHistory(_ context.Context, sessionID string) ([]me
 func (s *stubChatService) Events() <-chan app.Event {
 	s.eventsCalls++
 	return s.events
-}
-
-func (s *stubChatService) InitializePermissionLevel(_ context.Context) error {
-	if lifecycle.State == nil {
-		lifecycle.State = &lifecycle.GlobalState{}
-	}
-	lifecycle.State.PermissionLevel = lifecycle.SafeLevel
-	return nil
 }
 
 func enterKey() tea.KeyPressMsg {
