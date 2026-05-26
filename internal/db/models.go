@@ -4,12 +4,6 @@
 
 package db
 
-type Draft struct {
-	SessionID string `json:"session_id"`
-	Content   string `json:"content"`
-	UpdatedAt int64  `json:"updated_at"`
-}
-
 type Message struct {
 	ID               string `json:"id"`
 	SessionID        string `json:"session_id"`

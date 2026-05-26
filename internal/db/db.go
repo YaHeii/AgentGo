@@ -30,14 +30,8 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.createSessionStmt, err = db.PrepareContext(ctx, createSession); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateSession: %w", err)
 	}
-	if q.deleteDraftStmt, err = db.PrepareContext(ctx, deleteDraft); err != nil {
-		return nil, fmt.Errorf("error preparing query DeleteDraft: %w", err)
-	}
 	if q.deleteSessionStmt, err = db.PrepareContext(ctx, deleteSession); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSession: %w", err)
-	}
-	if q.getDraftStmt, err = db.PrepareContext(ctx, getDraft); err != nil {
-		return nil, fmt.Errorf("error preparing query GetDraft: %w", err)
 	}
 	if q.getSessionStmt, err = db.PrepareContext(ctx, getSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSession: %w", err)
@@ -50,9 +44,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.updateSessionStmt, err = db.PrepareContext(ctx, updateSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSession: %w", err)
-	}
-	if q.upsertDraftStmt, err = db.PrepareContext(ctx, upsertDraft); err != nil {
-		return nil, fmt.Errorf("error preparing query UpsertDraft: %w", err)
 	}
 	return &q, nil
 }
@@ -69,19 +60,9 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing createSessionStmt: %w", cerr)
 		}
 	}
-	if q.deleteDraftStmt != nil {
-		if cerr := q.deleteDraftStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing deleteDraftStmt: %w", cerr)
-		}
-	}
 	if q.deleteSessionStmt != nil {
 		if cerr := q.deleteSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteSessionStmt: %w", cerr)
-		}
-	}
-	if q.getDraftStmt != nil {
-		if cerr := q.getDraftStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getDraftStmt: %w", cerr)
 		}
 	}
 	if q.getSessionStmt != nil {
@@ -102,11 +83,6 @@ func (q *Queries) Close() error {
 	if q.updateSessionStmt != nil {
 		if cerr := q.updateSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateSessionStmt: %w", cerr)
-		}
-	}
-	if q.upsertDraftStmt != nil {
-		if cerr := q.upsertDraftStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing upsertDraftStmt: %w", cerr)
 		}
 	}
 	return err
@@ -150,14 +126,11 @@ type Queries struct {
 	tx                *sql.Tx
 	createMessageStmt *sql.Stmt
 	createSessionStmt *sql.Stmt
-	deleteDraftStmt   *sql.Stmt
 	deleteSessionStmt *sql.Stmt
-	getDraftStmt      *sql.Stmt
 	getSessionStmt    *sql.Stmt
 	listMessagesStmt  *sql.Stmt
 	listSessionsStmt  *sql.Stmt
 	updateSessionStmt *sql.Stmt
-	upsertDraftStmt   *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
@@ -166,13 +139,10 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		tx:                tx,
 		createMessageStmt: q.createMessageStmt,
 		createSessionStmt: q.createSessionStmt,
-		deleteDraftStmt:   q.deleteDraftStmt,
 		deleteSessionStmt: q.deleteSessionStmt,
-		getDraftStmt:      q.getDraftStmt,
 		getSessionStmt:    q.getSessionStmt,
 		listMessagesStmt:  q.listMessagesStmt,
 		listSessionsStmt:  q.listSessionsStmt,
 		updateSessionStmt: q.updateSessionStmt,
-		upsertDraftStmt:   q.upsertDraftStmt,
 	}
 }

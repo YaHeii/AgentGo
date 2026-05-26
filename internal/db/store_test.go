@@ -141,46 +141,18 @@ func TestStoreCreatesListsUpdatesMessagesAndCascadesOnSessionDelete(t *testing.T
 	require.Len(t, messages, 0)
 }
 
-func TestStoreLoadsSavesAndDeletesDrafts(t *testing.T) {
+func TestOpenAppliesMigrationThatRemovesDraftsTable(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	s := newTestStore(t)
+	dbPath := filepath.Join(t.TempDir(), "agentgo.db")
 
-	now := time.Unix(1710002000, 0).UTC()
-
-	_, err := s.CreateSession(ctx, sessioncontract.CreateSessionParams{
-		ID:        "session-1",
-		Title:     "draft-session",
-		TodosJSON: "[]",
-		CreatedAt: now,
-		UpdatedAt: now,
+	s, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, s.Close())
 	})
-	require.NoError(t, err)
 
-	draft, err := s.LoadDraft(ctx, "session-1")
-	require.NoError(t, err)
-	require.Equal(t, "", draft)
-
-	err = s.SaveDraft(ctx, "session-1", "/session", now.Add(time.Second))
-	require.NoError(t, err)
-
-	draft, err = s.LoadDraft(ctx, "session-1")
-	require.NoError(t, err)
-	require.Equal(t, "/session", draft)
-
-	err = s.SaveDraft(ctx, "session-1", "/session list", now.Add(2*time.Second))
-	require.NoError(t, err)
-
-	draft, err = s.LoadDraft(ctx, "session-1")
-	require.NoError(t, err)
-	require.Equal(t, "/session list", draft)
-
-	require.NoError(t, s.DeleteDraft(ctx, "session-1"))
-
-	draft, err = s.LoadDraft(ctx, "session-1")
-	require.NoError(t, err)
-	require.Equal(t, "", draft)
+	require.False(t, tableExists(t, dbPath, "drafts"))
 }
 
 func TestStoreWithinTxRollsBackOnError(t *testing.T) {
@@ -253,7 +225,8 @@ func TestMigrateDownRollsBackLatestMigration(t *testing.T) {
 	require.NoError(t, store.Close())
 
 	require.NoError(t, db.MigrateDown(ctx, dbPath, 1))
-	require.False(t, tableExists(t, dbPath, "sessions"))
+	require.True(t, tableExists(t, dbPath, "sessions"))
+	require.True(t, tableExists(t, dbPath, "drafts"))
 
 	reopened, err := db.Open(dbPath)
 	require.NoError(t, err)
@@ -262,6 +235,7 @@ func TestMigrateDownRollsBackLatestMigration(t *testing.T) {
 	})
 
 	require.True(t, tableExists(t, dbPath, "sessions"))
+	require.False(t, tableExists(t, dbPath, "drafts"))
 }
 
 func newTestStore(t *testing.T) *db.Store {

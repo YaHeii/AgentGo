@@ -7,8 +7,6 @@ import (
 )
 
 const (
-	roleUser      = "user"
-	roleAssistant = "assistant"
 	defaultWidth  = 80
 	defaultHeight = 24
 )

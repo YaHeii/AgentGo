@@ -26,9 +26,3 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS messages_session_created_idx
     ON messages(session_id, finished_at, id);
-
-CREATE TABLE IF NOT EXISTS drafts (
-    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-    content TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-);

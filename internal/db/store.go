@@ -30,10 +30,6 @@ type TxStore interface {
 
 	CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error)
 	ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error)
-
-	LoadDraft(ctx context.Context, sessionID string) (string, error)
-	SaveDraft(ctx context.Context, sessionID string, content string, updatedAt time.Time) error
-	DeleteDraft(ctx context.Context, sessionID string) error
 }
 
 type Transactor interface {
@@ -49,10 +45,6 @@ type dbStore interface {
 
 	CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error)
 	ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error)
-
-	LoadDraft(ctx context.Context, sessionID string) (string, error)
-	SaveDraft(ctx context.Context, sessionID string, content string, updatedAt time.Time) error
-	DeleteDraft(ctx context.Context, sessionID string) error
 
 	WithinTx(ctx context.Context, fn func(tx TxStore) error) error
 	Close() error

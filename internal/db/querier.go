@@ -11,14 +11,11 @@ import (
 type Querier interface {
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
-	DeleteDraft(ctx context.Context, sessionID string) (int64, error)
 	DeleteSession(ctx context.Context, id string) (int64, error)
-	GetDraft(ctx context.Context, sessionID string) (string, error)
 	GetSession(ctx context.Context, id string) (Session, error)
 	ListMessages(ctx context.Context, sessionID string) ([]Message, error)
 	ListSessions(ctx context.Context) ([]Session, error)
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
-	UpsertDraft(ctx context.Context, arg UpsertDraftParams) error
 }
 
 var _ Querier = (*Queries)(nil)
