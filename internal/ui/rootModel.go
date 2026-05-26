@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -11,6 +10,7 @@ import (
 	messageevent "github.com/YaHeii/agentGo/internal/message"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/session"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type rootModel struct {
@@ -18,11 +18,16 @@ type rootModel struct {
 	events     <-chan app.Event
 	sessionID  string
 	messages   []message.Message
-	input      string
+	items      []transcriptItem
+	markdown   map[string]string
+	renderer   markdownRenderer
 	errMessage string
 	loading    bool
 	width      int
 	height     int
+	transcript transcriptModel
+	composer   composerModel
+	status     statusModel
 }
 
 type bootstrapDoneMsg struct {
@@ -31,10 +36,15 @@ type bootstrapDoneMsg struct {
 
 func NewRootModel(appSvc chatService) rootModel {
 	return rootModel{
-		app:    appSvc,
-		events: appSvc.Events(),
-		width:  defaultWidth,
-		height: defaultHeight,
+		app:        appSvc,
+		events:     appSvc.Events(),
+		width:      defaultWidth,
+		height:     defaultHeight,
+		markdown:   make(map[string]string),
+		renderer:   newDefaultMarkdownRenderer(),
+		transcript: newTranscriptModel(defaultWidth, defaultHeight),
+		composer:   newComposerModel(),
+		status:     newStatusModel(),
 	}
 }
 
@@ -59,26 +69,45 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.transcript = m.transcript.updateSize(msg.Width, msg.Height)
 	case bootstrapDoneMsg:
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
+			m.status = m.status.setMessage(m.errMessage)
 			return m, nil
 		}
 		return m, waitAppEventCmd(m.events)
 	case sendMessageDoneMsg:
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
+			m.status = m.status.setMessage(m.errMessage)
 		}
 		return m, nil
+	case historyLoadedMsg:
+		if msg.sessionID != m.sessionID {
+			return m, waitAppEventCmd(m.events)
+		}
+		if msg.err != nil {
+			m.errMessage = msg.err.Error()
+			m.status = m.status.setMessage(m.errMessage)
+			return m, waitAppEventCmd(m.events)
+		}
+		m.messages = append([]message.Message(nil), msg.messages...)
+		m.refreshTranscript()
+		return m, waitAppEventCmd(m.events)
 	case appEventMsg:
 		switch msg.event.Type() {
 		case app.EventSession:
 			if event, ok := msg.event.Data().(session.SessionEvent); ok && event.Session != nil {
 				m.sessionID = event.Session.ID
+				if event.Status == session.StatusRestored || event.Status == session.StatusSwitched {
+					return m, loadHistoryCmd(m.app, event.Session.ID)
+				}
 			}
 		case app.EventMessage:
 			if event, ok := msg.event.Data().(messageevent.MessageEvent); ok && event.Message != nil {
 				m.upsertMessage(*event.Message)
+				m.refreshTranscript()
 			}
 		case app.EventAgent:
 			if event, ok := msg.event.Data().(agent.QueryEvent); ok {
@@ -86,15 +115,22 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				switch event.Status {
 				case agent.QueryStatusStarted, agent.QueryStatusDelta:
+					m.clearMarkdownForMessages(m.messages)
 					m.loading = true
+					m.status = m.status.setMessage("assistant is thinking...")
 				case agent.QueryStatusCompleted:
+					m.renderTerminalMarkdown(m.messages)
 					m.loading = false
+					m.status = m.status.setMessage("")
 				case agent.QueryStatusFailed:
+					m.renderTerminalMarkdown(m.messages)
 					if event.Err != nil {
 						m.errMessage = event.Err.Error()
+						m.status = m.status.setMessage(m.errMessage)
 					}
 					m.loading = false
 				}
+				m.refreshTranscript()
 			}
 		}
 		return m, waitAppEventCmd(m.events)
@@ -106,23 +142,20 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.loading {
 				return m, nil
 			}
-			prompt := strings.TrimSpace(m.input)
+			prompt := strings.TrimSpace(m.composer.value)
 			if prompt == "" || m.sessionID == "" {
 				return m, nil
 			}
 
 			m.errMessage = ""
 			m.loading = true
-			m.input = ""
+			m.status = m.status.setMessage("assistant is thinking...")
+			m.composer = m.composer.Clear()
 			return m, runQueryCmd(m.app, m.sessionID, prompt)
-		case "backspace":
-			if len(m.input) > 0 {
-				runes := []rune(m.input)
-				m.input = string(runes[:len(runes)-1])
-			}
 		default:
-			if !m.loading && msg.Key().Text != "" && !isControlKey(msg.Key().Text) {
-				m.input += msg.Key().Text
+			m.transcript = m.transcript.Update(msg)
+			if !m.loading {
+				m.composer = m.composer.Update(msg)
 			}
 		}
 	}
@@ -131,31 +164,48 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m rootModel) View() tea.View {
-	lines := make([]string, 0, len(m.messages)*2+6)
-	lines = append(lines, "agentGo", "")
-
-	for _, msg := range m.messages {
-		lines = append(lines, fmt.Sprintf("%s %s", kindLabel(msg.Kind), textContent(msg.Parts)))
+	totalHeight := m.height
+	if totalHeight <= 0 {
+		totalHeight = defaultHeight
 	}
 
-	if m.errMessage != "" {
-		lines = append(lines, "", "error: "+m.errMessage)
-	}
-	if m.loading {
-		lines = append(lines, "", "assistant is thinking...")
-	}
-
-	lines = append(lines, "", "> "+m.input, "", "Enter to send. ctrl+c to quit.")
-
-	maxLines := m.height
-	if maxLines <= 0 {
-		maxLines = defaultHeight
-	}
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
+	headerHeight := 2
+	statusHeight := 1
+	composerHeight := 3
+	transcriptHeight := totalHeight - headerHeight - statusHeight - composerHeight
+	if transcriptHeight < 3 {
+		transcriptHeight = 3
 	}
 
-	return tea.NewView(strings.Join(lines, "\n"))
+	transcript := m.transcript.updateSize(m.width, transcriptHeight)
+
+	header := lipgloss.NewStyle().
+		Bold(true).
+		Width(m.width).
+		Render(strings.Join([]string{"agentGo", "Enter to send. ctrl+c to quit."}, "\n"))
+
+	statusText := m.status.View()
+	if statusText == "" {
+		statusText = "ready"
+	}
+	status := lipgloss.NewStyle().
+		Width(m.width).
+		Render(statusText)
+
+	composer := lipgloss.NewStyle().
+		Width(m.width).
+		Height(composerHeight).
+		Render(m.composer.View())
+
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		transcript.View(),
+		status,
+		composer,
+	)
+
+	return tea.NewView(content)
 }
 
 // UI layer only sends the raw user prompt. Query assembly stays below app/agent.
@@ -163,6 +213,17 @@ func runQueryCmd(appSvc chatService, sessionID string, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		err := appSvc.RunQuery(context.Background(), sessionID, prompt)
 		return sendMessageDoneMsg{err: err}
+	}
+}
+
+func loadHistoryCmd(appSvc chatService, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		messages, err := appSvc.ListHistory(context.Background(), sessionID)
+		return historyLoadedMsg{
+			sessionID: sessionID,
+			messages:  messages,
+			err:       err,
+		}
 	}
 }
 
@@ -182,6 +243,37 @@ func (m *rootModel) upsertMessage(msg message.Message) {
 	}
 
 	m.messages = append(m.messages, msg)
+}
+
+func (m *rootModel) refreshTranscript() {
+	m.items = buildTranscriptItems(m.messages, m.markdown, m.transcript.expanded)
+	m.transcript = m.transcript.setItems(m.items)
+}
+
+func (m *rootModel) clearMarkdownForMessages(messages []message.Message) {
+	for _, msg := range messages {
+		delete(m.markdown, msg.ID)
+	}
+}
+
+func (m *rootModel) renderTerminalMarkdown(messages []message.Message) {
+	if m.renderer == nil {
+		return
+	}
+	for _, msg := range messages {
+		if msg.Kind != message.KindAssistant {
+			continue
+		}
+		text := textContent(msg.Parts)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		rendered, err := m.renderer.Render(text)
+		if err != nil {
+			continue
+		}
+		m.markdown[msg.ID] = rendered
+	}
 }
 
 func kindLabel(kind message.Kind) string {

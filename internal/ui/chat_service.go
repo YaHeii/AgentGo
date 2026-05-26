@@ -5,6 +5,7 @@ import (
 
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/lifecycle"
+	message "github.com/YaHeii/agentGo/internal/message/contract"
 )
 
 type ChatService struct {
@@ -17,6 +18,10 @@ func NewChatService(appSvc *app.APPService) *ChatService {
 
 func (s *ChatService) EnsureActiveSession(ctx context.Context) error {
 	return s.app.EnsureActiveSession(ctx)
+}
+
+func (s *ChatService) ListHistory(ctx context.Context, sessionID string) ([]message.Message, error) {
+	return s.app.ListHistory(ctx, sessionID)
 }
 
 func (s *ChatService) RunQuery(ctx context.Context, sessionID string, prompt string) error {
