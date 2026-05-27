@@ -1,13 +1,24 @@
-package ui
+package model
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/YaHeii/agentGo/internal/agent"
+	"github.com/YaHeii/agentGo/internal/app"
+	messageevent "github.com/YaHeii/agentGo/internal/message"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
+	"github.com/YaHeii/agentGo/internal/session"
+	"github.com/YaHeii/agentGo/internal/ui/common"
 	"github.com/charmbracelet/bubbles/viewport"
+	uv "github.com/charmbracelet/ultraviolet"
 )
+
+type markdownRenderer interface {
+	Render(string) (string, error)
+}
 
 type transcriptItem struct {
 	ID        string
@@ -36,9 +47,9 @@ func newTranscriptModel(width int, height int) transcriptModel {
 }
 
 func (m transcriptModel) updateSize(width int, height int) transcriptModel {
-	m.viewport.Width = width
-	m.viewport.Height = height
-	m.syncViewport()
+	m.viewport.Width = max(1, width)
+	m.viewport.Height = max(1, height)
+	m.ensureSelectionVisible()
 	return m
 }
 
@@ -134,6 +145,226 @@ func (m *transcriptModel) ensureSelectionVisible() {
 	if m.selected > bottom {
 		m.viewport.SetYOffset(m.selected - max(1, m.viewport.Height) + 1)
 	}
+}
+
+type Chat struct {
+	app           appService
+	events        <-chan app.Event
+	sessionID     string
+	messages      []message.Message
+	items         []transcriptItem
+	markdown      map[string]string
+	quietMarkdown map[string]string
+	renderer      markdownRenderer
+	quietRenderer markdownRenderer
+	errMessage    string
+	loading       bool
+	transcript    transcriptModel
+	composer      composerModel
+	status        statusModel
+}
+
+func newChat(appSvc appService) Chat {
+	return Chat{
+		app:           appSvc,
+		events:        appSvc.Events(),
+		markdown:      make(map[string]string),
+		quietMarkdown: make(map[string]string),
+		renderer:      common.MarkdownRenderer(defaultWidth),
+		quietRenderer: common.QuietMarkdownRenderer(defaultWidth),
+		transcript:    newTranscriptModel(defaultWidth, defaultHeight),
+		composer:      newComposerModel(),
+		status:        newStatusModel(),
+	}
+}
+
+func (c *Chat) Draw(scr uv.Screen, area uv.Rectangle) {
+	c.transcript = c.transcript.updateSize(area.Dx(), area.Dy())
+	uv.NewStyledString(c.transcript.View()).Draw(scr, area)
+}
+
+func (c *Chat) DrawStatus(scr uv.Screen, area uv.Rectangle) {
+	statusText := c.status.View()
+	if statusText == "" {
+		statusText = "ready"
+	}
+	uv.NewStyledString(statusText).Draw(scr, area)
+}
+
+func (c *Chat) DrawEditor(scr uv.Screen, area uv.Rectangle) {
+	uv.NewStyledString(c.composer.View()).Draw(scr, area)
+}
+
+func (c *Chat) updateSize(width int) {
+	c.renderer = common.MarkdownRenderer(max(1, width))
+	c.quietRenderer = common.QuietMarkdownRenderer(max(1, width))
+}
+
+func bootstrapSessionCmd(appSvc appService) tea.Cmd {
+	return func() tea.Msg {
+		err := appSvc.EnsureActiveSession(context.Background())
+		return bootstrapDoneMsg{err: err}
+	}
+}
+
+func runQueryCmd(appSvc appService, sessionID string, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		err := appSvc.RunQuery(context.Background(), sessionID, prompt)
+		return sendMessageDoneMsg{err: err}
+	}
+}
+
+func loadHistoryCmd(appSvc appService, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		messages, err := appSvc.ListHistory(context.Background(), sessionID)
+		return historyLoadedMsg{
+			sessionID: sessionID,
+			messages:  messages,
+			err:       err,
+		}
+	}
+}
+
+func waitAppEventCmd(events <-chan app.Event) tea.Cmd {
+	return func() tea.Msg {
+		event := <-events
+		return appEventMsg{event: event}
+	}
+}
+
+func (c *Chat) upsertMessage(msg message.Message) {
+	for i := range c.messages {
+		if c.messages[i].ID == msg.ID {
+			c.messages[i] = msg
+			return
+		}
+	}
+
+	c.messages = append(c.messages, msg)
+}
+
+func (c *Chat) refreshTranscript() {
+	c.items = buildTranscriptItems(c.messages, c.markdown, c.quietMarkdown, c.transcript.expanded)
+	c.transcript = c.transcript.setItems(c.items)
+}
+
+func (c *Chat) clearMarkdownForMessages(messages []message.Message) {
+	for _, msg := range messages {
+		delete(c.markdown, msg.ID)
+		delete(c.quietMarkdown, msg.ID)
+	}
+}
+
+func (c *Chat) renderStableMarkdown(messages []message.Message) {
+	for _, msg := range messages {
+		c.renderMessageMarkdown(msg)
+	}
+}
+
+func (c *Chat) renderTerminalMarkdown(messages []message.Message) {
+	c.renderStableMarkdown(messages)
+}
+
+func (c *Chat) renderMessageMarkdown(msg message.Message) {
+	if text := textContent(msg.Parts); strings.TrimSpace(text) != "" {
+		if rendered, ok := renderMarkdown(c.renderer, text); ok {
+			c.markdown[msg.ID] = rendered
+		}
+	}
+
+	if msg.Kind != message.KindAssistant {
+		return
+	}
+
+	detailParts := make([]string, 0, len(msg.Parts))
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case message.PartTypeThinking:
+			if part.Thinking == nil {
+				continue
+			}
+			body := normalizeDisplayText(part.Thinking.Content)
+			if body == "" {
+				body = normalizeDisplayText(part.Thinking.Summary)
+			}
+			if body != "" {
+				if rendered, ok := renderMarkdown(c.quietRenderer, body); ok {
+					detailParts = append(detailParts, "thinking", rendered)
+				}
+			}
+		case message.PartTypeToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			detailParts = append(detailParts, "tool call: "+part.ToolCall.Name)
+			if body := normalizeDisplayText(part.ToolCall.Input); body != "" {
+				if rendered, ok := renderMarkdown(c.quietRenderer, body); ok {
+					detailParts = append(detailParts, rendered)
+				} else {
+					detailParts = append(detailParts, body)
+				}
+			}
+		case message.PartTypeToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			detailParts = append(detailParts, "tool result: "+part.ToolResult.ToolCallID)
+			if body := normalizeDisplayText(part.ToolResult.Content); body != "" {
+				if rendered, ok := renderMarkdown(c.quietRenderer, body); ok {
+					detailParts = append(detailParts, rendered)
+				} else {
+					detailParts = append(detailParts, body)
+				}
+			}
+		}
+	}
+
+	if len(detailParts) > 0 {
+		c.quietMarkdown[msg.ID] = strings.TrimSpace(strings.Join(detailParts, "\n"))
+	}
+}
+
+func (c *Chat) handleSessionEvent(event session.SessionEvent) tea.Cmd {
+	if event.Session == nil {
+		return nil
+	}
+	c.sessionID = event.Session.ID
+	if event.Status == session.StatusRestored || event.Status == session.StatusSwitched {
+		return loadHistoryCmd(c.app, event.Session.ID)
+	}
+	return nil
+}
+
+func (c *Chat) handleMessageEvent(event messageevent.MessageEvent) {
+	if event.Message == nil {
+		return
+	}
+	c.upsertMessage(*event.Message)
+	c.refreshTranscript()
+}
+
+func (c *Chat) handleAgentEvent(event agent.QueryEvent) {
+	c.messages = append([]message.Message(nil), event.State.Messages...)
+
+	switch event.Status {
+	case agent.QueryStatusStarted, agent.QueryStatusDelta:
+		c.clearMarkdownForMessages(c.messages)
+		c.loading = true
+		c.status = c.status.setMessage("assistant is thinking...")
+	case agent.QueryStatusCompleted:
+		c.renderTerminalMarkdown(c.messages)
+		c.loading = false
+		c.status = c.status.setMessage("")
+	case agent.QueryStatusFailed:
+		c.renderTerminalMarkdown(c.messages)
+		if event.Err != nil {
+			c.errMessage = event.Err.Error()
+			c.status = c.status.setMessage(c.errMessage)
+		}
+		c.loading = false
+	}
+
+	c.refreshTranscript()
 }
 
 func buildTranscriptItems(messages []message.Message, markdown map[string]string, quietMarkdown map[string]string, expanded map[string]bool) []transcriptItem {
@@ -386,4 +617,33 @@ func itemCanExpand(item transcriptItem) bool {
 		return true
 	}
 	return item.PartType != message.PartTypeText
+}
+
+func renderMarkdown(renderer markdownRenderer, input string) (string, bool) {
+	if renderer == nil || strings.TrimSpace(input) == "" {
+		return "", false
+	}
+	rendered, err := renderer.Render(input)
+	if err != nil {
+		return "", false
+	}
+	return rendered, true
+}
+
+func kindLabel(kind message.Kind) string {
+	switch kind {
+	case message.KindAssistant:
+		return "ai:"
+	default:
+		return "you:"
+	}
+}
+
+func textContent(parts []message.Part) string {
+	for _, part := range parts {
+		if part.Type == message.PartTypeText {
+			return part.Text
+		}
+	}
+	return ""
 }

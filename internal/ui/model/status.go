@@ -1,4 +1,6 @@
-package ui
+package model
+
+import "strings"
 
 type statusModel struct {
 	message string
@@ -9,7 +11,7 @@ func newStatusModel() statusModel {
 }
 
 func (m statusModel) setMessage(message string) statusModel {
-	m.message = message
+	m.message = strings.TrimSpace(message)
 	return m
 }
 

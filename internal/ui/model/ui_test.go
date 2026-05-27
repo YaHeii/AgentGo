@@ -1,4 +1,4 @@
-package ui
+package model
 
 import (
 	"context"
@@ -12,10 +12,81 @@ import (
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/session"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
+	uv "github.com/charmbracelet/ultraviolet"
 )
 
+func TestNewInitializesDefaultStateAndFocus(t *testing.T) {
+	ui := New(newStubAppService())
+
+	if ui.state != uiStateChat {
+		t.Fatalf("expected default ui state chat, got %q", ui.state)
+	}
+	if ui.focus != uiFocusEditor {
+		t.Fatalf("expected default focus editor, got %q", ui.focus)
+	}
+	if ui.layout.header.Dx() != 0 || ui.layout.main.Dx() != 0 {
+		t.Fatalf("expected zero layout before sizing, got %#v", ui.layout)
+	}
+}
+
+func TestGenerateLayoutCreatesHeaderMainStatusEditorAndSlashMenuAreas(t *testing.T) {
+	ui := New(newStubAppService())
+	layout := ui.generateLayout(uv.Rect(0, 0, 80, 24))
+
+	if layout.header.Dy() <= 0 {
+		t.Fatalf("expected header height > 0, got %v", layout.header)
+	}
+	if layout.main.Dy() <= 0 {
+		t.Fatalf("expected main height > 0, got %v", layout.main)
+	}
+	if layout.status.Dy() <= 0 {
+		t.Fatalf("expected status height > 0, got %v", layout.status)
+	}
+	if layout.editor.Dy() <= 0 {
+		t.Fatalf("expected editor height > 0, got %v", layout.editor)
+	}
+	if layout.slashMenu.Min.X < 0 || layout.slashMenu.Min.Y < 0 {
+		t.Fatalf("expected slash menu rectangle to be initialized, got %v", layout.slashMenu)
+	}
+	if layout.main.Min.Y < layout.header.Max.Y {
+		t.Fatalf("expected main below header, got header=%v main=%v", layout.header, layout.main)
+	}
+}
+
+func TestDrawRendersHeaderAndComposerIntoScreenBuffer(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 40
+	ui.height = 12
+	ui.layout = ui.generateLayout(uv.Rect(0, 0, 40, 12))
+	ui.chat.composer = ui.chat.composer.Update(tea.KeyPressMsg(tea.Key{Text: "h"}))
+	ui.chat.composer = ui.chat.composer.Update(tea.KeyPressMsg(tea.Key{Text: "i"}))
+
+	screen := uv.NewScreenBuffer(40, 12)
+	ui.Draw(screen, screen.Bounds())
+
+	rendered := screen.Render()
+	if !strings.Contains(rendered, "agentGo") {
+		t.Fatalf("expected header drawn, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "> hi") {
+		t.Fatalf("expected composer drawn, got %q", rendered)
+	}
+}
+
+func TestViewUsesDrawCompatibilityPath(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 40
+	ui.height = 12
+	ui.layout = ui.generateLayout(uv.Rect(0, 0, 40, 12))
+
+	view := ui.View()
+	if !strings.Contains(view.Content, "agentGo") {
+		t.Fatalf("expected header in compatibility view, got %q", view.Content)
+	}
+}
+
 func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
-	svc := newStubChatService()
+	svc := newStubAppService()
 	svc.history = []message.Message{
 		messageRecord("u1", message.KindUser, "hello"),
 		messageRecord("a1", message.KindAssistant, "world"),
@@ -34,56 +105,56 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 		return nil
 	}
 
-	model := NewRootModel(svc)
+	ui := New(svc)
 
-	initMsg := model.Init()()
-	updated, listenCmd := model.Update(initMsg)
-	next := updated.(rootModel)
+	initMsg := ui.Init()()
+	updated, listenCmd := ui.Update(initMsg)
+	ui = updated.(*UI)
 
-	updated, historyCmd := next.Update(listenCmd())
-	next = updated.(rootModel)
-	updated, _ = next.Update(historyCmd())
-	next = updated.(rootModel)
+	updated, historyCmd := ui.Update(listenCmd())
+	ui = updated.(*UI)
+	updated, _ = ui.Update(historyCmd())
+	ui = updated.(*UI)
 
-	if next.sessionID != "session-1" {
-		t.Fatalf("expected active session, got %q", next.sessionID)
+	if ui.chat.sessionID != "session-1" {
+		t.Fatalf("expected active session, got %q", ui.chat.sessionID)
 	}
-	if len(next.messages) != 2 {
-		t.Fatalf("expected 2 hydrated messages, got %d", len(next.messages))
-	}
-}
-
-func TestRootComposesChatComponents(t *testing.T) {
-	model := NewRootModel(newStubChatService())
-
-	if model.transcript.viewport.Width != defaultWidth {
-		t.Fatalf("expected transcript viewport width %d, got %d", defaultWidth, model.transcript.viewport.Width)
-	}
-	if model.composer.value != "" {
-		t.Fatalf("expected empty composer, got %q", model.composer.value)
-	}
-	if model.status.message != "" {
-		t.Fatalf("expected empty status message, got %q", model.status.message)
-	}
-
-	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "h"}))
-	next := updated.(rootModel)
-
-	if next.composer.value != "h" {
-		t.Fatalf("expected composer to hold input, got %q", next.composer.value)
+	if len(ui.chat.messages) != 2 {
+		t.Fatalf("expected 2 hydrated messages, got %d", len(ui.chat.messages))
 	}
 }
 
-func TestRootLoadsHistoryAfterSessionRestore(t *testing.T) {
-	svc := newStubChatService()
+func TestUIComposesChatComponents(t *testing.T) {
+	ui := New(newStubAppService())
+
+	if ui.chat.transcript.viewport.Width != defaultWidth {
+		t.Fatalf("expected transcript viewport width %d, got %d", defaultWidth, ui.chat.transcript.viewport.Width)
+	}
+	if ui.chat.composer.value != "" {
+		t.Fatalf("expected empty composer, got %q", ui.chat.composer.value)
+	}
+	if ui.chat.status.message != "" {
+		t.Fatalf("expected empty status message, got %q", ui.chat.status.message)
+	}
+
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "h"}))
+	ui = updated.(*UI)
+
+	if ui.chat.composer.value != "h" {
+		t.Fatalf("expected composer to hold input, got %q", ui.chat.composer.value)
+	}
+}
+
+func TestUILoadsHistoryAfterSessionRestore(t *testing.T) {
+	svc := newStubAppService()
 	svc.history = []message.Message{
 		messageRecord("history-user", message.KindUser, "old question"),
 		messageRecord("history-assistant", message.KindAssistant, "old answer"),
 	}
 
-	model := NewRootModel(svc)
-	updated, listenCmd := model.Update(bootstrapDoneMsg{})
-	model = updated.(rootModel)
+	ui := New(svc)
+	updated, listenCmd := ui.Update(bootstrapDoneMsg{})
+	ui = updated.(*UI)
 
 	svc.events <- app.BaseEvent{
 		T: app.EventSession,
@@ -96,23 +167,23 @@ func TestRootLoadsHistoryAfterSessionRestore(t *testing.T) {
 		},
 	}
 
-	updated, historyCmd := model.Update(listenCmd())
-	model = updated.(rootModel)
-	if model.sessionID != "session-1" {
-		t.Fatalf("expected restored session, got %q", model.sessionID)
+	updated, historyCmd := ui.Update(listenCmd())
+	ui = updated.(*UI)
+	if ui.chat.sessionID != "session-1" {
+		t.Fatalf("expected restored session, got %q", ui.chat.sessionID)
 	}
 
-	updated, _ = model.Update(historyCmd())
-	model = updated.(rootModel)
+	updated, _ = ui.Update(historyCmd())
+	ui = updated.(*UI)
 
 	if svc.lastHistorySessionID != "session-1" {
 		t.Fatalf("expected history load for session-1, got %q", svc.lastHistorySessionID)
 	}
-	if len(model.messages) != 2 {
-		t.Fatalf("expected 2 history messages, got %d", len(model.messages))
+	if len(ui.chat.messages) != 2 {
+		t.Fatalf("expected 2 history messages, got %d", len(ui.chat.messages))
 	}
-	if len(model.transcript.items) != 2 {
-		t.Fatalf("expected 2 transcript items, got %d", len(model.transcript.items))
+	if len(ui.chat.transcript.items) != 2 {
+		t.Fatalf("expected 2 transcript items, got %d", len(ui.chat.transcript.items))
 	}
 }
 
@@ -315,36 +386,37 @@ func TestTranscriptTogglesSelectedItemExpansion(t *testing.T) {
 	}
 }
 
-func TestRootEnterPrefersTranscriptExpansionOverSubmit(t *testing.T) {
-	model := NewRootModel(newStubChatService())
-	model.sessionID = "session-1"
-	model.composer.value = "pending send"
-	model.transcript = model.transcript.setItems([]transcriptItem{
+func TestEnterPrefersTranscriptExpansionOverSubmit(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.chat.sessionID = "session-1"
+	ui.chat.composer.value = "pending send"
+	ui.chat.transcript = ui.chat.transcript.setItems([]transcriptItem{
 		{ID: "user-1", PartType: message.PartTypeText, Kind: message.KindUser, Summary: "you: hi", Body: "hi"},
 		{ID: "assistant-1", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: hello", Body: "hello\nthinking\nexpanded reasoning"},
 	})
-	model.transcript.selected = 1
+	ui.chat.transcript.selected = 1
 
-	updated, cmd := model.Update(enterKey())
-	model = updated.(rootModel)
+	updated, cmd := ui.Update(enterKey())
+	ui = updated.(*UI)
 
 	if cmd != nil {
 		t.Fatal("expected no submit command when expanding transcript item")
 	}
-	if !model.transcript.expanded["assistant-1"] {
+	if !ui.chat.transcript.expanded["assistant-1"] {
 		t.Fatal("expected enter to expand selected assistant transcript item")
 	}
-	if model.composer.value != "pending send" {
-		t.Fatalf("expected composer value unchanged, got %q", model.composer.value)
+	if ui.chat.composer.value != "pending send" {
+		t.Fatalf("expected composer value unchanged, got %q", ui.chat.composer.value)
 	}
 }
 
-func TestRootAllowsScrollingTranscriptWhenMessagesOverflowMainView(t *testing.T) {
-	model := NewRootModel(newStubChatService())
-	model.width = 40
-	model.height = 8
-	model.transcript = model.transcript.updateSize(40, 3)
-	model.transcript = model.transcript.setItems([]transcriptItem{
+func TestAllowsScrollingTranscriptWhenMessagesOverflowMainView(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 40
+	ui.height = 8
+	ui.focus = uiFocusMain
+	ui.chat.transcript = ui.chat.transcript.updateSize(40, 3)
+	ui.chat.transcript = ui.chat.transcript.setItems([]transcriptItem{
 		{ID: "user-1", PartType: message.PartTypeText, Kind: message.KindUser, Summary: "you: one", Body: "one"},
 		{ID: "assistant-1", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: two", Body: "two\nthinking\nreasoning one"},
 		{ID: "assistant-2", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: three", Body: "three\nthinking\nreasoning two"},
@@ -352,21 +424,21 @@ func TestRootAllowsScrollingTranscriptWhenMessagesOverflowMainView(t *testing.T)
 		{ID: "assistant-4", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: five", Body: "five\nthinking\nreasoning four"},
 	})
 
-	initial := model.View().Content
+	initial := ui.View().Content
 	if strings.Contains(initial, "ai: five") {
 		t.Fatalf("expected overflow item hidden before scrolling, got %q", initial)
 	}
 
-	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	model = updated.(rootModel)
-	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	model = updated.(rootModel)
-	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	model = updated.(rootModel)
-	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	model = updated.(rootModel)
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	ui = updated.(*UI)
+	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	ui = updated.(*UI)
+	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	ui = updated.(*UI)
+	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	ui = updated.(*UI)
 
-	scrolled := model.View().Content
+	scrolled := ui.View().Content
 	if !strings.Contains(scrolled, "ai: five") {
 		t.Fatalf("expected overflow item visible after scrolling, got %q", scrolled)
 	}
@@ -375,9 +447,9 @@ func TestRootAllowsScrollingTranscriptWhenMessagesOverflowMainView(t *testing.T)
 func TestMarkdownRendersOnlyOnAgentTerminalEvent(t *testing.T) {
 	renderer := &stubMarkdownRenderer{rendered: "rendered markdown"}
 	quietRenderer := &stubMarkdownRenderer{rendered: "quiet markdown"}
-	model := NewRootModel(newStubChatService())
-	model.renderer = renderer
-	model.quietRenderer = quietRenderer
+	ui := New(newStubAppService())
+	ui.chat.renderer = renderer
+	ui.chat.quietRenderer = quietRenderer
 
 	deltaEvent := appEventMsg{
 		event: app.BaseEvent{
@@ -393,17 +465,17 @@ func TestMarkdownRendersOnlyOnAgentTerminalEvent(t *testing.T) {
 		},
 	}
 
-	updated, _ := model.Update(deltaEvent)
-	model = updated.(rootModel)
+	updated, _ := ui.Update(deltaEvent)
+	ui = updated.(*UI)
 
 	if renderer.calls != 0 {
 		t.Fatalf("expected no markdown render during delta, got %d", renderer.calls)
 	}
-	if model.markdown["assistant-1"] != "" {
-		t.Fatalf("expected no markdown cache during delta, got %q", model.markdown["assistant-1"])
+	if ui.chat.markdown["assistant-1"] != "" {
+		t.Fatalf("expected no markdown cache during delta, got %q", ui.chat.markdown["assistant-1"])
 	}
-	if model.transcript.items[0].Body != "**draft**" {
-		t.Fatalf("expected raw body during delta, got %q", model.transcript.items[0].Body)
+	if ui.chat.transcript.items[0].Body != "**draft**" {
+		t.Fatalf("expected raw body during delta, got %q", ui.chat.transcript.items[0].Body)
 	}
 
 	completedEvent := appEventMsg{
@@ -420,8 +492,8 @@ func TestMarkdownRendersOnlyOnAgentTerminalEvent(t *testing.T) {
 		},
 	}
 
-	updated, _ = model.Update(completedEvent)
-	model = updated.(rootModel)
+	updated, _ = ui.Update(completedEvent)
+	ui = updated.(*UI)
 
 	if renderer.calls != 1 {
 		t.Fatalf("expected one markdown render on completion, got %d", renderer.calls)
@@ -429,43 +501,43 @@ func TestMarkdownRendersOnlyOnAgentTerminalEvent(t *testing.T) {
 	if quietRenderer.calls != 0 {
 		t.Fatalf("expected no quiet render for plain assistant text, got %d", quietRenderer.calls)
 	}
-	if model.markdown["assistant-1"] != "rendered markdown" {
-		t.Fatalf("expected cached markdown, got %q", model.markdown["assistant-1"])
+	if ui.chat.markdown["assistant-1"] != "rendered markdown" {
+		t.Fatalf("expected cached markdown, got %q", ui.chat.markdown["assistant-1"])
 	}
-	if model.transcript.items[0].Body != "rendered markdown" {
-		t.Fatalf("expected rendered body after completion, got %q", model.transcript.items[0].Body)
+	if ui.chat.transcript.items[0].Body != "rendered markdown" {
+		t.Fatalf("expected rendered body after completion, got %q", ui.chat.transcript.items[0].Body)
 	}
 }
 
 func TestHistoryLoadRendersMarkdownForStableUserMessages(t *testing.T) {
 	renderer := &stubMarkdownRenderer{rendered: "rendered user markdown"}
-	model := NewRootModel(newStubChatService())
-	model.renderer = renderer
-	model.quietRenderer = &stubMarkdownRenderer{rendered: "quiet markdown"}
-	model.sessionID = "session-1"
+	ui := New(newStubAppService())
+	ui.chat.renderer = renderer
+	ui.chat.quietRenderer = &stubMarkdownRenderer{rendered: "quiet markdown"}
+	ui.chat.sessionID = "session-1"
 
-	updated, _ := model.Update(historyLoadedMsg{
+	updated, _ := ui.Update(historyLoadedMsg{
 		sessionID: "session-1",
 		messages: []message.Message{
 			messageRecord("user-1", message.KindUser, "**hello**"),
 		},
 	})
-	model = updated.(rootModel)
+	ui = updated.(*UI)
 
 	if renderer.calls != 1 {
 		t.Fatalf("expected one markdown render for stable user message, got %d", renderer.calls)
 	}
-	if model.transcript.items[0].Body != "rendered user markdown" {
-		t.Fatalf("expected rendered user body, got %q", model.transcript.items[0].Body)
+	if ui.chat.transcript.items[0].Body != "rendered user markdown" {
+		t.Fatalf("expected rendered user body, got %q", ui.chat.transcript.items[0].Body)
 	}
 }
 
 func TestTranscriptUsesQuietMarkdownForAssistantThinkingAndToolDetails(t *testing.T) {
 	renderer := &stubMarkdownRenderer{rendered: "final markdown"}
 	quietRenderer := &stubMarkdownRenderer{rendered: "detail markdown"}
-	model := NewRootModel(newStubChatService())
-	model.renderer = renderer
-	model.quietRenderer = quietRenderer
+	ui := New(newStubAppService())
+	ui.chat.renderer = renderer
+	ui.chat.quietRenderer = quietRenderer
 
 	completedEvent := appEventMsg{
 		event: app.BaseEvent{
@@ -501,8 +573,8 @@ func TestTranscriptUsesQuietMarkdownForAssistantThinkingAndToolDetails(t *testin
 		},
 	}
 
-	updated, _ := model.Update(completedEvent)
-	model = updated.(rootModel)
+	updated, _ := ui.Update(completedEvent)
+	ui = updated.(*UI)
 
 	if renderer.calls != 1 {
 		t.Fatalf("expected one primary markdown render, got %d", renderer.calls)
@@ -510,22 +582,22 @@ func TestTranscriptUsesQuietMarkdownForAssistantThinkingAndToolDetails(t *testin
 	if quietRenderer.calls != 2 {
 		t.Fatalf("expected quiet renderer for thinking and tool detail, got %d", quietRenderer.calls)
 	}
-	if !strings.Contains(model.transcript.items[0].Body, "final markdown") {
-		t.Fatalf("expected rendered final body, got %q", model.transcript.items[0].Body)
+	if !strings.Contains(ui.chat.transcript.items[0].Body, "final markdown") {
+		t.Fatalf("expected rendered final body, got %q", ui.chat.transcript.items[0].Body)
 	}
-	if !strings.Contains(model.transcript.items[0].Body, "detail markdown") {
-		t.Fatalf("expected rendered detail body, got %q", model.transcript.items[0].Body)
+	if !strings.Contains(ui.chat.transcript.items[0].Body, "detail markdown") {
+		t.Fatalf("expected rendered detail body, got %q", ui.chat.transcript.items[0].Body)
 	}
 }
 
-func TestRootStateMachineKeepsNetworkIOInCommands(t *testing.T) {
-	svc := newStubChatService()
-	model := NewRootModel(svc)
-	model.sessionID = "session-1"
-	model.composer.value = "hello"
+func TestStateMachineKeepsNetworkIOInCommands(t *testing.T) {
+	svc := newStubAppService()
+	ui := New(svc)
+	ui.chat.sessionID = "session-1"
+	ui.chat.composer.value = "hello"
 
-	updated, cmd := model.Update(enterKey())
-	model = updated.(rootModel)
+	updated, cmd := ui.Update(enterKey())
+	ui = updated.(*UI)
 
 	if svc.lastPrompt != "" {
 		t.Fatalf("expected no RunQuery call during Update, got %q", svc.lastPrompt)
@@ -533,7 +605,7 @@ func TestRootStateMachineKeepsNetworkIOInCommands(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected runQueryCmd")
 	}
-	if !model.loading {
+	if !ui.chat.loading {
 		t.Fatal("expected loading to start immediately after enter")
 	}
 
@@ -547,24 +619,30 @@ func TestRootStateMachineKeepsNetworkIOInCommands(t *testing.T) {
 func TestViewIsPure(t *testing.T) {
 	renderer := &stubMarkdownRenderer{rendered: "rendered markdown"}
 	quietRenderer := &stubMarkdownRenderer{rendered: "quiet markdown"}
-	model := NewRootModel(newStubChatService())
-	model.renderer = renderer
-	model.quietRenderer = quietRenderer
-	model.markdown["assistant-1"] = "cached markdown"
-	model.transcript = model.transcript.setItems([]transcriptItem{
+	ui := New(newStubAppService())
+	ui.chat.renderer = renderer
+	ui.chat.quietRenderer = quietRenderer
+	ui.width = 40
+	ui.height = 12
+	ui.chat.markdown["assistant-1"] = "cached markdown"
+	ui.chat.transcript = ui.chat.transcript.updateSize(40, 3)
+	ui.chat.transcript = ui.chat.transcript.setItems([]transcriptItem{
 		{ID: "assistant-1:0:text", Summary: "ai: hello", Body: "cached markdown"},
 		{ID: "assistant-1:1:thinking", Summary: "thinking", Body: "reasoning"},
 	})
-	model.transcript.selected = 1
-	model.transcript.expanded["assistant-1:1:thinking"] = true
-	model.status = model.status.setMessage("assistant is thinking...")
+	ui.chat.transcript.selected = 1
+	ui.chat.transcript.expanded["assistant-1:1:thinking"] = true
+	ui.chat.status = ui.chat.status.setMessage("assistant is thinking...")
 
 	beforeCalls := renderer.calls
-	beforeSelected := model.transcript.selected
-	beforeExpanded := model.transcript.expanded["assistant-1:1:thinking"]
-	beforeMarkdown := model.markdown["assistant-1"]
+	beforeSelected := ui.chat.transcript.selected
+	beforeExpanded := ui.chat.transcript.expanded["assistant-1:1:thinking"]
+	beforeMarkdown := ui.chat.markdown["assistant-1"]
+	beforeLayout := ui.layout
+	beforeViewportWidth := ui.chat.transcript.viewport.Width
+	beforeViewportHeight := ui.chat.transcript.viewport.Height
 
-	view := model.View()
+	view := ui.View()
 
 	if view.Content == "" {
 		t.Fatal("expected non-empty view")
@@ -575,19 +653,30 @@ func TestViewIsPure(t *testing.T) {
 	if quietRenderer.calls != 0 {
 		t.Fatalf("expected View to not render quiet markdown, got %d calls", quietRenderer.calls)
 	}
-	if model.transcript.selected != beforeSelected {
-		t.Fatalf("expected selected item unchanged, got %d", model.transcript.selected)
+	if ui.chat.transcript.selected != beforeSelected {
+		t.Fatalf("expected selected item unchanged, got %d", ui.chat.transcript.selected)
 	}
-	if model.transcript.expanded["assistant-1:1:thinking"] != beforeExpanded {
+	if ui.chat.transcript.expanded["assistant-1:1:thinking"] != beforeExpanded {
 		t.Fatal("expected expanded state unchanged")
 	}
-	if model.markdown["assistant-1"] != beforeMarkdown {
-		t.Fatalf("expected markdown cache unchanged, got %q", model.markdown["assistant-1"])
+	if ui.chat.markdown["assistant-1"] != beforeMarkdown {
+		t.Fatalf("expected markdown cache unchanged, got %q", ui.chat.markdown["assistant-1"])
+	}
+	if ui.layout != beforeLayout {
+		t.Fatalf("expected layout unchanged, got before=%v after=%v", beforeLayout, ui.layout)
+	}
+	if ui.chat.transcript.viewport.Width != beforeViewportWidth || ui.chat.transcript.viewport.Height != beforeViewportHeight {
+		t.Fatalf("expected transcript viewport unchanged, got before=%dx%d after=%dx%d",
+			beforeViewportWidth,
+			beforeViewportHeight,
+			ui.chat.transcript.viewport.Width,
+			ui.chat.transcript.viewport.Height,
+		)
 	}
 }
 
 func TestEnterRunsQueryAndAppliesMultiTurnEvents(t *testing.T) {
-	svc := newStubChatService()
+	svc := newStubAppService()
 	svc.ensureSessionFn = func(_ context.Context) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventSession,
@@ -674,33 +763,31 @@ func TestEnterRunsQueryAndAppliesMultiTurnEvents(t *testing.T) {
 		return nil
 	}
 
-	model := NewRootModel(svc)
+	ui := New(svc)
+	ui, listenCmd := bootstrapRestoredSession(t, ui)
 
-	model, listenCmd := bootstrapRestoredSession(t, model)
+	ui.chat.composer.value = "hello"
+	updated, sendCmd := ui.Update(enterKey())
+	ui = updated.(*UI)
 
-	model.composer.value = "hello"
-
-	updated, sendCmd := model.Update(enterKey())
-	model = updated.(rootModel)
-
-	if !model.loading {
+	if !ui.chat.loading {
 		t.Fatal("expected loading state after enter")
 	}
 
 	_ = sendCmd()
 
 	for i := 0; i < 4; i++ {
-		updated, listenCmd = model.Update(listenCmd())
-		model = updated.(rootModel)
-		if !model.loading {
+		updated, listenCmd = ui.Update(listenCmd())
+		ui = updated.(*UI)
+		if !ui.chat.loading {
 			t.Fatalf("expected loading to continue during multi-turn event %d", i)
 		}
 	}
 
-	updated, listenCmd = model.Update(listenCmd())
-	model = updated.(rootModel)
+	updated, listenCmd = ui.Update(listenCmd())
+	ui = updated.(*UI)
 
-	if model.loading {
+	if ui.chat.loading {
 		t.Fatal("expected loading to stop after completion event")
 	}
 	if svc.eventsCalls != 1 {
@@ -712,16 +799,16 @@ func TestEnterRunsQueryAndAppliesMultiTurnEvents(t *testing.T) {
 	if svc.lastPrompt != "hello" {
 		t.Fatalf("expected query prompt to be hello, got %q", svc.lastPrompt)
 	}
-	if len(model.messages) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(model.messages))
+	if len(ui.chat.messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(ui.chat.messages))
 	}
-	if textContent(model.messages[3].Parts) != "hello" {
-		t.Fatalf("expected final assistant content, got %q", textContent(model.messages[3].Parts))
+	if textContent(ui.chat.messages[3].Parts) != "hello" {
+		t.Fatalf("expected final assistant content, got %q", textContent(ui.chat.messages[3].Parts))
 	}
 }
 
 func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
-	svc := newStubChatService()
+	svc := newStubAppService()
 	svc.ensureSessionFn = func(_ context.Context) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventSession,
@@ -753,31 +840,30 @@ func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
 		return errors.New("stream failed")
 	}
 
-	model := NewRootModel(svc)
+	ui := New(svc)
+	ui, listenCmd := bootstrapRestoredSession(t, ui)
 
-	model, listenCmd := bootstrapRestoredSession(t, model)
-
-	model.composer.value = "hello"
-	updated, sendCmd := model.Update(enterKey())
-	model = updated.(rootModel)
+	ui.chat.composer.value = "hello"
+	updated, sendCmd := ui.Update(enterKey())
+	ui = updated.(*UI)
 	_ = sendCmd()
 
-	updated, _ = model.Update(listenCmd())
-	model = updated.(rootModel)
+	updated, _ = ui.Update(listenCmd())
+	ui = updated.(*UI)
 
-	if textContent(model.messages[1].Parts) != "par" {
-		t.Fatalf("expected partial reply, got %q", textContent(model.messages[1].Parts))
+	if textContent(ui.chat.messages[1].Parts) != "par" {
+		t.Fatalf("expected partial reply, got %q", textContent(ui.chat.messages[1].Parts))
 	}
 
-	updated, _ = model.Update(sendMessageDoneMsg{err: errors.New("stream failed")})
-	model = updated.(rootModel)
-	if model.errMessage == "" {
+	updated, _ = ui.Update(sendMessageDoneMsg{err: errors.New("stream failed")})
+	ui = updated.(*UI)
+	if ui.chat.errMessage == "" {
 		t.Fatal("expected error message")
 	}
 }
 
 func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
-	svc := newStubChatService()
+	svc := newStubAppService()
 	svc.ensureSessionFn = func(_ context.Context) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventSession,
@@ -792,11 +878,10 @@ func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
 		return nil
 	}
 
-	model := NewRootModel(svc)
+	ui := New(svc)
+	ui, listenCmd := bootstrapRestoredSession(t, ui)
 
-	model, listenCmd := bootstrapRestoredSession(t, model)
-
-	model.loading = true
+	ui.chat.loading = true
 	svc.events <- app.BaseEvent{
 		T: app.EventAgent,
 		Payload: agent.QueryEvent{
@@ -808,19 +893,19 @@ func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
 		},
 	}
 
-	updated, _ := model.Update(listenCmd())
-	model = updated.(rootModel)
+	updated, _ := ui.Update(listenCmd())
+	ui = updated.(*UI)
 
-	if model.loading {
+	if ui.chat.loading {
 		t.Fatal("expected loading to stop after query failure")
 	}
-	if model.errMessage != "query failed" {
-		t.Fatalf("expected query failure error, got %q", model.errMessage)
+	if ui.chat.errMessage != "query failed" {
+		t.Fatalf("expected query failure error, got %q", ui.chat.errMessage)
 	}
 }
 
 func TestQueryCompletedEventStopsLoading(t *testing.T) {
-	svc := newStubChatService()
+	svc := newStubAppService()
 	svc.ensureSessionFn = func(_ context.Context) error {
 		svc.events <- app.BaseEvent{
 			T: app.EventSession,
@@ -835,11 +920,10 @@ func TestQueryCompletedEventStopsLoading(t *testing.T) {
 		return nil
 	}
 
-	model := NewRootModel(svc)
+	ui := New(svc)
+	ui, listenCmd := bootstrapRestoredSession(t, ui)
 
-	model, listenCmd := bootstrapRestoredSession(t, model)
-
-	model.loading = true
+	ui.chat.loading = true
 	svc.events <- app.BaseEvent{
 		T: app.EventAgent,
 		Payload: agent.QueryEvent{
@@ -850,15 +934,15 @@ func TestQueryCompletedEventStopsLoading(t *testing.T) {
 		},
 	}
 
-	updated, _ := model.Update(listenCmd())
-	model = updated.(rootModel)
+	updated, _ := ui.Update(listenCmd())
+	ui = updated.(*UI)
 
-	if model.loading {
+	if ui.chat.loading {
 		t.Fatal("expected loading to stop after query completion")
 	}
 }
 
-type stubChatService struct {
+type stubAppService struct {
 	events               chan app.Event
 	eventsCalls          int
 	ensureSessionFn      func(ctx context.Context) error
@@ -867,6 +951,36 @@ type stubChatService struct {
 	lastHistorySessionID string
 	lastSessionID        string
 	lastPrompt           string
+}
+
+func newStubAppService() *stubAppService {
+	return &stubAppService{events: make(chan app.Event, 16)}
+}
+
+func (s *stubAppService) EnsureActiveSession(ctx context.Context) error {
+	if s.ensureSessionFn == nil {
+		return nil
+	}
+	return s.ensureSessionFn(ctx)
+}
+
+func (s *stubAppService) ListHistory(_ context.Context, sessionID string) ([]message.Message, error) {
+	s.lastHistorySessionID = sessionID
+	return append([]message.Message(nil), s.history...), nil
+}
+
+func (s *stubAppService) RunQuery(ctx context.Context, sessionID string, prompt string) error {
+	s.lastSessionID = sessionID
+	s.lastPrompt = prompt
+	if s.runQueryFn == nil {
+		return nil
+	}
+	return s.runQueryFn(ctx, sessionID, prompt)
+}
+
+func (s *stubAppService) Events() <-chan app.Event {
+	s.eventsCalls++
+	return s.events
 }
 
 type stubMarkdownRenderer struct {
@@ -885,54 +999,22 @@ func (r *stubMarkdownRenderer) Render(input string) (string, error) {
 	return r.rendered, nil
 }
 
-func newStubChatService() *stubChatService {
-	return &stubChatService{
-		events: make(chan app.Event, 16),
-	}
-}
-
-func (s *stubChatService) EnsureActiveSession(ctx context.Context) error {
-	if s.ensureSessionFn == nil {
-		return nil
-	}
-	return s.ensureSessionFn(ctx)
-}
-
-func (s *stubChatService) RunQuery(ctx context.Context, sessionID string, prompt string) error {
-	s.lastSessionID = sessionID
-	s.lastPrompt = prompt
-	if s.runQueryFn == nil {
-		return nil
-	}
-	return s.runQueryFn(ctx, sessionID, prompt)
-}
-
-func (s *stubChatService) ListHistory(_ context.Context, sessionID string) ([]message.Message, error) {
-	s.lastHistorySessionID = sessionID
-	return append([]message.Message(nil), s.history...), nil
-}
-
-func (s *stubChatService) Events() <-chan app.Event {
-	s.eventsCalls++
-	return s.events
-}
-
 func enterKey() tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
 }
 
-func bootstrapRestoredSession(t *testing.T, model rootModel) (rootModel, tea.Cmd) {
+func bootstrapRestoredSession(t *testing.T, ui *UI) (*UI, tea.Cmd) {
 	t.Helper()
 
-	bootstrapMsg := model.Init()()
-	updated, listenCmd := model.Update(bootstrapMsg)
-	model = updated.(rootModel)
+	bootstrapMsg := ui.Init()()
+	updated, listenCmd := ui.Update(bootstrapMsg)
+	ui = updated.(*UI)
 
-	updated, historyCmd := model.Update(listenCmd())
-	model = updated.(rootModel)
+	updated, historyCmd := ui.Update(listenCmd())
+	ui = updated.(*UI)
 
-	updated, listenCmd = model.Update(historyCmd())
-	return updated.(rootModel), listenCmd
+	updated, listenCmd = ui.Update(historyCmd())
+	return updated.(*UI), listenCmd
 }
 
 func messageRecord(id string, kind message.Kind, text string) message.Message {

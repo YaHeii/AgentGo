@@ -1,4 +1,4 @@
-package ui
+package model
 
 import tea "charm.land/bubbletea/v2"
 
@@ -23,15 +23,14 @@ func (m composerModel) Update(msg tea.Msg) composerModel {
 		}
 		runes := []rune(m.value)
 		m.value = string(runes[:len(runes)-1])
-		return m
 	case "enter":
 		return m
 	default:
 		if keyMsg.Key().Text != "" && !isControlKey(keyMsg.Key().Text) {
 			m.value += keyMsg.Key().Text
 		}
-		return m
 	}
+	return m
 }
 
 func (m composerModel) Clear() composerModel {
@@ -41,4 +40,13 @@ func (m composerModel) Clear() composerModel {
 
 func (m composerModel) View() string {
 	return "> " + m.value
+}
+
+func isControlKey(text string) bool {
+	for _, r := range text {
+		if r < 32 || r == 127 {
+			return true
+		}
+	}
+	return false
 }

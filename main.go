@@ -13,7 +13,6 @@ import (
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/session"
-	"github.com/YaHeii/agentGo/internal/ui"
 )
 
 func main() {
@@ -53,7 +52,6 @@ func main() {
 	providerSvc := provider.NewProviderService(providerClient, dispatcher)
 	toolSvc := supervisor.ToolService()
 	queryApp := app.NewService(sessionSvc, nil, toolSvc, dispatcher)
-	//TOFIX: ui should do this, not main
 	queryLoop := agent.NewQueryLoop(queryApp, providerSvc, dispatcher)
 	agentSvc := agent.NewService(queryLoop)
 	appSvc := app.NewService(sessionSvc, agentSvc, toolSvc, dispatcher)
@@ -66,7 +64,7 @@ func main() {
 		}
 	}()
 
-	p := tea.NewProgram(ui.NewRootModel(appSvc))
+	p := tea.NewProgram(ui.New(appSvc))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "run program: %v\n", err)
 		os.Exit(1)
