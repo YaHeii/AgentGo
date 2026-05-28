@@ -16,11 +16,11 @@ type Document struct {
 }
 
 type Chunk struct {
-	ID          int64
-	DocumentID  int64
-	ChunkIndex  int64
-	Content     string
-	Embedding   []byte
+	ID         int64
+	DocumentID int64
+	ChunkIndex int64
+	Content    string
+	Embedding  []byte
 }
 
 type ChunkMatch struct {
@@ -46,5 +46,11 @@ type CreateChunkParams struct {
 type SearchChunksParams struct {
 	NormalizedPathGlob string
 	QueryEmbedding     []byte
+	TopK               int64
+}
+
+type QueryParams struct {
+	RawQuery           string
+	NormalizedPathGlob string
 	TopK               int64
 }
