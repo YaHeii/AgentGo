@@ -17,7 +17,15 @@ type Config struct {
 	MaxTurn          int64  `mapstructure:"MAX_TURN"`
 	AnySearchBaseUrl string `mapstructure:"ANYSEARCH_BASE_URL"`
 	AnySearchAPIKey  string `mapstructure:"ANYSEARCH_API_KEY"`
-	ConfigDir        string
+
+	RAGAPIKey             string `mapstructure:"RAG_API_KEY"`
+	RAGEmbeddingBaseURL   string `mapstructure:"RAG_EMBEDDING_BASE_URL"`
+	RAGEmbeddingDimension int    `mapstructure:"RAG_EMBEDDING_DEMENSION"`
+	RAGEmbeddingModel     string `mapstructure:"RAG_EMBEDDING_MODEL"`
+	RAGRerankBaseURL      string `mapstructure:"RAG_RERANK_BASE_URL"`
+	RAGRerankModel        string `mapstructure:"RAG_RERANK_MODEL"`
+
+	ConfigDir string
 }
 
 type Runtime struct {

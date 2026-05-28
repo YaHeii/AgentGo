@@ -236,6 +236,47 @@ func TestLoadConfigStoresConfigDir(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsRagFields(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "app.env")
+	config := "" +
+		"API_KEY=test-key\n" +
+		"MODEL=test-model\n" +
+		"RAG_API_KEY=rag-key\n" +
+		"RAG_EMBEDDING_BASE_URL=https://rag.example.com/v1/embeddings\n" +
+		"RAG_EMBEDDING_DEMENSION=1024\n" +
+		"RAG_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5\n" +
+		"RAG_RERANK_BASE_URL=https://rag.example.com/v1/rerank\n" +
+		"RAG_RERANK_MODEL=BAAI/bge-reranker-v2-m3\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configDir)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.RAGAPIKey != "rag-key" {
+		t.Fatalf("expected rag api key, got %q", cfg.RAGAPIKey)
+	}
+	if cfg.RAGEmbeddingBaseURL != "https://rag.example.com/v1/embeddings" {
+		t.Fatalf("expected rag embedding base url, got %q", cfg.RAGEmbeddingBaseURL)
+	}
+	if cfg.RAGEmbeddingDimension != 1024 {
+		t.Fatalf("expected rag embedding dimension 1024, got %d", cfg.RAGEmbeddingDimension)
+	}
+	if cfg.RAGEmbeddingModel != "BAAI/bge-large-zh-v1.5" {
+		t.Fatalf("expected rag embedding model, got %q", cfg.RAGEmbeddingModel)
+	}
+	if cfg.RAGRerankBaseURL != "https://rag.example.com/v1/rerank" {
+		t.Fatalf("expected rag rerank base url, got %q", cfg.RAGRerankBaseURL)
+	}
+	if cfg.RAGRerankModel != "BAAI/bge-reranker-v2-m3" {
+		t.Fatalf("expected rag rerank model, got %q", cfg.RAGRerankModel)
+	}
+}
+
 func hasTool(tools []toolcontract.Metadata, name string) bool {
 	for _, meta := range tools {
 		if meta.Name == name {

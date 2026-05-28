@@ -12,6 +12,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/lifecycle"
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
+	"github.com/YaHeii/agentGo/internal/rag"
 	"github.com/YaHeii/agentGo/internal/session"
 	ui "github.com/YaHeii/agentGo/internal/ui/model"
 )
@@ -42,6 +43,15 @@ func main() {
 
 	messageSvc := message.NewMessageService(st)
 	sessionSvc := session.NewSessionService(st, messageSvc, dispatcher)
+	ragSvc := rag.NewService(st, rag.Config{
+		APIKey:             cfg.RAGAPIKey,
+		EmbeddingBaseURL:   cfg.RAGEmbeddingBaseURL,
+		EmbeddingDimension: cfg.RAGEmbeddingDimension,
+		EmbeddingModel:     cfg.RAGEmbeddingModel,
+		RerankBaseURL:      cfg.RAGRerankBaseURL,
+		RerankModel:        cfg.RAGRerankModel,
+	})
+	_ = ragSvc
 	supervisor := lifecycle.NewSupervisor(dispatcher, cfg, lifecycle.WithTodosSessionStore(sessionSvc))
 	if err := supervisor.Initialize(ctx); err != nil {
 		_ = st.Close()
