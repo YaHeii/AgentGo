@@ -7,8 +7,10 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite/vec"
 
 	"github.com/YaHeii/agentGo/internal/message"
+	ragcontract "github.com/YaHeii/agentGo/internal/rag/contract"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 )
 
@@ -30,6 +32,14 @@ type TxStore interface {
 
 	CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error)
 	ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error)
+
+	UpsertDocument(ctx context.Context, params ragcontract.UpsertDocumentParams) (ragcontract.Document, error)
+	GetDocumentBySourcePath(ctx context.Context, sourcePath string) (ragcontract.Document, error)
+	DeleteDocumentBySourcePath(ctx context.Context, sourcePath string) error
+	CreateChunk(ctx context.Context, params ragcontract.CreateChunkParams) (ragcontract.Chunk, error)
+	ListChunksByDocumentID(ctx context.Context, documentID int64) ([]ragcontract.Chunk, error)
+	DeleteChunksByDocumentID(ctx context.Context, documentID int64) error
+	SearchChunksByPrefix(ctx context.Context, params ragcontract.SearchChunksParams) ([]ragcontract.ChunkMatch, error)
 }
 
 type Transactor interface {
@@ -45,6 +55,14 @@ type dbStore interface {
 
 	CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error)
 	ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error)
+
+	UpsertDocument(ctx context.Context, params ragcontract.UpsertDocumentParams) (ragcontract.Document, error)
+	GetDocumentBySourcePath(ctx context.Context, sourcePath string) (ragcontract.Document, error)
+	DeleteDocumentBySourcePath(ctx context.Context, sourcePath string) error
+	CreateChunk(ctx context.Context, params ragcontract.CreateChunkParams) (ragcontract.Chunk, error)
+	ListChunksByDocumentID(ctx context.Context, documentID int64) ([]ragcontract.Chunk, error)
+	DeleteChunksByDocumentID(ctx context.Context, documentID int64) error
+	SearchChunksByPrefix(ctx context.Context, params ragcontract.SearchChunksParams) ([]ragcontract.ChunkMatch, error)
 
 	WithinTx(ctx context.Context, fn func(tx TxStore) error) error
 	Close() error

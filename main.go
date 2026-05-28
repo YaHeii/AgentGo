@@ -13,6 +13,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/message"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/session"
+	ui "github.com/YaHeii/agentGo/internal/ui/model"
 )
 
 func main() {
