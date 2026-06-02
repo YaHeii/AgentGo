@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"github.com/YaHeii/agentGo/internal/agent"
+	"charm.land/lipgloss/v2"
 	"github.com/YaHeii/agentGo/internal/app"
-	messageevent "github.com/YaHeii/agentGo/internal/message"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
-	"github.com/YaHeii/agentGo/internal/session"
 	"github.com/YaHeii/agentGo/internal/ui/common"
-	"github.com/charmbracelet/bubbles/viewport"
 	uv "github.com/charmbracelet/ultraviolet"
 )
 
@@ -31,173 +29,136 @@ type transcriptItem struct {
 	Final     bool
 }
 
-type transcriptModel struct {
-	viewport viewport.Model
-	items    []transcriptItem
-	selected int
-	expanded map[string]bool
-}
-
-func newTranscriptModel(width int, height int) transcriptModel {
-	vp := viewport.New(width, height)
-	return transcriptModel{
-		viewport: vp,
-		expanded: make(map[string]bool),
-	}
-}
-
-func (m transcriptModel) updateSize(width int, height int) transcriptModel {
-	m.viewport.Width = max(1, width)
-	m.viewport.Height = max(1, height)
-	m.ensureSelectionVisible()
-	return m
-}
-
-func (m transcriptModel) setItems(items []transcriptItem) transcriptModel {
-	m.items = append([]transcriptItem(nil), items...)
-	if m.expanded == nil {
-		m.expanded = make(map[string]bool)
-	}
-	if len(m.items) == 0 {
-		m.selected = 0
-	} else if m.selected >= len(m.items) {
-		m.selected = len(m.items) - 1
-	}
-	m.syncViewport()
-	return m
-}
-
-func (m transcriptModel) Update(msg tea.Msg) transcriptModel {
-	keyMsg, ok := msg.(tea.KeyPressMsg)
-	if !ok {
-		return m
-	}
-
-	switch keyMsg.String() {
-	case "up", "k":
-		if m.selected > 0 {
-			m.selected--
-			m.ensureSelectionVisible()
-		}
-	case "down", "j":
-		if m.selected < len(m.items)-1 {
-			m.selected++
-			m.ensureSelectionVisible()
-		}
-	case "enter", " ", "space":
-		if len(m.items) == 0 {
-			return m
-		}
-		item := m.items[m.selected]
-		if !itemCanExpand(item) {
-			return m
-		}
-		m.expanded[item.ID] = !m.expanded[item.ID]
-		m.syncViewport()
-	case "pgdown":
-		m.viewport.PageDown()
-	case "pgup":
-		m.viewport.PageUp()
-	}
-
-	return m
-}
-
-func (m transcriptModel) View() string {
-	return m.viewport.View()
-}
-
-func (m transcriptModel) selectedItem() (transcriptItem, bool) {
-	if len(m.items) == 0 || m.selected < 0 || m.selected >= len(m.items) {
-		return transcriptItem{}, false
-	}
-	return m.items[m.selected], true
-}
-
-func (m *transcriptModel) syncViewport() {
-	contentLines := make([]string, 0, len(m.items)*2)
-	for i, item := range m.items {
-		prefix := "  "
-		if i == m.selected {
-			prefix = "> "
-		}
-
-		contentLines = append(contentLines, prefix+item.Summary)
-		if m.expanded[item.ID] && strings.TrimSpace(item.Body) != "" {
-			for _, line := range strings.Split(item.Body, "\n") {
-				contentLines = append(contentLines, "    "+line)
-			}
-		}
-	}
-	m.viewport.SetContent(strings.Join(contentLines, "\n"))
-}
-
-func (m *transcriptModel) ensureSelectionVisible() {
-	if len(m.items) == 0 {
-		return
-	}
-	m.syncViewport()
-	if m.selected < m.viewport.YOffset {
-		m.viewport.SetYOffset(m.selected)
-		return
-	}
-	bottom := m.viewport.YOffset + max(1, m.viewport.Height) - 1
-	if m.selected > bottom {
-		m.viewport.SetYOffset(m.selected - max(1, m.viewport.Height) + 1)
-	}
-}
-
 type Chat struct {
-	app           appService
-	events        <-chan app.Event
-	sessionID     string
 	messages      []message.Message
 	items         []transcriptItem
 	markdown      map[string]string
 	quietMarkdown map[string]string
 	renderer      markdownRenderer
 	quietRenderer markdownRenderer
-	errMessage    string
+	viewport      viewport.Model
+	expanded      map[string]bool
+	summaryLines  map[int]string
+	mainWidth     int
+	mainHeight    int
 	loading       bool
-	transcript    transcriptModel
-	composer      composerModel
-	status        statusModel
+	autoScroll    bool
 }
 
-func newChat(appSvc appService) Chat {
+func newChat() Chat {
+	vp := viewport.New(
+		viewport.WithWidth(defaultWidth),
+		viewport.WithHeight(defaultHeight),
+	)
+	vp.MouseWheelEnabled = true
+	vp.SoftWrap = false
+
 	return Chat{
-		app:           appSvc,
-		events:        appSvc.Events(),
 		markdown:      make(map[string]string),
 		quietMarkdown: make(map[string]string),
 		renderer:      common.MarkdownRenderer(defaultWidth),
 		quietRenderer: common.QuietMarkdownRenderer(defaultWidth),
-		transcript:    newTranscriptModel(defaultWidth, defaultHeight),
-		composer:      newComposerModel(),
-		status:        newStatusModel(),
+		viewport:      vp,
+		expanded:      make(map[string]bool),
+		summaryLines:  make(map[int]string),
+		mainWidth:     defaultWidth,
+		mainHeight:    defaultHeight,
+		autoScroll:    true,
 	}
 }
 
 func (c *Chat) Draw(scr uv.Screen, area uv.Rectangle) {
-	c.transcript = c.transcript.updateSize(area.Dx(), area.Dy())
-	uv.NewStyledString(c.transcript.View()).Draw(scr, area)
+	c.Resize(area.Dx(), area.Dy())
+	uv.NewStyledString(c.viewport.View()).Draw(scr, area)
 }
 
-func (c *Chat) DrawStatus(scr uv.Screen, area uv.Rectangle) {
-	statusText := c.status.View()
-	if statusText == "" {
-		statusText = "ready"
+func (c *Chat) Resize(width int, height int) {
+	width = max(1, width)
+	height = max(1, height)
+	widthChanged := c.mainWidth != width
+
+	c.mainWidth = width
+	c.mainHeight = height
+	c.viewport.SetWidth(width)
+	c.viewport.SetHeight(height)
+
+	if widthChanged {
+		c.renderer = common.MarkdownRenderer(width)
+		c.quietRenderer = common.QuietMarkdownRenderer(width)
+		c.clearMarkdownForMessages(c.messages)
+		c.renderTerminalMarkdown(c.messages)
 	}
-	uv.NewStyledString(statusText).Draw(scr, area)
+
+	c.refreshTranscript()
 }
 
-func (c *Chat) DrawEditor(scr uv.Screen, area uv.Rectangle) {
-	uv.NewStyledString(c.composer.View()).Draw(scr, area)
+func (c *Chat) HandleMouse(msg tea.MouseMsg) {
+	switch mouseMsg := msg.(type) {
+	case tea.MouseWheelMsg:
+		if mouseMsg.Button == tea.MouseWheelUp {
+			c.autoScroll = false
+		}
+		updated, _ := c.viewport.Update(mouseMsg)
+		c.viewport = updated
+		if mouseMsg.Button == tea.MouseWheelDown {
+			c.autoScroll = c.viewport.AtBottom()
+		}
+	case tea.MouseClickMsg:
+		if mouseMsg.Button != tea.MouseLeft {
+			return
+		}
+		lineIndex := c.viewport.YOffset() + mouseMsg.Y
+		itemID, ok := c.summaryLines[lineIndex]
+		if !ok || itemID == "" {
+			return
+		}
+		c.expanded[itemID] = !c.expanded[itemID]
+		c.refreshTranscript()
+	}
 }
 
-func (c *Chat) updateSize(width int) {
-	c.renderer = common.MarkdownRenderer(max(1, width))
-	c.quietRenderer = common.QuietMarkdownRenderer(max(1, width))
+func (c *Chat) SetMessages(messages []message.Message) {
+	c.messages = append([]message.Message(nil), messages...)
+}
+
+func (c *Chat) syncViewport() {
+	width := max(1, c.mainWidth)
+	stickToBottom := c.autoScroll || c.viewport.AtBottom()
+
+	lines := make([]string, 0, len(c.items)*3)
+	summaryLines := make(map[int]string, len(c.items))
+
+	for _, item := range c.items {
+		expandable := itemCanExpand(item)
+		summaryPrefix := "  "
+		if expandable {
+			if c.expanded[item.ID] {
+				summaryPrefix = "▾ "
+			} else {
+				summaryPrefix = "▸ "
+			}
+		}
+
+		summaryStart := len(lines)
+		lines = append(lines, wrapPrefixedText(item.Summary, summaryPrefix, "  ", width)...)
+		if expandable {
+			for row := summaryStart; row < len(lines); row++ {
+				summaryLines[row] = item.ID
+			}
+		}
+
+		if !c.expanded[item.ID] || strings.TrimSpace(item.Body) == "" {
+			continue
+		}
+		lines = append(lines, wrapPrefixedText(item.Body, "    ", "    ", width)...)
+	}
+
+	c.summaryLines = summaryLines
+	c.viewport.SetContent(strings.Join(lines, "\n"))
+	if stickToBottom {
+		c.viewport.GotoBottom()
+		c.autoScroll = true
+	}
 }
 
 func bootstrapSessionCmd(appSvc appService) tea.Cmd {
@@ -232,7 +193,7 @@ func waitAppEventCmd(events <-chan app.Event) tea.Cmd {
 	}
 }
 
-func (c *Chat) upsertMessage(msg message.Message) {
+func (c *Chat) AppendOrUpsertMessage(msg message.Message) {
 	for i := range c.messages {
 		if c.messages[i].ID == msg.ID {
 			c.messages[i] = msg
@@ -244,8 +205,8 @@ func (c *Chat) upsertMessage(msg message.Message) {
 }
 
 func (c *Chat) refreshTranscript() {
-	c.items = buildTranscriptItems(c.messages, c.markdown, c.quietMarkdown, c.transcript.expanded)
-	c.transcript = c.transcript.setItems(c.items)
+	c.items = buildTranscriptItems(c.messages, c.markdown, c.quietMarkdown, c.expanded)
+	c.syncViewport()
 }
 
 func (c *Chat) clearMarkdownForMessages(messages []message.Message) {
@@ -322,49 +283,6 @@ func (c *Chat) renderMessageMarkdown(msg message.Message) {
 	if len(detailParts) > 0 {
 		c.quietMarkdown[msg.ID] = strings.TrimSpace(strings.Join(detailParts, "\n"))
 	}
-}
-
-func (c *Chat) handleSessionEvent(event session.SessionEvent) tea.Cmd {
-	if event.Session == nil {
-		return nil
-	}
-	c.sessionID = event.Session.ID
-	if event.Status == session.StatusRestored || event.Status == session.StatusSwitched {
-		return loadHistoryCmd(c.app, event.Session.ID)
-	}
-	return nil
-}
-
-func (c *Chat) handleMessageEvent(event messageevent.MessageEvent) {
-	if event.Message == nil {
-		return
-	}
-	c.upsertMessage(*event.Message)
-	c.refreshTranscript()
-}
-
-func (c *Chat) handleAgentEvent(event agent.QueryEvent) {
-	c.messages = append([]message.Message(nil), event.State.Messages...)
-
-	switch event.Status {
-	case agent.QueryStatusStarted, agent.QueryStatusDelta:
-		c.clearMarkdownForMessages(c.messages)
-		c.loading = true
-		c.status = c.status.setMessage("assistant is thinking...")
-	case agent.QueryStatusCompleted:
-		c.renderTerminalMarkdown(c.messages)
-		c.loading = false
-		c.status = c.status.setMessage("")
-	case agent.QueryStatusFailed:
-		c.renderTerminalMarkdown(c.messages)
-		if event.Err != nil {
-			c.errMessage = event.Err.Error()
-			c.status = c.status.setMessage(c.errMessage)
-		}
-		c.loading = false
-	}
-
-	c.refreshTranscript()
 }
 
 func buildTranscriptItems(messages []message.Message, markdown map[string]string, quietMarkdown map[string]string, expanded map[string]bool) []transcriptItem {
@@ -634,6 +552,8 @@ func kindLabel(kind message.Kind) string {
 	switch kind {
 	case message.KindAssistant:
 		return "ai:"
+	case message.KindSystem:
+		return "system:"
 	default:
 		return "you:"
 	}
@@ -646,4 +566,38 @@ func textContent(parts []message.Part) string {
 		}
 	}
 	return ""
+}
+
+func wrapPrefixedText(text string, firstPrefix string, nextPrefix string, width int) []string {
+	if width <= 0 {
+		width = 1
+	}
+
+	rawLines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	lines := make([]string, 0, len(rawLines))
+	currentPrefix := firstPrefix
+
+	for _, rawLine := range rawLines {
+		availableWidth := max(1, width-lipgloss.Width(currentPrefix))
+		wrapped := lipgloss.Wrap(rawLine, availableWidth, "")
+		segments := strings.Split(wrapped, "\n")
+		if len(segments) == 0 {
+			segments = []string{""}
+		}
+
+		for index, segment := range segments {
+			prefix := currentPrefix
+			if index > 0 {
+				prefix = nextPrefix
+			}
+			lines = append(lines, prefix+segment)
+		}
+
+		currentPrefix = nextPrefix
+	}
+
+	if len(lines) == 0 {
+		return []string{firstPrefix}
+	}
+	return lines
 }

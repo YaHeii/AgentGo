@@ -3,12 +3,6 @@ package app
 type EventType string
 
 const (
-	CreatedEvent EventType = "created"
-	UpdatedEvent EventType = "updated"
-	DeletedEvent EventType = "deleted"
-)
-
-const (
 	EventBootstrap EventType = "lifecycle"
 	EventMessage   EventType = "message"
 	EventSession   EventType = "session"

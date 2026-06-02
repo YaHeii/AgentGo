@@ -1,16 +1,10 @@
 package agent
 
+import (
+	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
+)
 type QueryEvent struct {
-	Status QueryStatus
+	Status agentcontract.LoopStatus
 	State  LoopState
 	Err    error
 }
-
-type QueryStatus string
-
-const (
-	QueryStatusStarted   QueryStatus = "started"
-	QueryStatusDelta     QueryStatus = "delta"
-	QueryStatusCompleted QueryStatus = "completed"
-	QueryStatusFailed    QueryStatus = "failed"
-)

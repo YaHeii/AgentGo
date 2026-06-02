@@ -1,6 +1,11 @@
 package agent
 
 import (
+	"log/slog"
+	"time"
+
+	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
+	"github.com/YaHeii/agentGo/internal/app"
 	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
 )
@@ -9,15 +14,23 @@ import (
 type LoopState struct {
 	Messages           []messagecontract.Message
 	TurnCount          int
-	Transition         string // Transition records the latest control-flow transition inside the query loop.
+	Transition         string // DEBUG: Transition records the latest control-flow transition inside the query loop.
 	AssistantMessageID string
-	LoopStatus         LoopStatus
+	LoopStatus         agentcontract.LoopStatus
 	ProviderStopReason providercontract.StopReason
 	PendingToolCalls   []providercontract.ToolCall
 	// stopHookActive
 }
 
-func (l *LoopState) Continue(msg messagecontract.Message, transition string, finish LoopStatus) LoopState {
+// QueryDeps groups the concrete collaborators required by the query runner.
+type QueryDeps struct {
+	App        appStore
+	Provider   providerStore
+	Now        func() time.Time
+	dispatcher app.Dispatcher
+}
+
+func (l *LoopState) Continue(msg messagecontract.Message, transition string, finish agentcontract.LoopStatus) LoopState {
 	return LoopState{
 		Messages:   append(l.Messages, msg),
 		TurnCount:  l.TurnCount + 1,
@@ -26,6 +39,23 @@ func (l *LoopState) Continue(msg messagecontract.Message, transition string, fin
 	}
 }
 
+// LogValue implements the slog.LogValuer interface and hides sensitive fields.
+func (l LoopState) LogValue() slog.Value {
+	// To extract the name arr
+	toolNames := make([]string, 0, len(l.PendingToolCalls))
+
+	for _, tc := range l.PendingToolCalls {
+		toolNames = append(toolNames, tc.Name)
+	}
+	return slog.GroupValue(
+		slog.Int("id", l.TurnCount),
+		slog.String("name", l.Transition),
+		slog.String("StopReason", string(l.ProviderStopReason)),
+		slog.Any("toolNames", toolNames),
+	)
+}
+
+//	TODO: DELETE
 // copyLoopState deep-copies mutable slices so event subscribers and later turns
 // cannot observe in-place mutations from the active loop.
 func copyLoopState(state LoopState) LoopState {

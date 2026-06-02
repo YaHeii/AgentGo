@@ -25,7 +25,6 @@ type TurnResult struct {
 	StopReason        StopReason
 	SystemFingerprint string
 }
-
 type ToolCall struct {
 	Index     int
 	ID        string

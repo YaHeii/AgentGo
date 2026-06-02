@@ -3,10 +3,11 @@ module github.com/YaHeii/agentGo
 go 1.26
 
 require (
+	charm.land/bubbles/v2 v2.1.0
 	charm.land/bubbletea/v2 v2.0.6
 	charm.land/glamour/v2 v2.0.0
+	charm.land/lipgloss/v2 v2.0.2
 	github.com/alecthomas/chroma/v2 v2.25.0
-	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/pkoukk/tiktoken-go v0.1.8
@@ -14,10 +15,9 @@ require (
 )
 
 require (
-	charm.land/lipgloss/v2 v2.0.0 // indirect
+	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
-	github.com/charmbracelet/bubbletea v1.3.10 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20250327172914-2fdc97757edf // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -40,6 +40,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
+	github.com/sahilm/fuzzy v0.1.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect

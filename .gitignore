@@ -24,5 +24,4 @@ vendor/
 .agents/**
 .codex/**
 
-docs/
 .VSCodeCounter/**

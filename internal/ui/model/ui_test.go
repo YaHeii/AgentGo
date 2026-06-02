@@ -8,80 +8,262 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/YaHeii/agentGo/internal/agent"
+	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/lifecycle"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/session"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	uv "github.com/charmbracelet/ultraviolet"
 )
 
-func TestNewInitializesDefaultStateAndFocus(t *testing.T) {
-	ui := New(newStubAppService())
+func TestHeaderViewUsesLifecycleStateAndTransientStatus(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
 
-	if ui.state != uiStateChat {
-		t.Fatalf("expected default ui state chat, got %q", ui.state)
+	lifecycle.State = &lifecycle.GlobalState{
+		SessionID:               "session-1",
+		Cwd:                     "/root/agentGo/internal/ui/model",
+		ProjectRoot:             "/root/agentGo",
+		Model:                   "gpt-test",
+		PermissionLevel:         lifecycle.AttentionLevel,
+		CurrentTurnInputTokens:  11,
+		CurrentTurnOutputTokens: 7,
+		CurrentTurnTotalTokens:  18,
+		ActualContextTokens:     64,
+		CumulativeInputTokens:   101,
+		CumulativeOutputTokens:  52,
+		CumulativeTotalTokens:   153,
+		CurrentMessageCount:     6,
 	}
-	if ui.focus != uiFocusEditor {
-		t.Fatalf("expected default focus editor, got %q", ui.focus)
+
+	header := newHeader()
+	header.SetTransientStatus("assistant is thinking...")
+
+	view := header.View(80)
+	lines := strings.Split(view, "\n")
+	if len(lines) != header.Height() {
+		t.Fatalf("expected %d header lines, got %d", header.Height(), len(lines))
 	}
-	if ui.layout.header.Dx() != 0 || ui.layout.main.Dx() != 0 {
-		t.Fatalf("expected zero layout before sizing, got %#v", ui.layout)
+	if !strings.Contains(lines[0], "session-1") {
+		t.Fatalf("expected session line, got %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "internal/ui/model") {
+		t.Fatalf("expected relative cwd, got %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "gpt-test") || !strings.Contains(lines[2], "attention") {
+		t.Fatalf("expected model/permission line, got %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "11") || !strings.Contains(lines[3], "64") {
+		t.Fatalf("expected current token/context line, got %q", lines[3])
+	}
+	if !strings.Contains(lines[4], "153") || !strings.Contains(lines[4], "6") {
+		t.Fatalf("expected cumulative/message line, got %q", lines[4])
+	}
+	if lines[5] != "assistant is thinking..." {
+		t.Fatalf("expected transient status line, got %q", lines[5])
 	}
 }
 
-func TestGenerateLayoutCreatesHeaderMainStatusEditorAndSlashMenuAreas(t *testing.T) {
-	ui := New(newStubAppService())
-	layout := ui.generateLayout(uv.Rect(0, 0, 80, 24))
+func TestHeaderViewLeavesLifecycleFieldsBlankAndKeepsDefaultStatus(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
+	lifecycle.State = nil
 
-	if layout.header.Dy() <= 0 {
-		t.Fatalf("expected header height > 0, got %v", layout.header)
+	header := newHeader()
+	view := header.View(40)
+	lines := strings.Split(view, "\n")
+	if len(lines) != header.Height() {
+		t.Fatalf("expected %d lines, got %d", header.Height(), len(lines))
 	}
-	if layout.main.Dy() <= 0 {
-		t.Fatalf("expected main height > 0, got %v", layout.main)
+	if lines[0] != "agent: " {
+		t.Fatalf("expected blank agent/session line, got %q", lines[0])
 	}
-	if layout.status.Dy() <= 0 {
-		t.Fatalf("expected status height > 0, got %v", layout.status)
-	}
-	if layout.editor.Dy() <= 0 {
-		t.Fatalf("expected editor height > 0, got %v", layout.editor)
-	}
-	if layout.slashMenu.Min.X < 0 || layout.slashMenu.Min.Y < 0 {
-		t.Fatalf("expected slash menu rectangle to be initialized, got %v", layout.slashMenu)
-	}
-	if layout.main.Min.Y < layout.header.Max.Y {
-		t.Fatalf("expected main below header, got header=%v main=%v", layout.header, layout.main)
+	if lines[5] != defaultHeaderStatus {
+		t.Fatalf("expected default transient status %q, got %q", defaultHeaderStatus, lines[5])
 	}
 }
 
-func TestDrawRendersHeaderAndComposerIntoScreenBuffer(t *testing.T) {
-	ui := New(newStubAppService())
-	ui.width = 40
-	ui.height = 12
-	ui.layout = ui.generateLayout(uv.Rect(0, 0, 40, 12))
-	ui.chat.composer = ui.chat.composer.Update(tea.KeyPressMsg(tea.Key{Text: "h"}))
-	ui.chat.composer = ui.chat.composer.Update(tea.KeyPressMsg(tea.Key{Text: "i"}))
+func TestHeaderViewEllipsizesLongCWDFromLeft(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
 
-	screen := uv.NewScreenBuffer(40, 12)
-	ui.Draw(screen, screen.Bounds())
-
-	rendered := screen.Render()
-	if !strings.Contains(rendered, "agentGo") {
-		t.Fatalf("expected header drawn, got %q", rendered)
+	lifecycle.State = &lifecycle.GlobalState{
+		Cwd:         "/root/agentGo/very/long/path/to/internal/ui/model",
+		ProjectRoot: "/root/agentGo",
 	}
-	if !strings.Contains(rendered, "> hi") {
-		t.Fatalf("expected composer drawn, got %q", rendered)
+
+	header := newHeader()
+	view := header.View(24)
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[1], "...") {
+		t.Fatalf("expected left ellipsis in cwd line, got %q", lines[1])
+	}
+	if !strings.HasSuffix(lines[1], "internal/ui/model") {
+		t.Fatalf("expected cwd suffix preserved, got %q", lines[1])
 	}
 }
 
-func TestViewUsesDrawCompatibilityPath(t *testing.T) {
-	ui := New(newStubAppService())
-	ui.width = 40
-	ui.height = 12
-	ui.layout = ui.generateLayout(uv.Rect(0, 0, 40, 12))
+func TestInputAppendBackspaceClearAndSlashFilter(t *testing.T) {
+	input := newInput()
+	input.Append("/")
+	input.Append("per")
 
-	view := ui.View()
-	if !strings.Contains(view.Content, "agentGo") {
-		t.Fatalf("expected header in compatibility view, got %q", view.Content)
+	if input.Value() != "/per" {
+		t.Fatalf("expected input value /per, got %q", input.Value())
+	}
+	filter, ok := input.SlashFilter()
+	if !ok || filter != "per" {
+		t.Fatalf("expected slash filter per, got %q %v", filter, ok)
+	}
+
+	input.Backspace()
+	if input.Value() != "/pe" {
+		t.Fatalf("expected input value /pe after backspace, got %q", input.Value())
+	}
+
+	input.Clear()
+	if input.Value() != "" {
+		t.Fatalf("expected input cleared, got %q", input.Value())
+	}
+	if _, ok := input.SlashFilter(); ok {
+		t.Fatal("expected slash filter closed after clear")
+	}
+}
+
+func TestInputUpdateUsesTextareaEditing(t *testing.T) {
+	input := newInput()
+
+	updated, _ := input.Update(tea.KeyPressMsg(tea.Key{Text: "h", Code: 'h'}))
+	input = updated
+	updated, _ = input.Update(tea.KeyPressMsg(tea.Key{Text: "i", Code: 'i'}))
+	input = updated
+	updated, _ = input.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	input = updated
+
+	if input.Value() != "h" {
+		t.Fatalf("expected textarea-backed input value h, got %q", input.Value())
+	}
+}
+
+func TestInputHeightAndViewWrapContent(t *testing.T) {
+	input := newInput()
+	input.Append("hello world from input")
+
+	if input.Height(10) <= 1 {
+		t.Fatalf("expected wrapped height > 1, got %d", input.Height(10))
+	}
+
+	view := input.View(10)
+	if !strings.Contains(view, "\n") {
+		t.Fatalf("expected wrapped input view, got %q", view)
+	}
+	if !strings.Contains(view, inputPrefix) {
+		t.Fatalf("expected input prefix, got %q", view)
+	}
+}
+
+func TestGenerateLayoutUsesHeaderInputAndSlashMenuHeights(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 80
+	ui.height = 24
+	ui.input.Append("hello world from input")
+	ui.slashMenu.Open("per", 80)
+	ui.recomputeLayout()
+
+	layout := ui.layout
+	if layout.header.Dy() != ui.header.Height() {
+		t.Fatalf("expected header height %d, got %d", ui.header.Height(), layout.header.Dy())
+	}
+	if layout.input.Dy() != ui.input.Height(80) {
+		t.Fatalf("expected input height %d, got %d", ui.input.Height(80), layout.input.Dy())
+	}
+	if layout.slashMenu.Dy() != slashMenuHeight {
+		t.Fatalf("expected slash menu height %d, got %d", slashMenuHeight, layout.slashMenu.Dy())
+	}
+	expectedMainHeight := 24 - ui.header.Height() - ui.input.Height(80) - slashMenuHeight
+	if layout.main.Dy() != expectedMainHeight {
+		t.Fatalf("expected main height %d, got %d", expectedMainHeight, layout.main.Dy())
+	}
+}
+
+func TestLocalMouseConvertsGlobalCoordinatesToRegionLocalCoordinates(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 80
+	ui.height = 24
+	ui.recomputeLayout()
+
+	msg := tea.MouseClickMsg(tea.Mouse{
+		X:      ui.layout.main.Min.X + 3,
+		Y:      ui.layout.main.Min.Y + 2,
+		Button: tea.MouseLeft,
+	})
+
+	region, local := ui.localMouse(msg)
+	if region != uiRegionMain {
+		t.Fatalf("expected main region, got %q", region)
+	}
+	mouse := local.Mouse()
+	if mouse.X != 3 || mouse.Y != 2 {
+		t.Fatalf("expected local coordinates 3,2 got %d,%d", mouse.X, mouse.Y)
+	}
+}
+
+func TestUpdateEnterSendsMessageAndClearsInput(t *testing.T) {
+	svc := newStubAppService()
+	ui := New(svc)
+	ui.sessionID = "session-1"
+	ui.input.Append("hello")
+
+	updated, cmd := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui = updated.(*UI)
+
+	if cmd == nil {
+		t.Fatal("expected send command")
+	}
+	if ui.input.Value() != "" {
+		t.Fatalf("expected input cleared, got %q", ui.input.Value())
+	}
+	if !ui.chat.loading {
+		t.Fatal("expected loading state after send")
+	}
+}
+
+func TestUpdateBackspaceRoutesToInput(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.input.Append("hi")
+
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	ui = updated.(*UI)
+
+	if ui.input.Value() != "h" {
+		t.Fatalf("expected input to handle backspace, got %q", ui.input.Value())
+	}
+}
+
+func TestUpdateSlashMenuInterceptsEnterAndSetsTransientStatus(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 80
+	ui.height = 24
+
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "/", Code: '/'}))
+	ui = updated.(*UI)
+
+	if !ui.slashMenu.IsOpen() {
+		t.Fatal("expected slash menu open")
+	}
+
+	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui = updated.(*UI)
+
+	if ui.slashMenu.IsOpen() {
+		t.Fatal("expected slash menu to close after execution")
+	}
+	if !strings.Contains(ui.header.TransientStatus(), "not implemented: /historySession") {
+		t.Fatalf("expected transient slash status, got %q", ui.header.TransientStatus())
 	}
 }
 
@@ -107,7 +289,15 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 
 	ui := New(svc)
 
-	initMsg := ui.Init()()
+	initBatch, ok := ui.Init()().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected init batch message, got %T", ui.Init()())
+	}
+	if len(initBatch) != 2 {
+		t.Fatalf("expected 2 init commands, got %d", len(initBatch))
+	}
+
+	initMsg := initBatch[1]()
 	updated, listenCmd := ui.Update(initMsg)
 	ui = updated.(*UI)
 
@@ -116,373 +306,26 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 	updated, _ = ui.Update(historyCmd())
 	ui = updated.(*UI)
 
-	if ui.chat.sessionID != "session-1" {
-		t.Fatalf("expected active session, got %q", ui.chat.sessionID)
+	if ui.sessionID != "session-1" {
+		t.Fatalf("expected active session, got %q", ui.sessionID)
 	}
 	if len(ui.chat.messages) != 2 {
 		t.Fatalf("expected 2 hydrated messages, got %d", len(ui.chat.messages))
 	}
 }
 
-func TestUIComposesChatComponents(t *testing.T) {
-	ui := New(newStubAppService())
-
-	if ui.chat.transcript.viewport.Width != defaultWidth {
-		t.Fatalf("expected transcript viewport width %d, got %d", defaultWidth, ui.chat.transcript.viewport.Width)
-	}
-	if ui.chat.composer.value != "" {
-		t.Fatalf("expected empty composer, got %q", ui.chat.composer.value)
-	}
-	if ui.chat.status.message != "" {
-		t.Fatalf("expected empty status message, got %q", ui.chat.status.message)
-	}
-
-	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "h"}))
-	ui = updated.(*UI)
-
-	if ui.chat.composer.value != "h" {
-		t.Fatalf("expected composer to hold input, got %q", ui.chat.composer.value)
-	}
-}
-
-func TestUILoadsHistoryAfterSessionRestore(t *testing.T) {
-	svc := newStubAppService()
-	svc.history = []message.Message{
-		messageRecord("history-user", message.KindUser, "old question"),
-		messageRecord("history-assistant", message.KindAssistant, "old answer"),
-	}
-
-	ui := New(svc)
-	updated, listenCmd := ui.Update(bootstrapDoneMsg{})
-	ui = updated.(*UI)
-
-	svc.events <- app.BaseEvent{
-		T: app.EventSession,
-		Payload: session.SessionEvent{
-			Status: session.StatusRestored,
-			Session: &sessioncontract.Session{
-				ID:    "session-1",
-				Title: "demo",
-			},
-		},
-	}
-
-	updated, historyCmd := ui.Update(listenCmd())
-	ui = updated.(*UI)
-	if ui.chat.sessionID != "session-1" {
-		t.Fatalf("expected restored session, got %q", ui.chat.sessionID)
-	}
-
-	updated, _ = ui.Update(historyCmd())
-	ui = updated.(*UI)
-
-	if svc.lastHistorySessionID != "session-1" {
-		t.Fatalf("expected history load for session-1, got %q", svc.lastHistorySessionID)
-	}
-	if len(ui.chat.messages) != 2 {
-		t.Fatalf("expected 2 history messages, got %d", len(ui.chat.messages))
-	}
-	if len(ui.chat.transcript.items) != 2 {
-		t.Fatalf("expected 2 transcript items, got %d", len(ui.chat.transcript.items))
-	}
-}
-
-func TestTranscriptBuildsCollapsibleItemsForStructuredParts(t *testing.T) {
-	messages := []message.Message{
-		{
-			ID:        "user-1",
-			SessionID: "session-1",
-			Kind:      message.KindUser,
-			Parts: []message.Part{
-				{Type: message.PartTypeText, Text: "   show me status   "},
-			},
-		},
-		{
-			ID:        "assistant-1",
-			SessionID: "session-1",
-			Kind:      message.KindAssistant,
-			Parts: []message.Part{
-				{Type: message.PartTypeText, Text: "final answer"},
-				{
-					Type: message.PartTypeThinking,
-					Thinking: &message.ThinkingPart{
-						Content: "expanded reasoning",
-						Summary: "brief reasoning",
-					},
-				},
-				{
-					Type: message.PartTypeToolCall,
-					ToolCall: &message.ToolCallPart{
-						ID:    "call-1",
-						Name:  "grep",
-						Input: "{\"pattern\":\"agentGo\"}",
-					},
-				},
-				{
-					Type: message.PartTypeToolResult,
-					ToolResult: &message.ToolResultPart{
-						ToolCallID: "call-1",
-						Content:    "{\"matches\":1}",
-					},
-				},
-			},
-		},
-		{
-			ID:        "system-1",
-			SessionID: "session-1",
-			Kind:      message.KindSystem,
-			Parts: []message.Part{
-				{Type: message.PartTypeText, Text: "provider unavailable"},
-			},
-			System: &message.SystemPayload{
-				Subtype: "provider_error",
-				Level:   "error",
-			},
-			Progress: &message.ProgressPayload{
-				Stage:   "tool_call",
-				Current: 1,
-				Total:   3,
-			},
-		},
-	}
-
-	items := buildTranscriptItems(messages, nil, nil, nil)
-
-	if len(items) != 4 {
-		t.Fatalf("expected 4 transcript items, got %d", len(items))
-	}
-	if items[0].Summary != "you: show me status" {
-		t.Fatalf("expected user summary trimmed to input, got %q", items[0].Summary)
-	}
-	if items[0].Body != "show me status" {
-		t.Fatalf("expected user body trimmed to input, got %q", items[0].Body)
-	}
-	if items[0].Expanded {
-		t.Fatal("expected user item to never be expandable")
-	}
-	if items[1].Summary != "ai: final answer" {
-		t.Fatalf("expected assistant text summary, got %q", items[1].Summary)
-	}
-	if items[1].PartType != message.PartTypeText {
-		t.Fatalf("expected assistant main item to be final text, got %q", items[1].PartType)
-	}
-	if !strings.Contains(items[1].Body, "expanded reasoning") {
-		t.Fatalf("expected assistant detail body to include reasoning, got %q", items[1].Body)
-	}
-	if !strings.Contains(items[1].Body, "tool call: grep") {
-		t.Fatalf("expected assistant detail body to include tool call, got %q", items[1].Body)
-	}
-	if !strings.Contains(items[1].Body, "tool result: call-1") {
-		t.Fatalf("expected assistant detail body to include tool result, got %q", items[1].Body)
-	}
-	if items[2].Summary != "system: provider_error" {
-		t.Fatalf("expected system summary, got %q", items[2].Summary)
-	}
-	if items[3].Summary != "progress: tool_call 1/3" {
-		t.Fatalf("expected progress summary, got %q", items[3].Summary)
-	}
-}
-
-func TestTranscriptBuildsAssistantProcessOnlyMessageAsCollapsibleSummary(t *testing.T) {
-	messages := []message.Message{
-		{
-			ID:        "assistant-1",
-			SessionID: "session-1",
-			Kind:      message.KindAssistant,
-			Parts: []message.Part{
-				{
-					Type: message.PartTypeThinking,
-					Thinking: &message.ThinkingPart{
-						Content: "reasoning only",
-					},
-				},
-				{
-					Type: message.PartTypeToolCall,
-					ToolCall: &message.ToolCallPart{
-						ID:    "call-1",
-						Name:  "grep",
-						Input: "{\"pattern\":\"agentGo\"}",
-					},
-				},
-			},
-		},
-	}
-
-	items := buildTranscriptItems(messages, nil, nil, nil)
-
-	if len(items) != 1 {
-		t.Fatalf("expected 1 transcript item, got %d", len(items))
-	}
-	if items[0].Summary != "ai: thinking / tool call: grep" {
-		t.Fatalf("expected assistant process summary, got %q", items[0].Summary)
-	}
-	if !strings.Contains(items[0].Body, "reasoning only") {
-		t.Fatalf("expected assistant process body to include reasoning, got %q", items[0].Body)
-	}
-}
-
-func TestTranscriptNormalizesEscapedNewlinesInAssistantDetails(t *testing.T) {
-	messages := []message.Message{
-		{
-			ID:        "assistant-1",
-			SessionID: "session-1",
-			Kind:      message.KindAssistant,
-			Parts: []message.Part{
-				{Type: message.PartTypeText, Text: "final answer"},
-				{
-					Type: message.PartTypeThinking,
-					Thinking: &message.ThinkingPart{
-						Content: "line1\\nline2",
-					},
-				},
-				{
-					Type: message.PartTypeToolCall,
-					ToolCall: &message.ToolCallPart{
-						ID:    "call-1",
-						Name:  "grep",
-						Input: "{\"pattern\":\"a\\\\nb\"}",
-					},
-				},
-			},
-		},
-	}
-
-	items := buildTranscriptItems(messages, nil, nil, nil)
-
-	if len(items) != 1 {
-		t.Fatalf("expected 1 transcript item, got %d", len(items))
-	}
-	if strings.Contains(items[0].Body, "\\n") {
-		t.Fatalf("expected escaped newlines to be normalized, got %q", items[0].Body)
-	}
-	if !strings.Contains(items[0].Body, "line1\nline2") {
-		t.Fatalf("expected actual newline in thinking body, got %q", items[0].Body)
-	}
-}
-
-func TestTranscriptTogglesSelectedItemExpansion(t *testing.T) {
-	items := []transcriptItem{
-		{ID: "user-1:0:text", PartType: message.PartTypeText, Kind: message.KindUser, Summary: "you: hello", Body: "hello"},
-		{ID: "assistant-1", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: hello", Body: "hello\nthinking\nexpanded reasoning"},
-	}
-
-	model := newTranscriptModel(defaultWidth, defaultHeight).setItems(items)
-	model = model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	if model.selected != 1 {
-		t.Fatalf("expected selected item 1, got %d", model.selected)
-	}
-
-	model = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	if !model.expanded["assistant-1"] {
-		t.Fatal("expected selected item to be expanded")
-	}
-	if !strings.Contains(model.View(), "expanded reasoning") {
-		t.Fatalf("expected expanded body in transcript view, got %q", model.View())
-	}
-
-	model = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}))
-	if model.expanded["assistant-1"] {
-		t.Fatal("expected selected item to collapse after space")
-	}
-}
-
-func TestEnterPrefersTranscriptExpansionOverSubmit(t *testing.T) {
-	ui := New(newStubAppService())
-	ui.chat.sessionID = "session-1"
-	ui.chat.composer.value = "pending send"
-	ui.chat.transcript = ui.chat.transcript.setItems([]transcriptItem{
-		{ID: "user-1", PartType: message.PartTypeText, Kind: message.KindUser, Summary: "you: hi", Body: "hi"},
-		{ID: "assistant-1", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: hello", Body: "hello\nthinking\nexpanded reasoning"},
-	})
-	ui.chat.transcript.selected = 1
-
-	updated, cmd := ui.Update(enterKey())
-	ui = updated.(*UI)
-
-	if cmd != nil {
-		t.Fatal("expected no submit command when expanding transcript item")
-	}
-	if !ui.chat.transcript.expanded["assistant-1"] {
-		t.Fatal("expected enter to expand selected assistant transcript item")
-	}
-	if ui.chat.composer.value != "pending send" {
-		t.Fatalf("expected composer value unchanged, got %q", ui.chat.composer.value)
-	}
-}
-
-func TestAllowsScrollingTranscriptWhenMessagesOverflowMainView(t *testing.T) {
-	ui := New(newStubAppService())
-	ui.width = 40
-	ui.height = 8
-	ui.focus = uiFocusMain
-	ui.chat.transcript = ui.chat.transcript.updateSize(40, 3)
-	ui.chat.transcript = ui.chat.transcript.setItems([]transcriptItem{
-		{ID: "user-1", PartType: message.PartTypeText, Kind: message.KindUser, Summary: "you: one", Body: "one"},
-		{ID: "assistant-1", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: two", Body: "two\nthinking\nreasoning one"},
-		{ID: "assistant-2", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: three", Body: "three\nthinking\nreasoning two"},
-		{ID: "assistant-3", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: four", Body: "four\nthinking\nreasoning three"},
-		{ID: "assistant-4", PartType: message.PartTypeText, Kind: message.KindAssistant, Summary: "ai: five", Body: "five\nthinking\nreasoning four"},
-	})
-
-	initial := ui.View().Content
-	if strings.Contains(initial, "ai: five") {
-		t.Fatalf("expected overflow item hidden before scrolling, got %q", initial)
-	}
-
-	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	ui = updated.(*UI)
-	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	ui = updated.(*UI)
-	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	ui = updated.(*UI)
-	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
-	ui = updated.(*UI)
-
-	scrolled := ui.View().Content
-	if !strings.Contains(scrolled, "ai: five") {
-		t.Fatalf("expected overflow item visible after scrolling, got %q", scrolled)
-	}
-}
-
-func TestMarkdownRendersOnlyOnAgentTerminalEvent(t *testing.T) {
+func TestAgentCompletedEventRendersMarkdownAndStopsLoading(t *testing.T) {
 	renderer := &stubMarkdownRenderer{rendered: "rendered markdown"}
-	quietRenderer := &stubMarkdownRenderer{rendered: "quiet markdown"}
 	ui := New(newStubAppService())
 	ui.chat.renderer = renderer
-	ui.chat.quietRenderer = quietRenderer
+	ui.chat.quietRenderer = &stubMarkdownRenderer{rendered: "quiet markdown"}
+	ui.chat.loading = true
 
-	deltaEvent := appEventMsg{
+	event := appEventMsg{
 		event: app.BaseEvent{
 			T: app.EventAgent,
 			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusDelta,
-				State: agent.LoopState{
-					Messages: []message.Message{
-						messageRecord("assistant-1", message.KindAssistant, "**draft**"),
-					},
-				},
-			},
-		},
-	}
-
-	updated, _ := ui.Update(deltaEvent)
-	ui = updated.(*UI)
-
-	if renderer.calls != 0 {
-		t.Fatalf("expected no markdown render during delta, got %d", renderer.calls)
-	}
-	if ui.chat.markdown["assistant-1"] != "" {
-		t.Fatalf("expected no markdown cache during delta, got %q", ui.chat.markdown["assistant-1"])
-	}
-	if ui.chat.transcript.items[0].Body != "**draft**" {
-		t.Fatalf("expected raw body during delta, got %q", ui.chat.transcript.items[0].Body)
-	}
-
-	completedEvent := appEventMsg{
-		event: app.BaseEvent{
-			T: app.EventAgent,
-			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusCompleted,
+				Status: agentcontract.LoopCompleted,
 				State: agent.LoopState{
 					Messages: []message.Message{
 						messageRecord("assistant-1", message.KindAssistant, "**final**"),
@@ -492,459 +335,37 @@ func TestMarkdownRendersOnlyOnAgentTerminalEvent(t *testing.T) {
 		},
 	}
 
-	updated, _ = ui.Update(completedEvent)
-	ui = updated.(*UI)
-
-	if renderer.calls != 1 {
-		t.Fatalf("expected one markdown render on completion, got %d", renderer.calls)
-	}
-	if quietRenderer.calls != 0 {
-		t.Fatalf("expected no quiet render for plain assistant text, got %d", quietRenderer.calls)
-	}
-	if ui.chat.markdown["assistant-1"] != "rendered markdown" {
-		t.Fatalf("expected cached markdown, got %q", ui.chat.markdown["assistant-1"])
-	}
-	if ui.chat.transcript.items[0].Body != "rendered markdown" {
-		t.Fatalf("expected rendered body after completion, got %q", ui.chat.transcript.items[0].Body)
-	}
-}
-
-func TestHistoryLoadRendersMarkdownForStableUserMessages(t *testing.T) {
-	renderer := &stubMarkdownRenderer{rendered: "rendered user markdown"}
-	ui := New(newStubAppService())
-	ui.chat.renderer = renderer
-	ui.chat.quietRenderer = &stubMarkdownRenderer{rendered: "quiet markdown"}
-	ui.chat.sessionID = "session-1"
-
-	updated, _ := ui.Update(historyLoadedMsg{
-		sessionID: "session-1",
-		messages: []message.Message{
-			messageRecord("user-1", message.KindUser, "**hello**"),
-		},
-	})
-	ui = updated.(*UI)
-
-	if renderer.calls != 1 {
-		t.Fatalf("expected one markdown render for stable user message, got %d", renderer.calls)
-	}
-	if ui.chat.transcript.items[0].Body != "rendered user markdown" {
-		t.Fatalf("expected rendered user body, got %q", ui.chat.transcript.items[0].Body)
-	}
-}
-
-func TestTranscriptUsesQuietMarkdownForAssistantThinkingAndToolDetails(t *testing.T) {
-	renderer := &stubMarkdownRenderer{rendered: "final markdown"}
-	quietRenderer := &stubMarkdownRenderer{rendered: "detail markdown"}
-	ui := New(newStubAppService())
-	ui.chat.renderer = renderer
-	ui.chat.quietRenderer = quietRenderer
-
-	completedEvent := appEventMsg{
-		event: app.BaseEvent{
-			T: app.EventAgent,
-			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusCompleted,
-				State: agent.LoopState{
-					Messages: []message.Message{
-						{
-							ID:        "assistant-1",
-							SessionID: "session-1",
-							Kind:      message.KindAssistant,
-							Parts: []message.Part{
-								{Type: message.PartTypeText, Text: "```go\nfmt.Println(\"hi\")\n```"},
-								{
-									Type: message.PartTypeThinking,
-									Thinking: &message.ThinkingPart{
-										Content: "- step 1\n- step 2",
-									},
-								},
-								{
-									Type: message.PartTypeToolResult,
-									ToolResult: &message.ToolResultPart{
-										ToolCallID: "call-1",
-										Content:    "```json\n{\"ok\":true}\n```",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	updated, _ := ui.Update(completedEvent)
-	ui = updated.(*UI)
-
-	if renderer.calls != 1 {
-		t.Fatalf("expected one primary markdown render, got %d", renderer.calls)
-	}
-	if quietRenderer.calls != 2 {
-		t.Fatalf("expected quiet renderer for thinking and tool detail, got %d", quietRenderer.calls)
-	}
-	if !strings.Contains(ui.chat.transcript.items[0].Body, "final markdown") {
-		t.Fatalf("expected rendered final body, got %q", ui.chat.transcript.items[0].Body)
-	}
-	if !strings.Contains(ui.chat.transcript.items[0].Body, "detail markdown") {
-		t.Fatalf("expected rendered detail body, got %q", ui.chat.transcript.items[0].Body)
-	}
-}
-
-func TestStateMachineKeepsNetworkIOInCommands(t *testing.T) {
-	svc := newStubAppService()
-	ui := New(svc)
-	ui.chat.sessionID = "session-1"
-	ui.chat.composer.value = "hello"
-
-	updated, cmd := ui.Update(enterKey())
-	ui = updated.(*UI)
-
-	if svc.lastPrompt != "" {
-		t.Fatalf("expected no RunQuery call during Update, got %q", svc.lastPrompt)
-	}
-	if cmd == nil {
-		t.Fatal("expected runQueryCmd")
-	}
-	if !ui.chat.loading {
-		t.Fatal("expected loading to start immediately after enter")
-	}
-
-	_ = cmd()
-
-	if svc.lastPrompt != "hello" {
-		t.Fatalf("expected RunQuery in command execution, got %q", svc.lastPrompt)
-	}
-}
-
-func TestViewIsPure(t *testing.T) {
-	renderer := &stubMarkdownRenderer{rendered: "rendered markdown"}
-	quietRenderer := &stubMarkdownRenderer{rendered: "quiet markdown"}
-	ui := New(newStubAppService())
-	ui.chat.renderer = renderer
-	ui.chat.quietRenderer = quietRenderer
-	ui.width = 40
-	ui.height = 12
-	ui.chat.markdown["assistant-1"] = "cached markdown"
-	ui.chat.transcript = ui.chat.transcript.updateSize(40, 3)
-	ui.chat.transcript = ui.chat.transcript.setItems([]transcriptItem{
-		{ID: "assistant-1:0:text", Summary: "ai: hello", Body: "cached markdown"},
-		{ID: "assistant-1:1:thinking", Summary: "thinking", Body: "reasoning"},
-	})
-	ui.chat.transcript.selected = 1
-	ui.chat.transcript.expanded["assistant-1:1:thinking"] = true
-	ui.chat.status = ui.chat.status.setMessage("assistant is thinking...")
-
-	beforeCalls := renderer.calls
-	beforeSelected := ui.chat.transcript.selected
-	beforeExpanded := ui.chat.transcript.expanded["assistant-1:1:thinking"]
-	beforeMarkdown := ui.chat.markdown["assistant-1"]
-	beforeLayout := ui.layout
-	beforeViewportWidth := ui.chat.transcript.viewport.Width
-	beforeViewportHeight := ui.chat.transcript.viewport.Height
-
-	view := ui.View()
-
-	if view.Content == "" {
-		t.Fatal("expected non-empty view")
-	}
-	if renderer.calls != beforeCalls {
-		t.Fatalf("expected View to not render markdown, got %d calls", renderer.calls-beforeCalls)
-	}
-	if quietRenderer.calls != 0 {
-		t.Fatalf("expected View to not render quiet markdown, got %d calls", quietRenderer.calls)
-	}
-	if ui.chat.transcript.selected != beforeSelected {
-		t.Fatalf("expected selected item unchanged, got %d", ui.chat.transcript.selected)
-	}
-	if ui.chat.transcript.expanded["assistant-1:1:thinking"] != beforeExpanded {
-		t.Fatal("expected expanded state unchanged")
-	}
-	if ui.chat.markdown["assistant-1"] != beforeMarkdown {
-		t.Fatalf("expected markdown cache unchanged, got %q", ui.chat.markdown["assistant-1"])
-	}
-	if ui.layout != beforeLayout {
-		t.Fatalf("expected layout unchanged, got before=%v after=%v", beforeLayout, ui.layout)
-	}
-	if ui.chat.transcript.viewport.Width != beforeViewportWidth || ui.chat.transcript.viewport.Height != beforeViewportHeight {
-		t.Fatalf("expected transcript viewport unchanged, got before=%dx%d after=%dx%d",
-			beforeViewportWidth,
-			beforeViewportHeight,
-			ui.chat.transcript.viewport.Width,
-			ui.chat.transcript.viewport.Height,
-		)
-	}
-}
-
-func TestEnterRunsQueryAndAppliesMultiTurnEvents(t *testing.T) {
-	svc := newStubAppService()
-	svc.ensureSessionFn = func(_ context.Context) error {
-		svc.events <- app.BaseEvent{
-			T: app.EventSession,
-			Payload: session.SessionEvent{
-				Status: session.StatusRestored,
-				Session: &sessioncontract.Session{
-					ID:    "session-1",
-					Title: "demo",
-				},
-			},
-		}
-		return nil
-	}
-	svc.runQueryFn = func(_ context.Context, sessionID string, prompt string) error {
-		svc.events <- app.BaseEvent{
-			T: app.EventAgent,
-			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusStarted,
-				State: agent.LoopState{
-					Messages: []message.Message{
-						messageRecord("user-1", message.KindUser, prompt),
-					},
-					Transition: "user_message_created",
-				},
-			},
-		}
-		svc.events <- app.BaseEvent{
-			T: app.EventAgent,
-			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusDelta,
-				State: agent.LoopState{
-					Messages: []message.Message{
-						messageRecord("user-1", message.KindUser, prompt),
-						messageRecord("assistant-1", message.KindAssistant, ""),
-					},
-					Transition: "awaiting_tool_execution",
-				},
-			},
-		}
-		svc.events <- app.BaseEvent{
-			T: app.EventAgent,
-			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusDelta,
-				State: agent.LoopState{
-					Messages: []message.Message{
-						messageRecord("user-1", message.KindUser, prompt),
-						messageRecord("assistant-1", message.KindAssistant, ""),
-						messageRecord("tool-1", message.KindSystem, `{"matches":["root_test.go"]}`),
-					},
-					Transition: "tool_results_recorded",
-				},
-			},
-		}
-		svc.events <- app.BaseEvent{
-			T: app.EventAgent,
-			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusDelta,
-				State: agent.LoopState{
-					Messages: []message.Message{
-						messageRecord("user-1", message.KindUser, prompt),
-						messageRecord("assistant-1", message.KindAssistant, ""),
-						messageRecord("tool-1", message.KindSystem, `{"matches":["root_test.go"]}`),
-						messageRecord("assistant-2", message.KindAssistant, "hello"),
-					},
-					Transition: "assistant_completed",
-				},
-			},
-		}
-		svc.events <- app.BaseEvent{
-			T: app.EventAgent,
-			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusCompleted,
-				State: agent.LoopState{
-					Messages: []message.Message{
-						messageRecord("user-1", message.KindUser, prompt),
-						messageRecord("assistant-1", message.KindAssistant, ""),
-						messageRecord("tool-1", message.KindSystem, `{"matches":["root_test.go"]}`),
-						messageRecord("assistant-2", message.KindAssistant, "hello"),
-					},
-					Transition: "assistant_completed",
-				},
-			},
-		}
-		return nil
-	}
-
-	ui := New(svc)
-	ui, listenCmd := bootstrapRestoredSession(t, ui)
-
-	ui.chat.composer.value = "hello"
-	updated, sendCmd := ui.Update(enterKey())
-	ui = updated.(*UI)
-
-	if !ui.chat.loading {
-		t.Fatal("expected loading state after enter")
-	}
-
-	_ = sendCmd()
-
-	for i := 0; i < 4; i++ {
-		updated, listenCmd = ui.Update(listenCmd())
-		ui = updated.(*UI)
-		if !ui.chat.loading {
-			t.Fatalf("expected loading to continue during multi-turn event %d", i)
-		}
-	}
-
-	updated, listenCmd = ui.Update(listenCmd())
+	updated, _ := ui.Update(event)
 	ui = updated.(*UI)
 
 	if ui.chat.loading {
-		t.Fatal("expected loading to stop after completion event")
+		t.Fatal("expected loading to stop")
 	}
-	if svc.eventsCalls != 1 {
-		t.Fatalf("expected root model to subscribe once, got %d subscriptions", svc.eventsCalls)
+	if ui.header.TransientStatus() != defaultHeaderStatus {
+		t.Fatalf("expected default header status, got %q", ui.header.TransientStatus())
 	}
-	if svc.lastSessionID != "session-1" {
-		t.Fatalf("expected query to use restored session, got %q", svc.lastSessionID)
-	}
-	if svc.lastPrompt != "hello" {
-		t.Fatalf("expected query prompt to be hello, got %q", svc.lastPrompt)
-	}
-	if len(ui.chat.messages) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(ui.chat.messages))
-	}
-	if textContent(ui.chat.messages[3].Parts) != "hello" {
-		t.Fatalf("expected final assistant content, got %q", textContent(ui.chat.messages[3].Parts))
+	if renderer.calls != 1 {
+		t.Fatalf("expected markdown render, got %d", renderer.calls)
 	}
 }
 
-func TestStreamFailureShowsErrorAndKeepsPartialAssistantMessage(t *testing.T) {
-	svc := newStubAppService()
-	svc.ensureSessionFn = func(_ context.Context) error {
-		svc.events <- app.BaseEvent{
-			T: app.EventSession,
-			Payload: session.SessionEvent{
-				Status: session.StatusRestored,
-				Session: &sessioncontract.Session{
-					ID:    "session-1",
-					Title: "demo",
-				},
-			},
-		}
-		return nil
-	}
-	svc.runQueryFn = func(_ context.Context, sessionID string, prompt string) error {
-		svc.events <- app.BaseEvent{
-			T: app.EventAgent,
-			Payload: agent.QueryEvent{
-				Status: agent.QueryStatusDelta,
-				State: agent.LoopState{
-					Messages: []message.Message{
-						messageRecord("user-1", message.KindUser, prompt),
-						messageRecord("assistant-1", message.KindAssistant, "par"),
-					},
-					Transition: "stream_failed",
-				},
-				Err: errors.New("stream failed"),
-			},
-		}
-		return errors.New("stream failed")
-	}
-
-	ui := New(svc)
-	ui, listenCmd := bootstrapRestoredSession(t, ui)
-
-	ui.chat.composer.value = "hello"
-	updated, sendCmd := ui.Update(enterKey())
-	ui = updated.(*UI)
-	_ = sendCmd()
-
-	updated, _ = ui.Update(listenCmd())
-	ui = updated.(*UI)
-
-	if textContent(ui.chat.messages[1].Parts) != "par" {
-		t.Fatalf("expected partial reply, got %q", textContent(ui.chat.messages[1].Parts))
-	}
-
-	updated, _ = ui.Update(sendMessageDoneMsg{err: errors.New("stream failed")})
-	ui = updated.(*UI)
-	if ui.chat.errMessage == "" {
-		t.Fatal("expected error message")
-	}
-}
-
-func TestQueryFailureEventStopsLoadingAndShowsError(t *testing.T) {
-	svc := newStubAppService()
-	svc.ensureSessionFn = func(_ context.Context) error {
-		svc.events <- app.BaseEvent{
-			T: app.EventSession,
-			Payload: session.SessionEvent{
-				Status: session.StatusRestored,
-				Session: &sessioncontract.Session{
-					ID:    "session-1",
-					Title: "demo",
-				},
-			},
-		}
-		return nil
-	}
-
-	ui := New(svc)
-	ui, listenCmd := bootstrapRestoredSession(t, ui)
-
+func TestSendMessageDoneErrorSetsTransientStatus(t *testing.T) {
+	ui := New(newStubAppService())
 	ui.chat.loading = true
-	svc.events <- app.BaseEvent{
-		T: app.EventAgent,
-		Payload: agent.QueryEvent{
-			Status: agent.QueryStatusFailed,
-			State: agent.LoopState{
-				Transition: "stream_failed",
-			},
-			Err: errors.New("query failed"),
-		},
-	}
 
-	updated, _ := ui.Update(listenCmd())
+	updated, _ := ui.Update(sendMessageDoneMsg{err: errors.New("stream failed")})
 	ui = updated.(*UI)
 
 	if ui.chat.loading {
-		t.Fatal("expected loading to stop after query failure")
+		t.Fatal("expected loading to stop")
 	}
-	if ui.chat.errMessage != "query failed" {
-		t.Fatalf("expected query failure error, got %q", ui.chat.errMessage)
-	}
-}
-
-func TestQueryCompletedEventStopsLoading(t *testing.T) {
-	svc := newStubAppService()
-	svc.ensureSessionFn = func(_ context.Context) error {
-		svc.events <- app.BaseEvent{
-			T: app.EventSession,
-			Payload: session.SessionEvent{
-				Status: session.StatusRestored,
-				Session: &sessioncontract.Session{
-					ID:    "session-1",
-					Title: "demo",
-				},
-			},
-		}
-		return nil
-	}
-
-	ui := New(svc)
-	ui, listenCmd := bootstrapRestoredSession(t, ui)
-
-	ui.chat.loading = true
-	svc.events <- app.BaseEvent{
-		T: app.EventAgent,
-		Payload: agent.QueryEvent{
-			Status: agent.QueryStatusCompleted,
-			State: agent.LoopState{
-				Transition: "assistant_completed",
-			},
-		},
-	}
-
-	updated, _ := ui.Update(listenCmd())
-	ui = updated.(*UI)
-
-	if ui.chat.loading {
-		t.Fatal("expected loading to stop after query completion")
+	if ui.header.TransientStatus() != "stream failed" {
+		t.Fatalf("expected error transient status, got %q", ui.header.TransientStatus())
 	}
 }
 
 type stubAppService struct {
 	events               chan app.Event
-	eventsCalls          int
 	ensureSessionFn      func(ctx context.Context) error
 	runQueryFn           func(ctx context.Context, sessionID string, prompt string) error
 	history              []message.Message
@@ -979,42 +400,17 @@ func (s *stubAppService) RunQuery(ctx context.Context, sessionID string, prompt 
 }
 
 func (s *stubAppService) Events() <-chan app.Event {
-	s.eventsCalls++
 	return s.events
 }
 
 type stubMarkdownRenderer struct {
-	calls    int
-	inputs   []string
 	rendered string
-	err      error
+	calls    int
 }
 
-func (r *stubMarkdownRenderer) Render(input string) (string, error) {
-	r.calls++
-	r.inputs = append(r.inputs, input)
-	if r.err != nil {
-		return "", r.err
-	}
-	return r.rendered, nil
-}
-
-func enterKey() tea.KeyPressMsg {
-	return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
-}
-
-func bootstrapRestoredSession(t *testing.T, ui *UI) (*UI, tea.Cmd) {
-	t.Helper()
-
-	bootstrapMsg := ui.Init()()
-	updated, listenCmd := ui.Update(bootstrapMsg)
-	ui = updated.(*UI)
-
-	updated, historyCmd := ui.Update(listenCmd())
-	ui = updated.(*UI)
-
-	updated, listenCmd = ui.Update(historyCmd())
-	return updated.(*UI), listenCmd
+func (s *stubMarkdownRenderer) Render(_ string) (string, error) {
+	s.calls++
+	return s.rendered, nil
 }
 
 func messageRecord(id string, kind message.Kind, text string) message.Message {
@@ -1023,10 +419,75 @@ func messageRecord(id string, kind message.Kind, text string) message.Message {
 		SessionID: "session-1",
 		Kind:      kind,
 		Parts: []message.Part{
-			{
-				Type: message.PartTypeText,
-				Text: text,
-			},
+			{Type: message.PartTypeText, Text: text},
 		},
+	}
+}
+
+func TestWrapPrefixedTextPreservesPrefixOnWrappedLines(t *testing.T) {
+	lines := wrapPrefixedText("hello world", "> ", "  ", 6)
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapped lines, got %#v", lines)
+	}
+	if !strings.HasPrefix(lines[0], "> ") {
+		t.Fatalf("expected first prefix, got %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "  ") {
+		t.Fatalf("expected continuation prefix, got %q", lines[1])
+	}
+}
+
+func TestNewInitializesChatState(t *testing.T) {
+	ui := New(newStubAppService())
+	if ui.state != uiStateChat {
+		t.Fatalf("expected chat state, got %q", ui.state)
+	}
+	if ui.header.Height() != headerHeight {
+		t.Fatalf("expected header height %d, got %d", headerHeight, ui.header.Height())
+	}
+	if ui.input.Value() != "" {
+		t.Fatalf("expected empty input, got %q", ui.input.Value())
+	}
+	if ui.layout.header.Dx() != 0 || ui.layout.main.Dx() != 0 {
+		t.Fatalf("expected zero layout before sizing, got %#v", ui.layout)
+	}
+}
+
+func TestViewUsesMouseModeAndDrawPath(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 40
+	ui.height = 16
+	ui.recomputeLayout()
+
+	view := ui.View()
+	if view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("expected mouse mode cell motion, got %v", view.MouseMode)
+	}
+	if view.Content == "" {
+		t.Fatal("expected rendered content")
+	}
+}
+
+func TestDrawRendersInputAndHeader(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
+	lifecycle.State = &lifecycle.GlobalState{Model: "gpt-test"}
+
+	ui := New(newStubAppService())
+	ui.width = 40
+	ui.height = 16
+	ui.input.Append("hi")
+	ui.recomputeLayout()
+
+	screen := uv.NewScreenBuffer(40, 16)
+	ui.Draw(screen, screen.Bounds())
+	rendered := screen.Render()
+
+	if !strings.Contains(rendered, "gpt-test") {
+		t.Fatalf("expected header content, got %q", rendered)
+	}
+	if !strings.Contains(rendered, inputPrefix) || !strings.Contains(rendered, "hi") {
+		t.Fatalf("expected input content, got %q", rendered)
 	}
 }
