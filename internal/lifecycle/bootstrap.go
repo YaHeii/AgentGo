@@ -9,6 +9,8 @@ import (
 
 type Config struct {
 	Environment      string `mapstructure:"ENVIRONMENT"`
+	LogDir           string `mapstructure:"LOG_DIR"`
+	LogLevel         string `mapstructure:"LOG_LEVEL"`
 	BaseURL          string `mapstructure:"BASE_URL"`
 	APIKey           string `mapstructure:"API_KEY"`
 	Model            string `mapstructure:"MODEL"`

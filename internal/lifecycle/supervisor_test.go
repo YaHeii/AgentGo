@@ -33,6 +33,7 @@ func TestSupervisorRunUpdatesCurrentAndCumulativeUsage(t *testing.T) {
 	t.Cleanup(func() { State = nil })
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "development",
 		Model:         "test-model",
 		ContextWindow: 400000,
 	})
@@ -105,6 +106,7 @@ func TestSupervisorRunEstimatesContextFromAgentEvents(t *testing.T) {
 	t.Cleanup(func() { State = nil })
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "development",
 		Model:         "test-model",
 		ContextWindow: 400000,
 	})
@@ -176,6 +178,7 @@ func TestSupervisorEstimateFallsBackWhenModelEncodingUnknown(t *testing.T) {
 	t.Cleanup(func() { State = nil })
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "development",
 		Model:         "unknown-model",
 		ContextWindow: 400000,
 	})

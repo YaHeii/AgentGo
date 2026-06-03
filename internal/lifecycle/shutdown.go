@@ -1,6 +1,10 @@
 package lifecycle
 
-import "context"
+import (
+	"context"
+
+	agentlog "github.com/YaHeii/agentGo/internal/log"
+)
 
 //TODO:
 // mutiple signal detect:
@@ -26,14 +30,20 @@ func (s *Supervisor) Close(_ context.Context) error {
 	if s == nil {
 		return nil
 	}
+	var closeErr error
 	for _, client := range s.mcpClients {
 		if client == nil {
 			continue
 		}
 		if err := client.Close(); err != nil {
-			return err
+			if closeErr == nil {
+				closeErr = err
+			}
 		}
 	}
 	s.mcpClients = nil
-	return nil
+	if err := agentlog.Sync(); err != nil && closeErr == nil {
+		closeErr = err
+	}
+	return closeErr
 }

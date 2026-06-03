@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/app"
+	agentlog "github.com/YaHeii/agentGo/internal/log"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/provider"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
@@ -94,6 +95,20 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	logConfig, err := agentlog.ResolveConfig(agentlog.Config{
+		Environment: s.cfg.Environment,
+		LogDir:      s.cfg.LogDir,
+		LogLevel:    s.cfg.LogLevel,
+		ProjectRoot: projectRoot,
+	})
+	if err != nil {
+		return err
+	}
+	logger, err := agentlog.NewLogger(logConfig)
+	if err != nil {
+		return err
+	}
+	agentlog.InstallGlobal(logger)
 
 	startTime := time.Now().UTC()
 

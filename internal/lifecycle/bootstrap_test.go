@@ -21,6 +21,7 @@ func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
 	})
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "development",
 		Model:         "test-model",
 		ContextWindow: 400000,
 	})
@@ -103,6 +104,7 @@ func TestSupervisorInitializeRegistersMCPToolsFromConfigFile(t *testing.T) {
 
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "development",
 		Model:         "test-model",
 		ContextWindow: 400000,
 		ConfigDir:     configDir,
@@ -134,6 +136,7 @@ func TestSupervisorInitializeRegistersLocalTools(t *testing.T) {
 
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "development",
 		Model:         "test-model",
 		ContextWindow: 400000,
 	})
@@ -167,6 +170,7 @@ func TestSupervisorInitializeRegistersWebSearchWhenConfigured(t *testing.T) {
 
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:      "development",
 		Model:            "test-model",
 		ContextWindow:    400000,
 		AnySearchBaseUrl: "https://api.anysearch.com/v1/search",
@@ -197,7 +201,7 @@ func TestSupervisorInitializeRegistersTodosToolWhenSessionStoreConfigured(t *tes
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(
 		dispatcher,
-		Config{Model: "test-model", ContextWindow: 400000},
+		Config{Environment: "development", Model: "test-model", ContextWindow: 400000},
 		WithTodosSessionStore(&stubLifecycleTodosStore{}),
 	)
 
@@ -211,6 +215,47 @@ func TestSupervisorInitializeRegistersTodosToolWhenSessionStoreConfigured(t *tes
 	}
 	if !hasTool(State.KnownTools, "todos") {
 		t.Fatalf("expected todos tool in known tools, got %+v", State.KnownTools)
+	}
+}
+
+func TestSupervisorInitializeRejectsInvalidEnvironment(t *testing.T) {
+	State = &GlobalState{}
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+	})
+
+	dispatcher := app.NewDispatcher(16)
+	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "staging",
+		Model:         "test-model",
+		ContextWindow: 400000,
+	})
+
+	if err := supervisor.Initialize(context.Background()); err == nil {
+		t.Fatal("expected initialize to reject invalid environment")
+	}
+}
+
+func TestSupervisorInitializeRejectsInvalidLogLevel(t *testing.T) {
+	State = &GlobalState{}
+	CurrentSupervisor = nil
+	t.Cleanup(func() {
+		State = nil
+		CurrentSupervisor = nil
+	})
+
+	dispatcher := app.NewDispatcher(16)
+	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "development",
+		LogLevel:      "verbose",
+		Model:         "test-model",
+		ContextWindow: 400000,
+	})
+
+	if err := supervisor.Initialize(context.Background()); err == nil {
+		t.Fatal("expected initialize to reject invalid log level")
 	}
 }
 
@@ -273,6 +318,33 @@ func TestLoadConfigReadsRagFields(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsLogFields(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "app.env")
+	config := "" +
+		"ENVIRONMENT=release\n" +
+		"LOG_DIR=/tmp/agentgo-logs\n" +
+		"LOG_LEVEL=debug\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configDir)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.Environment != "release" {
+		t.Fatalf("expected environment release, got %q", cfg.Environment)
+	}
+	if cfg.LogDir != "/tmp/agentgo-logs" {
+		t.Fatalf("expected log dir /tmp/agentgo-logs, got %q", cfg.LogDir)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("expected log level debug, got %q", cfg.LogLevel)
+	}
+}
+
 func hasTool(tools []toolcontract.Metadata, name string) bool {
 	for _, meta := range tools {
 		if meta.Name == name {
@@ -301,6 +373,7 @@ func TestSupervisorInitializeCopiesConfigIntoState(t *testing.T) {
 	})
 	dispatcher := app.NewDispatcher(16)
 	supervisor := NewSupervisor(dispatcher, Config{
+		Environment:   "development",
 		Model:         "test-model",
 		ContextWindow: 12345,
 		MaxTurn:       9,
@@ -352,7 +425,7 @@ func TestBootstrapInitializesGlobalStateAndSupervisor(t *testing.T) {
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "app.env")
-	config := "API_KEY=test-key\nMODEL=test-model\nCONTEXT_WINDOW=400000\nMAX_TOKENS=128000\n"
+	config := "ENVIRONMENT=development\nAPI_KEY=test-key\nMODEL=test-model\nCONTEXT_WINDOW=400000\nMAX_TOKENS=128000\n"
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

@@ -15,7 +15,6 @@ var State *GlobalState
 type GlobalState struct {
 	AppVersion              string
 	StartTime               string
-	DebugMode               bool
 	Cwd                     string
 	ProjectRoot             string
 	PermissionLevel         PermissionLevel
