@@ -41,14 +41,14 @@ func NewEditTool() *EditTool {
 func (t *EditTool) Metadata() toolcontract.Metadata {
 	return toolcontract.Metadata{
 		Name:        EditToolName,
-		Description: "在工作区内创建文件或替换文件内容。",
+		Description: "在当前工作目录或工作区内创建文件，或按精确字符串匹配修改现有文件内容。适合小范围定点编辑，不适合模糊改写或大批量重写。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"file_path": { "type": "string" },
-				"old_string": { "type": "string" },
-				"new_string": { "type": "string" },
-				"replace_all": { "type": "boolean" }
+				"file_path": { "type": "string", "description": "要创建或修改的目标文件路径。可以是相对 working_dir 的相对路径，也可以是工作区内的绝对路径，但不能越出允许范围。" },
+				"old_string": { "type": "string", "description": "要在文件中精确查找的原始文本，必须与文件内容逐字匹配并保留空白。留空时表示创建新文件并直接写入 new_string。" },
+				"new_string": { "type": "string", "description": "要写入的新文本。创建文件时会作为完整文件内容；替换时会用它替换命中的 old_string。" },
+				"replace_all": { "type": "boolean", "description": "当 old_string 在文件中出现多次时，是否替换所有命中。默认只允许唯一命中；若为 false 且出现多次，工具会返回执行错误。" }
 			},
 			"required": ["file_path"]
 		}`),

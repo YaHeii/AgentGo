@@ -42,18 +42,19 @@ func NewTodosTool(sessions todosSessionStore) *TodosTool {
 func (t *TodosTool) Metadata() toolcontract.Metadata {
 	return toolcontract.Metadata{
 		Name:        TodosToolName,
-		Description: "更新当前会话的 todo 列表，用于跟踪执行进度。",
+		Description: "用一组完整的 todo 项替换当前会话的 todo 列表，用于同步执行计划、当前进行项和完成状态。调用时应提交期望的完整列表，而不是只提交增量变更。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"todos": {
 					"type": "array",
+					"description": "要写回当前会话的完整 todo 列表。每个元素表示一个任务及其当前状态；本次提交会覆盖旧列表。",
 					"items": {
 						"type": "object",
 						"properties": {
-							"content": { "type": "string" },
-							"status": { "type": "string" },
-							"active_form": { "type": "string" }
+							"content": { "type": "string", "description": "todo 的稳定描述文本，用于标识这项任务本身。" },
+							"status": { "type": "string", "description": "todo 当前状态，只允许 'pending'、'in_progress' 或 'completed'。" },
+							"active_form": { "type": "string", "description": "可选的进行时表达，用于展示当前正在执行的动作，例如 'Writing tests'。当 status 为 'in_progress' 时建议提供。" }
 						},
 						"required": ["content", "status"]
 					}

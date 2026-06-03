@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"log/slog"
 	"time"
 
 	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
 	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 	providercontract "github.com/YaHeii/agentGo/internal/provider/contract"
+	"go.uber.org/zap/zapcore"
 )
 
 // LoopState stores the minimal mutable state required to continue a query loop.
@@ -39,23 +39,24 @@ func (l *LoopState) Continue(msg messagecontract.Message, transition string, fin
 	}
 }
 
-// LogValue implements the slog.LogValuer interface and hides sensitive fields.
-func (l LoopState) LogValue() slog.Value {
-	// To extract the name arr
-	toolNames := make([]string, 0, len(l.PendingToolCalls))
+// MarshalLogObject 实现了 zapcore.ObjectMarshaler 接口。
+func (l LoopState) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	enc.AddInt("turnCount", l.TurnCount)
+	enc.AddString("transition", l.Transition)
+	enc.AddString("stopReason", string(l.ProviderStopReason))
 
-	for _, tc := range l.PendingToolCalls {
-		toolNames = append(toolNames, tc.Name)
-	}
-	return slog.GroupValue(
-		slog.Int("id", l.TurnCount),
-		slog.String("name", l.Transition),
-		slog.String("StopReason", string(l.ProviderStopReason)),
-		slog.Any("toolNames", toolNames),
-	)
+	enc.AddArray("toolNames", zapcore.ArrayMarshalerFunc(func(ae zapcore.ArrayEncoder) error {
+		for _, tc := range l.PendingToolCalls {
+			// 直接将字符串流式追加到底层 JSON 字节缓冲区中
+			ae.AppendString(tc.Name)
+		}
+		return nil
+	}))
+	return nil
 }
 
 //	TODO: DELETE
+//
 // copyLoopState deep-copies mutable slices so event subscribers and later turns
 // cannot observe in-place mutations from the active loop.
 func copyLoopState(state LoopState) LoopState {

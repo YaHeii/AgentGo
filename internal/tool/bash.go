@@ -43,13 +43,13 @@ func NewBashToolWithRunner(runner sandbox.Runner) *BashTool {
 func (t *BashTool) Metadata() toolcontract.Metadata {
 	return toolcontract.Metadata{
 		Name:        BashToolName,
-		Description: "在受限的沙箱环境中执行系统命令或脚本。支持标准的 POSIX shell 语法。工作目录固定为 /workspace。",
+		Description: "在当前工作目录中通过受限沙箱执行一次性 shell 命令或短脚本。适合检查环境、运行测试或调用本地 CLI；命令本身可能产生文件或进程副作用。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"command": {
 					"type": "string",
-					"description": "需要执行的命令或多行脚本，例如: 'go test ./...' 或 'python test.py'"
+					"description": "要交给 'bash -lc' 执行的命令或多行脚本。使用标准 POSIX shell 语法，可包含换行；命令会在当前 working_dir 中运行。"
 				}
 			},
 			"required": ["command"]

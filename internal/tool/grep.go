@@ -63,14 +63,14 @@ func NewGrepTool(projectRoot string) *GrepTool {
 func (t *GrepTool) Metadata() toolcontract.Metadata {
 	return toolcontract.Metadata{
 		Name:        GrepToolName,
-		Description: "在项目文件内容中搜索正则表达式。支持 .gitignore 过滤并自动跳过二进制文件。",
+		Description: "在项目目录内搜索文件内容中的字符串或正则表达式。支持 .gitignore 过滤并自动跳过二进制文件，适合先定位代码、配置或文档再做后续分析或修改。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"pattern": { "type": "string", "description": "正则表达式搜索模式" },
-				"path": { "type": "string", "description": "搜索起始目录，必须在项目范围内" },
-				"include": { "type": "string", "description": "包含的文件模式，如 '*.go' 或 '*.{js,ts}'" },
-				"literal_text": { "type": "boolean", "description": "是否关闭正则，将 pattern 视为普通字符串" }
+				"pattern": { "type": "string", "description": "要搜索的文本或正则表达式模式。默认按正则解释；若 literal_text 为 true，则会按普通字符串精确匹配。" },
+				"path": { "type": "string", "description": "可选的搜索起点路径。可以相对当前 working_dir，也可以是项目目录内的绝对路径；留空时默认从当前 working_dir 开始搜索。" },
+				"include": { "type": "string", "description": "可选的文件过滤模式，用于缩小搜索范围，例如 '*.go'、'*.md' 或 '*.{js,ts}'。" },
+				"literal_text": { "type": "boolean", "description": "是否把 pattern 当作普通文本而不是正则表达式处理。设为 true 时会自动转义特殊字符，适合精确查找原始字符串。" }
 			},
 			"required": ["pattern"]
 			}`),

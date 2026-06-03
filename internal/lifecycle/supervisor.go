@@ -16,7 +16,6 @@ import (
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	"github.com/YaHeii/agentGo/internal/tool"
 	grepTool "github.com/YaHeii/agentGo/internal/tool"
-	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/pkoukk/tiktoken-go"
 )
 
@@ -131,14 +130,13 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 	State.StartTime = startTime.Format(time.RFC3339Nano)
 	State.Cwd = cwd
 	State.ProjectRoot = projectRoot
-	State.PermissionLevel = 0
+	State.PermissionLevel = 2
 	State.SessionID = ""
 	State.ParentSessionID = ""
 	State.InitialEnv = loadEnvironmentSnapshot()
 	State.ModelLimit = normalizeContextWindow(s.cfg.ContextWindow)
 	State.MaxTurn = normalizeContextWindow(s.cfg.MaxTurn)
 	State.Model = s.cfg.Model
-	State.KnownTools = s.toolSvc.ListTools(ctx, toolcontract.DangerLevel)
 	State.CumulativeInputTokens = 0
 	State.CumulativeOutputTokens = 0
 	State.CumulativeTotalTokens = 0

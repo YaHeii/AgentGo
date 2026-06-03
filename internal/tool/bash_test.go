@@ -20,12 +20,13 @@ func TestBashMetadataUsesSandboxedCommandSchema(t *testing.T) {
 
 	require.Equal(t, BashToolName, meta.Name)
 	require.Contains(t, meta.Description, "沙箱")
+	require.Contains(t, meta.Description, "工作目录")
 	require.JSONEq(t, `{
 		"type": "object",
 		"properties": {
 			"command": {
 				"type": "string",
-				"description": "需要执行的命令或多行脚本，例如: 'go test ./...' 或 'python test.py'"
+				"description": "要交给 'bash -lc' 执行的命令或多行脚本。使用标准 POSIX shell 语法，可包含换行；命令会在当前 working_dir 中运行。"
 			}
 		},
 		"required": ["command"]

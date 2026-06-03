@@ -55,13 +55,7 @@ func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
 	if State.MaxTurn != 0 {
 		t.Fatalf("expected default max turn 0, got %d", State.MaxTurn)
 	}
-	if len(State.KnownTools) == 0 {
-		t.Fatal("expected at least one known tool")
-	}
-	tools, ok := any(State.KnownTools).([]toolcontract.Metadata)
-	if !ok {
-		t.Fatalf("expected known tools to use tool contract metadata, got %T", State.KnownTools)
-	}
+	tools := supervisor.ToolService().ListTools(context.Background(), toolcontract.AttentionLevel)
 	if !hasTool(tools, "grep") {
 		t.Fatalf("expected grep tool to be discovered, got %+v", tools)
 	}
@@ -114,15 +108,9 @@ func TestSupervisorInitializeRegistersMCPToolsFromConfigFile(t *testing.T) {
 		t.Fatalf("initialize supervisor: %v", err)
 	}
 
-	var found bool
-	for _, meta := range State.KnownTools {
-		if meta.Name == "fs__read_file" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected MCP tool in known tools, got %+v", State.KnownTools)
+	attentionTools := supervisor.ToolService().ListTools(context.Background(), toolcontract.AttentionLevel)
+	if !hasTool(attentionTools, "fs__read_file") {
+		t.Fatalf("expected MCP tool at attention level, got %+v", attentionTools)
 	}
 }
 
@@ -185,9 +173,6 @@ func TestSupervisorInitializeRegistersWebSearchWhenConfigured(t *testing.T) {
 	if !hasTool(attentionTools, "websearch") {
 		t.Fatalf("expected websearch tool at attention level, got %+v", attentionTools)
 	}
-	if !hasTool(State.KnownTools, "websearch") {
-		t.Fatalf("expected websearch tool in known tools, got %+v", State.KnownTools)
-	}
 }
 
 func TestSupervisorInitializeRegistersTodosToolWhenSessionStoreConfigured(t *testing.T) {
@@ -212,9 +197,6 @@ func TestSupervisorInitializeRegistersTodosToolWhenSessionStoreConfigured(t *tes
 	safeTools := supervisor.ToolService().ListTools(context.Background(), toolcontract.SafeLevel)
 	if !hasTool(safeTools, "todos") {
 		t.Fatalf("expected todos tool at safe level, got %+v", safeTools)
-	}
-	if !hasTool(State.KnownTools, "todos") {
-		t.Fatalf("expected todos tool in known tools, got %+v", State.KnownTools)
 	}
 }
 
@@ -458,8 +440,8 @@ func TestBootstrapInitializesGlobalStateAndSupervisor(t *testing.T) {
 	if State.SessionID != "" {
 		t.Fatalf("expected bootstrap session id to be empty, got %q", State.SessionID)
 	}
-	if len(State.KnownTools) == 0 {
-		t.Fatal("expected known tools to be initialized")
+	if supervisor.ToolService() == nil {
+		t.Fatal("expected tool service to be initialized")
 	}
 
 	payload := BootstrapDoneEvent{

@@ -1,7 +1,5 @@
 package lifecycle
 
-import toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
-
 // State is the process-wide runtime state singleton.
 //
 // NOTE: State is intentionally public and mutable. It is not concurrency-safe.
@@ -35,7 +33,6 @@ type GlobalState struct {
 	EstimatedContextChars   int
 	CurrentMessageCount     int
 	Temperature             float32
-	KnownTools              []toolcontract.Metadata
 }
 
 type PermissionLevel int

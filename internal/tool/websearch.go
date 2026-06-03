@@ -106,21 +106,21 @@ func NewWebSearchTool(baseURL string, apiKey string) *WebSearchTool {
 func (t *WebSearchTool) Metadata() toolcontract.Metadata {
 	return toolcontract.Metadata{
 		Name:        WebSearchToolName,
-		Description: "通过 AnySearch API 查询互联网、代码、文档、新闻等外部信息源，并返回结构化搜索结果。",
+		Description: "通过 AnySearch 查询外部网页、文档、代码或新闻结果，并返回可继续处理的结构化搜索输出。适合补充本地仓库之外的信息，依赖外部网络访问。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"query": { "type": "string" },
-				"max_results": { "type": "integer" },
-				"domains": { "type": "array", "items": { "type": "string" } },
-				"tags": { "type": "array", "items": { "type": "string" } },
-				"content_types": { "type": "array", "items": { "type": "string" } },
-				"zone": { "type": "string" },
-				"language": { "type": "string" },
-				"providers": { "type": "array", "items": { "type": "string" } },
-				"freshness": { "type": "string" },
-				"from": { "type": "string" },
-				"to": { "type": "string" }
+				"query": { "type": "string", "description": "搜索查询文本，应直接描述要查找的主题、问题或事实。" },
+				"max_results": { "type": "integer", "description": "期望返回的最大结果数。留空时使用服务端默认值；如果提供，必须在 1 到 100 之间。" },
+				"domains": { "type": "array", "description": "可选的搜索域或数据源类别列表，用于限制检索范围，例如特定站点组或垂直域。", "items": { "type": "string" } },
+				"tags": { "type": "array", "description": "可选的标签过滤条件，用于进一步缩小结果范围。", "items": { "type": "string" } },
+				"content_types": { "type": "array", "description": "可选的内容类型过滤条件，例如网页、文档或其他服务端支持的类型。", "items": { "type": "string" } },
+				"zone": { "type": "string", "description": "可选的区域或市场范围，用于偏向某个地理搜索区域。" },
+				"language": { "type": "string", "description": "可选的语言过滤条件，用于偏向某种结果语言。" },
+				"providers": { "type": "array", "description": "可选的底层搜索提供方列表，用于限制 AnySearch 使用的 provider。", "items": { "type": "string" } },
+				"freshness": { "type": "string", "description": "可选的时间新鲜度约束，例如 day、week、month 或 year；会作为 AnySearch constraint 发送。" },
+				"from": { "type": "string", "description": "可选的起始日期，通常使用 YYYY-MM-DD 或服务端可识别的日期格式，与 to 共同限定时间范围。" },
+				"to": { "type": "string", "description": "可选的结束日期，通常使用 YYYY-MM-DD 或服务端可识别的日期格式，与 from 共同限定时间范围。" }
 			},
 			"required": ["query"]
 		}`),
