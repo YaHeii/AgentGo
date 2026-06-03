@@ -1,37 +1,86 @@
-# agentGo Repository Guidelines
+# agentGo 项目级开发规范
 
-## Communication
+## 目标与作用域
 
-- Use Chinese for discussion and Markdown documents by default.
-- Prefer plain Markdown for plans, specs, and explanations. Do not introduce
-  HTML unless explicitly requested.
-- Keep `AGENTS.md` focused on agent collaboration rules. Project background,
-  architecture details, and design discussion should live under `docs/`.
+- 本文档是当前仓库唯一的项目级开发规范
+- 它只记录项目范围内长期稳定、跨模块通用的开发约定
+- 具体实现细节、阶段性设计结论和演进中的局部约束，应下沉到 `docs/superpowers/specs/`
 
-## Workflow
+## 文档优先级
 
-- For architecture changes, boundary refactors, or non-trivial feature work,
-  write a Chinese Markdown design note under `docs/` first.
-- After the design is approved, write an implementation plan under `docs/`
-  before changing code.
-- Once the user approves the plan, move directly into implementation instead of
-  reopening the same design discussion.
+- 根级 `AGENTS.md` 定义全项目默认规范
+- 子目录可以拥有自己的 `AGENTS.md`
+- 子目录 `AGENTS.md` 只补充或收紧该子树约定，并在其作用域内优先生效
 
-## Development
+## 沟通、文档与流程
 
-- Use TDD by default. Start from a failing test when adding or changing
-  behavior.
-- Use `apply_patch` for manual file edits.
-- Format Go code after edits with `gofmt -w` or an approved formatter.
-- Run targeted tests for the packages you touched before finishing.
+- 默认使用中文交流，默认使用 Markdown 落盘
+- 非必要不要引入 HTML 作为文档表达形式
+- 涉及架构调整、边界重构或非平凡功能时，应先讨论边界，再决定实现
+- 讨论收敛后，应把稳定结论落盘，而不是只留在对话历史中
+- 阶段性设计与实现计划，默认放在 `docs/superpowers/specs/`
 
-## Docs And References
+## 分层开发规范
 
-- Use `docs/Crush_AGENTS.md` as a reference source, not as a template to copy
-  blindly.
-- Use [docs/struct.md](/root/agentGo/docs/struct.md)
-  for current project overview, layering, and runtime structure.
-- Use [docs/development-conventions.md](/root/agentGo/docs/development-conventions.md)
-  for current service/interface/event/wiring conventions.
-- When discussion converges, persist the result as a Markdown document instead
-  of leaving the decision only in chat history.
+### service
+
+- 每层对外能力应通过 service 暴露
+- 上层不应绕过 service 直接依赖下层具体实现
+- 与包同名的主文件应优先承载该层的核心接口、基础模型或最小对外契约
+- 具体业务实现应放在语义明确的实现文件中，而不是堆回主文件
+
+### 文件命名与架构分布
+
+- 文件拆分以职责边界为准，不以代码量或形式统一为目标
+- 主文件负责定义稳定边界，实现文件负责承载具体逻辑
+- 事件相关结构、状态枚举和事件载荷应集中放在该层自己的事件文件中
+- 不要把跨层协议、业务实现和局部工具函数混在同一入口文件里
+
+### 消费者侧接口
+
+- 一层需要依赖另一层能力时，应由消费者侧定义最小接口
+- 接口只保留当前业务意图所需的最小能力集
+- 不为了未来可能的场景提前做大接口
+
+### contract
+
+- `contract` 只承载跨模块共享的纯结构和窄契约
+- `contract` 不应依赖项目内其他业务包或实现包
+- 解耦优先于复用；不要让同一个结构体穿透所有层
+- 只有在跨越模块边界且被多个独立模块共同使用时，才引入 `contract`
+- `contract` 结构应保持技术无关，不承载框架标签、资源句柄或基础设施细节
+- 下层实现应在自身模块内部完成数据映射，不把内部数据对象直接泄漏为 `contract`
+
+### 跨层事件
+
+- 跨层事件通过统一事件通道传递
+- 统一事件分类由 `app` 层维护，领域事件载荷归各层自己维护
+- 下层在完成状态变更后，应通过统一事件通道发布事件，而不是自行创建新的全局事件总线
+
+## 高层边界
+
+### app
+
+- `app` 是面向 `ui` 的 thin facade
+- `app` 负责暴露少量跨领域动作入口和统一事件订阅能力
+- 非 UI 层之间的协作不默认经由 `app` 中转
+- `app` 不应成为所有模块之间的统一服务入口
+
+### lifecycle
+
+- `lifecycle` 负责进程级运行态、启动期初始化与监督相关边界
+- `lifecycle` 不应承接面向 UI 的业务 facade 职责
+
+### ui
+
+- `ui` 负责界面呈现、交互状态和用户动作入口
+- `ui` 默认通过 `app` 使用系统能力
+- `ui` 的局部约束下沉到对应子树 `AGENTS.md`
+
+## 开发与验证约定
+
+- 默认使用 TDD；行为修改应从能失败的测试开始
+- 手工编辑文件时使用 `apply_patch`
+- 代码修改应保持精准，避免顺手扩散到无关区域
+- 修改完成后应运行与改动范围匹配的定向验证
+- `main.go` 是默认的 composition root；具体 wiring 不应分散到各层内部
