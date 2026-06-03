@@ -10,7 +10,6 @@ import (
 
 type sessionStore interface {
 	Create(ctx context.Context, title string, d Dispatcher) (string, error)
-	GetLast(ctx context.Context) (string, error)
 	List(ctx context.Context) ([]sessioncontract.Session, error)
 	Rename(ctx context.Context, id string, title string, d Dispatcher) (sessioncontract.Session, error)
 	Restore(ctx context.Context, sessionID string, d Dispatcher) error

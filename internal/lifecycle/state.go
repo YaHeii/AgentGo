@@ -20,6 +20,7 @@ type GlobalState struct {
 	ProjectRoot             string
 	PermissionLevel         PermissionLevel
 	SessionID               string
+	ParentSessionID         string
 	InitialEnv              map[string]string
 	ModelLimit              int
 	MaxTurn                 int

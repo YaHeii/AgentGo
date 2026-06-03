@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 
 	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
@@ -26,21 +25,12 @@ func NewService(sessions sessionStore, agent agentStore, tools toolStore, dispat
 	}
 }
 
-// TODO: deletethis
-func (s *APPService) EnsureActiveSession(ctx context.Context) error {
-	sessionID, err := s.sessions.GetLast(ctx)
+func (s *APPService) StartNewSession(ctx context.Context, title string) error {
+	sessionID, err := s.sessions.Create(ctx, title, s.dispatcher)
 	if err != nil {
-		if !errors.Is(err, sessioncontract.ErrSessionNotFound) {
-			return err
-		}
-		//TODO: title should from AI
-		sessionID, err = s.sessions.Create(ctx, "New Session", s.dispatcher)
-		if err != nil {
-			return err
-		}
+		return err
 	}
-
-	return s.sessions.Restore(ctx, sessionID, s.dispatcher)
+	return s.sessions.SwitchSession(ctx, sessionID, s.dispatcher)
 }
 
 func (s *APPService) CreateSession(ctx context.Context, title string) (string, error) {

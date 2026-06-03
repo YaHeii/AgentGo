@@ -232,6 +232,26 @@ func TestUpdateEnterSendsMessageAndClearsInput(t *testing.T) {
 	}
 }
 
+func TestUpdateKeypadEnterSendsMessageAndClearsInput(t *testing.T) {
+	svc := newStubAppService()
+	ui := New(svc)
+	ui.sessionID = "session-1"
+	ui.input.Append("hello")
+
+	updated, cmd := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyKpEnter}))
+	ui = updated.(*UI)
+
+	if cmd == nil {
+		t.Fatal("expected send command")
+	}
+	if ui.input.Value() != "" {
+		t.Fatalf("expected input cleared, got %q", ui.input.Value())
+	}
+	if !ui.chat.loading {
+		t.Fatal("expected loading state after send")
+	}
+}
+
 func TestUpdateBackspaceRoutesToInput(t *testing.T) {
 	ui := New(newStubAppService())
 	ui.input.Append("hi")
@@ -267,24 +287,39 @@ func TestUpdateSlashMenuInterceptsEnterAndSetsTransientStatus(t *testing.T) {
 	}
 }
 
-func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
+func TestUpdateSlashMenuInterceptsKeypadEnterAndSetsTransientStatus(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 80
+	ui.height = 24
+
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "/", Code: '/'}))
+	ui = updated.(*UI)
+
+	if !ui.slashMenu.IsOpen() {
+		t.Fatal("expected slash menu open")
+	}
+
+	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyKpEnter}))
+	ui = updated.(*UI)
+
+	if ui.slashMenu.IsOpen() {
+		t.Fatal("expected slash menu to close after execution")
+	}
+	if !strings.Contains(ui.header.TransientStatus(), "not implemented: /historySession") {
+		t.Fatalf("expected transient slash status, got %q", ui.header.TransientStatus())
+	}
+}
+
+func TestInitUsesLifecycleSessionWithoutLoadingHistory(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
+	lifecycle.State = &lifecycle.GlobalState{SessionID: "session-1"}
+
 	svc := newStubAppService()
 	svc.history = []message.Message{
 		messageRecord("u1", message.KindUser, "hello"),
 		messageRecord("a1", message.KindAssistant, "world"),
-	}
-	svc.ensureSessionFn = func(_ context.Context) error {
-		svc.events <- app.BaseEvent{
-			T: app.EventSession,
-			Payload: session.SessionEvent{
-				Status: session.StatusRestored,
-				Session: &sessioncontract.Session{
-					ID:    "session-1",
-					Title: "demo",
-				},
-			},
-		}
-		return nil
 	}
 
 	ui := New(svc)
@@ -297,20 +332,127 @@ func TestInitBootstrapsSessionAndLoadsHistory(t *testing.T) {
 		t.Fatalf("expected 2 init commands, got %d", len(initBatch))
 	}
 
-	initMsg := initBatch[1]()
-	updated, listenCmd := ui.Update(initMsg)
+	if ui.sessionID != "session-1" {
+		t.Fatalf("expected active session, got %q", ui.sessionID)
+	}
+	if svc.lastHistorySessionID != "" {
+		t.Fatalf("expected init not to load history, got %q", svc.lastHistorySessionID)
+	}
+	if len(ui.chat.messages) != 0 {
+		t.Fatalf("expected empty transcript on startup, got %d messages", len(ui.chat.messages))
+	}
+}
+
+func TestInitReadsLifecycleSessionAndEnterCanSendImmediately(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
+	lifecycle.State = &lifecycle.GlobalState{SessionID: "session-1"}
+
+	svc := newStubAppService()
+	ui := New(svc)
+	_ = ui.Init()
+	ui.input.Append("hello")
+
+	updated, cmd := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	ui = updated.(*UI)
 
-	updated, historyCmd := ui.Update(listenCmd())
+	if cmd == nil {
+		t.Fatal("expected send command")
+	}
+	if ui.input.Value() != "" {
+		t.Fatalf("expected input cleared, got %q", ui.input.Value())
+	}
+	if ui.header.TransientStatus() != "assistant is thinking..." {
+		t.Fatalf("expected transient status updated, got %q", ui.header.TransientStatus())
+	}
+}
+
+func TestInitAndSubsequentSessionSwitchLoadsHistory(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
+	lifecycle.State = &lifecycle.GlobalState{SessionID: "session-start"}
+
+	svc := newStubAppService()
+	svc.history = []message.Message{
+		messageRecord("u1", message.KindUser, "hello"),
+		messageRecord("a1", message.KindAssistant, "world"),
+	}
+	ui := New(svc)
+
+	initBatch, ok := ui.Init()().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected init batch message, got %T", ui.Init()())
+	}
+
+	svc.events <- app.BaseEvent{
+		T: app.EventSession,
+		Payload: session.SessionEvent{
+			Status: session.StatusSwitched,
+			Session: &sessioncontract.Session{
+				ID:    "session-2",
+				Title: "demo",
+			},
+		},
+	}
+
+	updated, historyCmd := ui.Update(initBatch[1]())
 	ui = updated.(*UI)
 	updated, _ = ui.Update(historyCmd())
 	ui = updated.(*UI)
 
-	if ui.sessionID != "session-1" {
-		t.Fatalf("expected active session, got %q", ui.sessionID)
+	if ui.sessionID != "session-2" {
+		t.Fatalf("expected switched session id, got %q", ui.sessionID)
+	}
+	if svc.lastHistorySessionID != "session-2" {
+		t.Fatalf("expected switched history load, got %q", svc.lastHistorySessionID)
 	}
 	if len(ui.chat.messages) != 2 {
 		t.Fatalf("expected 2 hydrated messages, got %d", len(ui.chat.messages))
+	}
+}
+
+func TestUIReusesSingleEventSubscription(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
+	lifecycle.State = &lifecycle.GlobalState{SessionID: "session-1"}
+
+	svc := newStubAppService()
+	ui := New(svc)
+
+	initBatch, ok := ui.Init()().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected init batch message, got %T", ui.Init()())
+	}
+
+	svc.events <- app.BaseEvent{
+		T: app.EventSession,
+		Payload: session.SessionEvent{
+			Status:  session.StatusSwitched,
+			Session: &sessioncontract.Session{ID: "session-2"},
+		},
+	}
+
+	updated, historyCmd := ui.Update(initBatch[1]())
+	ui = updated.(*UI)
+	updated, listenCmd := ui.Update(historyCmd())
+	ui = updated.(*UI)
+
+	svc.events <- app.BaseEvent{
+		T: app.EventSession,
+		Payload: session.SessionEvent{
+			Status:  session.StatusRestored,
+			Session: &sessioncontract.Session{ID: "session-3"},
+		},
+	}
+
+	updated, _ = ui.Update(listenCmd())
+	ui = updated.(*UI)
+
+	if svc.eventsCalls != 1 {
+		t.Fatalf("expected a single event subscription, got %d", svc.eventsCalls)
 	}
 }
 
@@ -366,7 +508,7 @@ func TestSendMessageDoneErrorSetsTransientStatus(t *testing.T) {
 
 type stubAppService struct {
 	events               chan app.Event
-	ensureSessionFn      func(ctx context.Context) error
+	eventsCalls          int
 	runQueryFn           func(ctx context.Context, sessionID string, prompt string) error
 	history              []message.Message
 	lastHistorySessionID string
@@ -376,13 +518,6 @@ type stubAppService struct {
 
 func newStubAppService() *stubAppService {
 	return &stubAppService{events: make(chan app.Event, 16)}
-}
-
-func (s *stubAppService) EnsureActiveSession(ctx context.Context) error {
-	if s.ensureSessionFn == nil {
-		return nil
-	}
-	return s.ensureSessionFn(ctx)
 }
 
 func (s *stubAppService) ListHistory(_ context.Context, sessionID string) ([]message.Message, error) {
@@ -400,6 +535,7 @@ func (s *stubAppService) RunQuery(ctx context.Context, sessionID string, prompt 
 }
 
 func (s *stubAppService) Events() <-chan app.Event {
+	s.eventsCalls++
 	return s.events
 }
 

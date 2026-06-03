@@ -10,7 +10,6 @@ import (
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/YaHeii/agentGo/internal/tool/mcp"
-	"github.com/segmentio/ksuid"
 )
 
 func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
@@ -37,11 +36,8 @@ func TestSupervisorInitializePopulatesBootstrapState(t *testing.T) {
 	if State.StartTime == "" {
 		t.Fatal("expected start time to be initialized")
 	}
-	if State.SessionID == "" {
-		t.Fatal("expected session id to be initialized")
-	}
-	if _, err := ksuid.Parse(State.SessionID); err != nil {
-		t.Fatalf("expected ksuid session id, got %v", err)
+	if State.SessionID != "" {
+		t.Fatalf("expected bootstrap to leave session id empty, got %q", State.SessionID)
 	}
 	if State.Cwd == "" {
 		t.Fatal("expected cwd to be initialized")
@@ -386,8 +382,8 @@ func TestBootstrapInitializesGlobalStateAndSupervisor(t *testing.T) {
 	if State.ProjectRoot == "" {
 		t.Fatal("expected project root to be initialized")
 	}
-	if _, err := ksuid.Parse(State.SessionID); err != nil {
-		t.Fatalf("expected bootstrap session id to be a ksuid: %v", err)
+	if State.SessionID != "" {
+		t.Fatalf("expected bootstrap session id to be empty, got %q", State.SessionID)
 	}
 	if len(State.KnownTools) == 0 {
 		t.Fatal("expected known tools to be initialized")
@@ -400,7 +396,7 @@ func TestBootstrapInitializesGlobalStateAndSupervisor(t *testing.T) {
 	if payload.Time == "" {
 		t.Fatal("expected bootstrap event time")
 	}
-	if payload.SessionID == "" {
-		t.Fatal("expected bootstrap event session id")
+	if payload.SessionID != "" {
+		t.Fatalf("expected bootstrap event session id empty, got %q", payload.SessionID)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/lifecycle"
 	"github.com/YaHeii/agentGo/internal/message"
 	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
@@ -172,11 +173,12 @@ func (s *SessionService) SwitchSession(ctx context.Context, sessionID string, d 
 
 	s.activeSessionID = sessionID
 	s.parentSessionID = sessionRow.ParentSessionID
+	s.syncLifecycleState()
 	session := sessionRow
 	d.Dispatch(app.BaseEvent{
 		T: "session",
 		Payload: SessionEvent{
-			Status:  StatusUpdated,
+			Status:  StatusSwitched,
 			Session: sessionPtr(session),
 		},
 	})
@@ -233,6 +235,7 @@ func (s *SessionService) restoreSession(ctx context.Context, sessionID string, d
 	}
 	s.activeSessionID = sessionID
 	s.parentSessionID = sessionRow.ParentSessionID
+	s.syncLifecycleState()
 
 	d.Dispatch(app.BaseEvent{
 		T: "session",
@@ -258,4 +261,12 @@ func mapError(err error) error {
 
 func sessionPtr(session sessioncontract.Session) *sessioncontract.Session {
 	return &session
+}
+
+func (s *SessionService) syncLifecycleState() {
+	if lifecycle.State == nil {
+		return
+	}
+	lifecycle.State.SessionID = s.activeSessionID
+	lifecycle.State.ParentSessionID = s.parentSessionID
 }

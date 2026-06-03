@@ -8,6 +8,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/agent"
 	agentcontract "github.com/YaHeii/agentGo/internal/agent/contract"
 	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/lifecycle"
 	messageevent "github.com/YaHeii/agentGo/internal/message"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/session"
@@ -41,7 +42,6 @@ type bootstrapDoneMsg struct {
 }
 
 type appService interface {
-	EnsureActiveSession(ctx context.Context) error
 	ListHistory(ctx context.Context, sessionID string) ([]message.Message, error)
 	RunQuery(ctx context.Context, sessionID string, prompt string) error
 	Events() <-chan app.Event
@@ -67,9 +67,14 @@ type UI struct {
 	slashMenu SlashMenu
 	chat      Chat
 	sessionID string
+	events    <-chan app.Event
 }
 
 func New(appSvc appService) *UI {
+	var events <-chan app.Event
+	if appSvc != nil {
+		events = appSvc.Events()
+	}
 	return &UI{
 		app:       appSvc,
 		state:     uiStateChat,
@@ -77,13 +82,17 @@ func New(appSvc appService) *UI {
 		input:     newInput(),
 		slashMenu: newSlashMenu(defaultSlashCommands()),
 		chat:      newChat(),
+		events:    events,
 	}
 }
 
 func (u *UI) Init() tea.Cmd {
+	if lifecycle.State != nil {
+		u.sessionID = strings.TrimSpace(lifecycle.State.SessionID)
+	}
 	return tea.Batch(
 		u.input.Init(),
-		bootstrapSessionCmd(u.app),
+		u.nextAppEventCmd(),
 	)
 }
 
@@ -94,12 +103,6 @@ func (u *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		u.height = msg.Height
 		u.recomputeLayout()
 		return u, nil
-	case bootstrapDoneMsg:
-		if msg.err != nil {
-			u.setTransientStatus(msg.err.Error())
-			return u, nil
-		}
-		return u, waitAppEventCmd(u.app.Events())
 	case sendMessageDoneMsg:
 		if msg.err != nil {
 			u.chat.loading = false
@@ -109,22 +112,22 @@ func (u *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return u, nil
 	case historyLoadedMsg:
 		if msg.sessionID != u.sessionID {
-			return u, waitAppEventCmd(u.app.Events())
+			return u, u.nextAppEventCmd()
 		}
 		if msg.err != nil {
 			u.setTransientStatus(msg.err.Error())
-			return u, waitAppEventCmd(u.app.Events())
+			return u, u.nextAppEventCmd()
 		}
 		u.chat.SetMessages(msg.messages)
 		u.chat.renderStableMarkdown(msg.messages)
 		u.chat.refreshTranscript()
-		return u, waitAppEventCmd(u.app.Events())
+		return u, u.nextAppEventCmd()
 	case appEventMsg:
 		cmd := u.handleAppEvent(msg.event)
 		if cmd != nil {
 			return u, cmd
 		}
-		return u, waitAppEventCmd(u.app.Events())
+		return u, u.nextAppEventCmd()
 	case tea.KeyPressMsg:
 		return u.handleKeyPress(msg)
 	case tea.MouseMsg:
@@ -169,7 +172,7 @@ func (u *UI) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch msg.Key().Code {
 		case tea.KeyUp, tea.KeyDown:
 			return u, u.slashMenu.HandleKey(msg)
-		case tea.KeyEnter:
+		case tea.KeyEnter, tea.KeyKpEnter:
 			return u.executeSelectedSlashCommand()
 		case tea.KeyEscape:
 			u.slashMenu.Close()
@@ -179,7 +182,7 @@ func (u *UI) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.Key().Code {
-	case tea.KeyEnter:
+	case tea.KeyEnter, tea.KeyKpEnter:
 		return u.sendInput()
 	default:
 		if msg.Key().Text == "" && !isInputEditingKey(msg) {
@@ -319,6 +322,13 @@ func (u *UI) recomputeLayout() {
 
 func (u *UI) setTransientStatus(status string) {
 	u.header.SetTransientStatus(status)
+}
+
+func (u *UI) nextAppEventCmd() tea.Cmd {
+	if u.events == nil {
+		return nil
+	}
+	return waitAppEventCmd(u.events)
 }
 
 func clearScreen(scr uv.Screen, area uv.Rectangle) {

@@ -13,29 +13,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestServiceEnsureActiveSessionCreatesAndRestoresFirstSession(t *testing.T) {
+func TestServiceStartNewSessionCreatesAndSwitchesToFreshSession(t *testing.T) {
 	t.Parallel()
 
 	sessions := newStubSessionService()
 	svc := newServiceWithDeps(sessions, newStubAgentService(), newStubToolService(), nil)
 
-	err := svc.EnsureActiveSession(context.Background())
+	err := svc.StartNewSession(context.Background(), "New Session")
 	require.NoError(t, err)
 	require.Equal(t, []string{"New Session"}, sessions.createdTitles)
-	require.Equal(t, "session-created", sessions.restoredSessionID)
-}
-
-func TestServiceEnsureActiveSessionRestoresMostRecentSession(t *testing.T) {
-	t.Parallel()
-
-	sessions := newStubSessionService()
-	sessions.lastSessionID = "session-2"
-	svc := newServiceWithDeps(sessions, newStubAgentService(), newStubToolService(), nil)
-
-	err := svc.EnsureActiveSession(context.Background())
-	require.NoError(t, err)
-	require.Empty(t, sessions.createdTitles)
-	require.Equal(t, "session-2", sessions.restoredSessionID)
+	require.Equal(t, "session-created", sessions.switchedSessionID)
+	require.Empty(t, sessions.restoredSessionID)
 }
 
 func TestServiceCreateSessionDelegatesToSessionService(t *testing.T) {
@@ -236,10 +224,8 @@ func TestDispatcherPublishesEventsToSubscribers(t *testing.T) {
 }
 
 type stubSessionService struct {
-	lastSessionID            string
 	currentSessionID         string
 	parentSessionID          string
-	getLastErr               error
 	createErr                error
 	createMessageErr         error
 	listErr                  error
@@ -271,18 +257,7 @@ func (s *stubSessionService) Create(_ context.Context, title string, _ app.Dispa
 		return "", s.createErr
 	}
 
-	s.lastSessionID = "session-created"
-	return s.lastSessionID, nil
-}
-
-func (s *stubSessionService) GetLast(_ context.Context) (string, error) {
-	if s.getLastErr != nil {
-		return "", s.getLastErr
-	}
-	if s.lastSessionID == "" {
-		return "", sessioncontract.ErrSessionNotFound
-	}
-	return s.lastSessionID, nil
+	return "session-created", nil
 }
 
 func (s *stubSessionService) List(_ context.Context) ([]sessioncontract.Session, error) {
@@ -395,7 +370,6 @@ func (e fakeEvent) Data() any {
 
 type sessionStore interface {
 	Create(ctx context.Context, title string, d app.Dispatcher) (string, error)
-	GetLast(ctx context.Context) (string, error)
 	List(ctx context.Context) ([]sessioncontract.Session, error)
 	Rename(ctx context.Context, id string, title string, d app.Dispatcher) (sessioncontract.Session, error)
 	Restore(ctx context.Context, sessionID string, d app.Dispatcher) error

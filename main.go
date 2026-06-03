@@ -66,6 +66,14 @@ func main() {
 	queryLoop := agent.NewQueryLoop(queryApp, providerSvc, dispatcher)
 	agentSvc := agent.NewService(queryLoop)
 	appSvc := app.NewService(sessionSvc, agentSvc, toolSvc, dispatcher)
+	if err := appSvc.StartNewSession(ctx, "New Session"); err != nil {
+		if closeErr := supervisor.Close(ctx); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "close supervisor: %v\n", closeErr)
+		}
+		_ = st.Close()
+		fmt.Fprintf(os.Stderr, "start new session: %v\n", err)
+		os.Exit(1)
+	}
 	defer func() {
 		if err := supervisor.Close(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "close supervisor: %v\n", err)

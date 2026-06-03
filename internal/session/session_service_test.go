@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/YaHeii/agentGo/internal/app"
+	"github.com/YaHeii/agentGo/internal/lifecycle"
 	"github.com/YaHeii/agentGo/internal/message"
 	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
@@ -230,7 +231,10 @@ func TestSessionServiceCreateMessageRoutesThroughMessageDependency(t *testing.T)
 }
 
 func TestSessionServiceSwitchSessionUpdatesStateAndPublishesEvent(t *testing.T) {
-	t.Parallel()
+	lifecycle.State = &lifecycle.GlobalState{}
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
 
 	st := newFakeSessionStore()
 	st.sessions = []sessioncontract.Session{
@@ -247,13 +251,15 @@ func TestSessionServiceSwitchSessionUpdatesStateAndPublishesEvent(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, "session-1", svc.GetSessionID())
 	require.Equal(t, "parent-1", svc.GetParentSessionID())
+	require.Equal(t, "session-1", lifecycle.State.SessionID)
+	require.Equal(t, "parent-1", lifecycle.State.ParentSessionID)
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
 
 	payload, ok := event.Data().(SessionEvent)
 	require.True(t, ok)
-	require.Equal(t, StatusUpdated, payload.Status)
+	require.Equal(t, StatusSwitched, payload.Status)
 	require.NotNil(t, payload.Session)
 	require.Equal(t, "session-1", payload.Session.ID)
 }
@@ -270,7 +276,10 @@ func TestSessionServiceSwitchSessionReturnsNotFoundWhenMissing(t *testing.T) {
 }
 
 func TestSessionServiceRestoreReturnsOnlyErrorAndPublishesEvent(t *testing.T) {
-	t.Parallel()
+	lifecycle.State = &lifecycle.GlobalState{}
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
 
 	st := newFakeSessionStore()
 	st.sessions = []sessioncontract.Session{
@@ -293,7 +302,10 @@ func TestSessionServiceRestoreReturnsOnlyErrorAndPublishesEvent(t *testing.T) {
 	err := svc.Restore(context.Background(), "session-1", dispatcher)
 	require.NoError(t, err)
 	require.Equal(t, "session-1", svc.GetSessionID())
+	require.Equal(t, "", svc.GetParentSessionID())
 	require.Equal(t, "session-1", msgs.lastListSessionID)
+	require.Equal(t, "session-1", lifecycle.State.SessionID)
+	require.Equal(t, "", lifecycle.State.ParentSessionID)
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)

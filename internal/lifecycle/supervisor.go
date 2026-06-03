@@ -17,7 +17,6 @@ import (
 	grepTool "github.com/YaHeii/agentGo/internal/tool"
 	toolcontract "github.com/YaHeii/agentGo/internal/tool/contract"
 	"github.com/pkoukk/tiktoken-go"
-	"github.com/segmentio/ksuid"
 )
 
 const defaultAppVersion = "0.0.1"
@@ -97,10 +96,6 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 	}
 
 	startTime := time.Now().UTC()
-	sessionID, err := ksuid.NewRandomWithTime(startTime)
-	if err != nil {
-		return err
-	}
 
 	s.tools = []tool.Tool{
 		grepTool.NewGrepTool(projectRoot),
@@ -122,7 +117,8 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 	State.Cwd = cwd
 	State.ProjectRoot = projectRoot
 	State.PermissionLevel = 0
-	State.SessionID = sessionID.String()
+	State.SessionID = ""
+	State.ParentSessionID = ""
 	State.InitialEnv = loadEnvironmentSnapshot()
 	State.ModelLimit = normalizeContextWindow(s.cfg.ContextWindow)
 	State.MaxTurn = normalizeContextWindow(s.cfg.MaxTurn)

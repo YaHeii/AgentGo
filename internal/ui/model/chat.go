@@ -161,13 +161,6 @@ func (c *Chat) syncViewport() {
 	}
 }
 
-func bootstrapSessionCmd(appSvc appService) tea.Cmd {
-	return func() tea.Msg {
-		err := appSvc.EnsureActiveSession(context.Background())
-		return bootstrapDoneMsg{err: err}
-	}
-}
-
 func runQueryCmd(appSvc appService, sessionID string, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		err := appSvc.RunQuery(context.Background(), sessionID, prompt)
