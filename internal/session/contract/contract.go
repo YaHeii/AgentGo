@@ -9,7 +9,6 @@ var ErrSessionNotFound = errors.New("session: not found")
 
 type Session struct {
 	ID               string
-	ParentSessionID  string
 	Title            string
 	MessageCount     int64
 	CompletionTokens int64
@@ -22,7 +21,6 @@ type Session struct {
 
 type CreateSessionParams struct {
 	ID               string
-	ParentSessionID  string
 	Title            string
 	MessageCount     int64
 	CompletionTokens int64
@@ -35,7 +33,6 @@ type CreateSessionParams struct {
 
 type UpdateSessionParams struct {
 	ID               string
-	ParentSessionID  string
 	Title            string
 	MessageCount     int64
 	CompletionTokens int64

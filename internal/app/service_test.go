@@ -141,11 +141,9 @@ func TestServiceExposesSessionStateGetters(t *testing.T) {
 
 	sessions := newStubSessionService()
 	sessions.currentSessionID = "session-1"
-	sessions.parentSessionID = "parent-1"
 	svc := newServiceWithDeps(sessions, newStubAgentService(), newStubToolService(), nil)
 
 	require.Equal(t, "session-1", svc.GetSessionID())
-	require.Equal(t, "parent-1", svc.GetParentSessionID())
 }
 
 func TestServiceListToolsDelegatesToToolService(t *testing.T) {
@@ -225,7 +223,6 @@ func TestDispatcherPublishesEventsToSubscribers(t *testing.T) {
 
 type stubSessionService struct {
 	currentSessionID         string
-	parentSessionID          string
 	createErr                error
 	createMessageErr         error
 	listErr                  error
@@ -288,10 +285,6 @@ func (s *stubSessionService) SwitchSession(_ context.Context, sessionID string, 
 
 func (s *stubSessionService) GetSessionID() string {
 	return s.currentSessionID
-}
-
-func (s *stubSessionService) GetParentSessionID() string {
-	return s.parentSessionID
 }
 
 func (s *stubSessionService) ListHistory(_ context.Context, sessionID string, _ app.Dispatcher) ([]messagecontract.Message, error) {
@@ -375,7 +368,6 @@ type sessionStore interface {
 	Restore(ctx context.Context, sessionID string, d app.Dispatcher) error
 	SwitchSession(ctx context.Context, sessionID string, d app.Dispatcher) error
 	GetSessionID() string
-	GetParentSessionID() string
 	Delete(ctx context.Context, id string, d app.Dispatcher) error
 	ListHistory(ctx context.Context, sessionID string, d app.Dispatcher) ([]messagecontract.Message, error)
 	CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams, d app.Dispatcher) (messagecontract.Message, error)

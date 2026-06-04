@@ -13,6 +13,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/message"
 	ragcontract "github.com/YaHeii/agentGo/internal/rag/contract"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
+	taskcontract "github.com/YaHeii/agentGo/internal/task/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +28,6 @@ func TestStoreCreatesListsGetsUpdatesAndDeletesSessions(t *testing.T) {
 
 	first, err := s.CreateSession(ctx, sessioncontract.CreateSessionParams{
 		ID:               "session-1",
-		ParentSessionID:  "",
 		Title:            "first",
 		MessageCount:     1,
 		CompletionTokens: 12,
@@ -41,7 +41,6 @@ func TestStoreCreatesListsGetsUpdatesAndDeletesSessions(t *testing.T) {
 
 	_, err = s.CreateSession(ctx, sessioncontract.CreateSessionParams{
 		ID:               "session-2",
-		ParentSessionID:  "session-1",
 		Title:            "second",
 		MessageCount:     2,
 		CompletionTokens: 99,
@@ -63,7 +62,6 @@ func TestStoreCreatesListsGetsUpdatesAndDeletesSessions(t *testing.T) {
 
 	updated, err := s.UpdateSession(ctx, sessioncontract.UpdateSessionParams{
 		ID:               first.ID,
-		ParentSessionID:  "",
 		Title:            "first renamed",
 		MessageCount:     3,
 		CompletionTokens: 55,
@@ -184,6 +182,166 @@ func TestStoreWithinTxRollsBackOnError(t *testing.T) {
 	require.Len(t, sessions, 0)
 }
 
+func TestStoreCreatesGetsListsAndUpdatesTasks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Unix(1710003500, 0).UTC()
+
+	createTaskSessions(t, ctx, s, now, "session-parent", "session-subagent-1", "session-subagent-2")
+
+	created, err := s.CreateTask(ctx, taskcontract.CreateTaskParams{
+		SubagentSessionID:   "session-subagent-1",
+		ParentSessionID:     "session-parent",
+		Kind:                "verify",
+		InputPayloadJSON:    `{"tasks":["a","b"]}`,
+		ProgressPayloadJSON: `{"done":["a"]}`,
+		CreatedAt:           now,
+	})
+	require.NoError(t, err)
+	require.Equal(t, taskcontract.StatusRunning, created.Status)
+	require.Equal(t, `{"tasks":["a","b"]}`, created.InputPayloadJSON)
+	require.Equal(t, `{"done":["a"]}`, created.ProgressPayloadJSON)
+	require.Empty(t, created.ResultPayloadJSON)
+	require.Empty(t, created.ErrorMessage)
+	require.Nil(t, created.CompletedAt)
+
+	_, err = s.CreateTask(ctx, taskcontract.CreateTaskParams{
+		SubagentSessionID: "session-subagent-2",
+		ParentSessionID:   "session-parent",
+		Kind:              "verify",
+		CreatedAt:         now.Add(time.Second),
+	})
+	require.NoError(t, err)
+
+	loaded, err := s.GetTask(ctx, "session-subagent-1")
+	require.NoError(t, err)
+	require.Equal(t, created, loaded)
+
+	tasks, err := s.ListTasksByParentSession(ctx, "session-parent")
+	require.NoError(t, err)
+	require.Len(t, tasks, 2)
+	require.Equal(t, "session-subagent-1", tasks[0].SubagentSessionID)
+	require.Equal(t, "session-subagent-2", tasks[1].SubagentSessionID)
+
+	progressed, err := s.UpdateTaskProgress(ctx, taskcontract.UpdateTaskProgressParams{
+		SubagentSessionID:   "session-subagent-1",
+		ProgressPayloadJSON: `{"done":["a","b"]}`,
+	})
+	require.NoError(t, err)
+	require.Equal(t, taskcontract.StatusRunning, progressed.Status)
+	require.Equal(t, `{"done":["a","b"]}`, progressed.ProgressPayloadJSON)
+	require.Nil(t, progressed.CompletedAt)
+}
+
+func TestStoreCompleteTaskPersistsResultAndCompletedAt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Unix(1710003600, 0).UTC()
+
+	createTaskSessions(t, ctx, s, now, "session-parent", "session-subagent")
+
+	_, err := s.CreateTask(ctx, taskcontract.CreateTaskParams{
+		SubagentSessionID: "session-subagent",
+		ParentSessionID:   "session-parent",
+		Kind:              "verify",
+		CreatedAt:         now,
+	})
+	require.NoError(t, err)
+
+	completedAt := now.Add(2 * time.Minute)
+	completed, err := s.CompleteTask(ctx, taskcontract.CompleteTaskParams{
+		SubagentSessionID: "session-subagent",
+		ResultPayloadJSON: `{"summary":"ok"}`,
+		CompletedAt:       completedAt,
+	})
+	require.NoError(t, err)
+	require.Equal(t, taskcontract.StatusComplete, completed.Status)
+	require.Equal(t, `{"summary":"ok"}`, completed.ResultPayloadJSON)
+	require.NotNil(t, completed.CompletedAt)
+	require.Equal(t, completedAt, *completed.CompletedAt)
+	require.Empty(t, completed.ErrorMessage)
+}
+
+func TestStoreFailTaskPersistsErrorAndCompletedAt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Unix(1710003700, 0).UTC()
+
+	createTaskSessions(t, ctx, s, now, "session-parent", "session-subagent")
+
+	_, err := s.CreateTask(ctx, taskcontract.CreateTaskParams{
+		SubagentSessionID: "session-subagent",
+		ParentSessionID:   "session-parent",
+		Kind:              "verify",
+		CreatedAt:         now,
+	})
+	require.NoError(t, err)
+
+	completedAt := now.Add(3 * time.Minute)
+	failed, err := s.FailTask(ctx, taskcontract.FailTaskParams{
+		SubagentSessionID: "session-subagent",
+		ErrorMessage:      "tool failed",
+		CompletedAt:       completedAt,
+	})
+	require.NoError(t, err)
+	require.Equal(t, taskcontract.StatusFailed, failed.Status)
+	require.Equal(t, "tool failed", failed.ErrorMessage)
+	require.NotNil(t, failed.CompletedAt)
+	require.Equal(t, completedAt, *failed.CompletedAt)
+	require.Empty(t, failed.ResultPayloadJSON)
+}
+
+func TestStoreWithinTxRollsBackCreatedSubagentSessionAndTask(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Unix(1710003800, 0).UTC()
+
+	_, err := s.CreateSession(ctx, sessioncontract.CreateSessionParams{
+		ID:        "session-parent",
+		Title:     "parent",
+		TodosJSON: "[]",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	require.NoError(t, err)
+
+	err = s.WithinTx(ctx, func(tx db.TxStore) error {
+		_, err := tx.CreateSession(ctx, sessioncontract.CreateSessionParams{
+			ID:        "session-subagent",
+			Title:     "subagent",
+			TodosJSON: "[]",
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+		require.NoError(t, err)
+
+		_, err = tx.CreateTask(ctx, taskcontract.CreateTaskParams{
+			SubagentSessionID: "session-subagent",
+			ParentSessionID:   "session-parent",
+			Kind:              "verify",
+			CreatedAt:         now,
+		})
+		require.NoError(t, err)
+
+		return errors.New("force rollback")
+	})
+	require.EqualError(t, err, "force rollback")
+
+	_, err = s.GetSession(ctx, "session-subagent")
+	require.ErrorIs(t, err, sessioncontract.ErrSessionNotFound)
+
+	_, err = s.GetTask(ctx, "session-subagent")
+	require.ErrorIs(t, err, taskcontract.ErrTaskNotFound)
+}
+
 func TestOpenPreservesSessionsAcrossReopen(t *testing.T) {
 	t.Parallel()
 
@@ -257,6 +415,118 @@ func TestOpenAppliesRAGSchemaMigration(t *testing.T) {
 	require.True(t, tableExists(t, dbPath, "documents"))
 	require.True(t, tableExists(t, dbPath, "chunks"))
 	require.True(t, indexExists(t, dbPath, "documents_normalized_path_idx"))
+}
+
+func TestOpenAppliesTaskSchemaMigration(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "agentgo.db")
+
+	s, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, s.Close())
+	})
+
+	require.True(t, tableExists(t, dbPath, "tasks"))
+	require.True(t, indexExists(t, dbPath, "tasks_parent_session_status_idx"))
+	require.True(t, indexExists(t, dbPath, "tasks_kind_status_idx"))
+	require.False(t, columnExists(t, dbPath, "sessions", "parent_session_id"))
+}
+
+func TestStoreDeletingSubagentSessionCascadesTask(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agentgo.db")
+	s, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, s.Close())
+	})
+	now := time.Unix(1710005000, 0).UTC()
+
+	_, err = s.CreateSession(ctx, sessioncontract.CreateSessionParams{
+		ID:        "session-parent",
+		Title:     "parent",
+		TodosJSON: "[]",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	require.NoError(t, err)
+
+	_, err = s.CreateSession(ctx, sessioncontract.CreateSessionParams{
+		ID:        "session-subagent",
+		Title:     "subagent",
+		TodosJSON: "[]",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	require.NoError(t, err)
+
+	conn, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, conn.Close())
+	})
+
+	_, err = conn.ExecContext(ctx, `
+INSERT INTO tasks (
+    subagent_session_id,
+    parent_session_id,
+    kind,
+    status,
+    input_payload_json,
+    progress_payload_json,
+    result_payload_json,
+    error_message,
+    created_at,
+    completed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, "session-subagent", "session-parent", "verify", "running", "{}", "{}", "", "", now.UnixMilli(), nil)
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteSession(ctx, "session-subagent"))
+	require.Equal(t, 0, taskCountBySession(t, conn, "session-subagent"))
+}
+
+func TestStoreDeletingParentSessionAlsoDeletesSubagentSessionsAndTasks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Unix(1710005200, 0).UTC()
+
+	createTaskSessions(t, ctx, s, now, "session-parent", "session-subagent-1", "session-subagent-2")
+
+	_, err := s.CreateTask(ctx, taskcontract.CreateTaskParams{
+		SubagentSessionID: "session-subagent-1",
+		ParentSessionID:   "session-parent",
+		Kind:              "verify",
+		CreatedAt:         now,
+	})
+	require.NoError(t, err)
+
+	_, err = s.CreateTask(ctx, taskcontract.CreateTaskParams{
+		SubagentSessionID: "session-subagent-2",
+		ParentSessionID:   "session-parent",
+		Kind:              "verify",
+		CreatedAt:         now.Add(time.Second),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteSession(ctx, "session-parent"))
+
+	_, err = s.GetSession(ctx, "session-parent")
+	require.ErrorIs(t, err, sessioncontract.ErrSessionNotFound)
+	_, err = s.GetSession(ctx, "session-subagent-1")
+	require.ErrorIs(t, err, sessioncontract.ErrSessionNotFound)
+	_, err = s.GetSession(ctx, "session-subagent-2")
+	require.ErrorIs(t, err, sessioncontract.ErrSessionNotFound)
+	_, err = s.GetTask(ctx, "session-subagent-1")
+	require.ErrorIs(t, err, taskcontract.ErrTaskNotFound)
+	_, err = s.GetTask(ctx, "session-subagent-2")
+	require.ErrorIs(t, err, taskcontract.ErrTaskNotFound)
 }
 
 func TestOpenRegistersVecFunctions(t *testing.T) {
@@ -539,6 +809,30 @@ func newTestStore(t *testing.T) *db.Store {
 	return s
 }
 
+func createTaskSessions(t *testing.T, ctx context.Context, s *db.Store, now time.Time, parentSessionID string, subagentSessionIDs ...string) {
+	t.Helper()
+
+	_, err := s.CreateSession(ctx, sessioncontract.CreateSessionParams{
+		ID:        parentSessionID,
+		Title:     "parent",
+		TodosJSON: "[]",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	require.NoError(t, err)
+
+	for _, subagentSessionID := range subagentSessionIDs {
+		_, err := s.CreateSession(ctx, sessioncontract.CreateSessionParams{
+			ID:        subagentSessionID,
+			Title:     "subagent",
+			TodosJSON: "[]",
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+		require.NoError(t, err)
+	}
+}
+
 func tableExists(t *testing.T, dbPath string, tableName string) bool {
 	t.Helper()
 
@@ -573,6 +867,52 @@ func indexExists(t *testing.T, dbPath string, indexName string) bool {
 	).Scan(&count)
 	require.NoError(t, err)
 	return count == 1
+}
+
+func columnExists(t *testing.T, dbPath string, tableName string, columnName string) bool {
+	t.Helper()
+
+	conn, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, conn.Close())
+	})
+
+	rows, err := conn.Query(`PRAGMA table_info(` + tableName + `)`)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, rows.Close())
+	}()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			primaryKey int
+		)
+		require.NoError(t, rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &primaryKey))
+		if name == columnName {
+			return true
+		}
+	}
+	require.NoError(t, rows.Err())
+	return false
+}
+
+func taskCountBySession(t *testing.T, conn *sql.DB, subagentSessionID string) int {
+	t.Helper()
+
+	var count int
+	err := conn.QueryRowContext(
+		context.Background(),
+		`SELECT COUNT(1) FROM tasks WHERE subagent_session_id = ?`,
+		subagentSessionID,
+	).Scan(&count)
+	require.NoError(t, err)
+	return count
 }
 
 func testEmbedding(value float32) []byte {

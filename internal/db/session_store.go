@@ -25,7 +25,9 @@ func (s *Store) UpdateSession(ctx context.Context, params sessioncontract.Update
 }
 
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
-	return deleteSessionWithQuerier(ctx, s.q, id)
+	return s.WithinTx(ctx, func(tx TxStore) error {
+		return tx.DeleteSession(ctx, id)
+	})
 }
 
 func (s *txStore) CreateSession(ctx context.Context, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error) {
@@ -56,10 +58,14 @@ type sessionQuerier interface {
 	DeleteSession(ctx context.Context, id string) (int64, error)
 }
 
+type sessionDeleteQuerier interface {
+	sessionQuerier
+	ListTasksByParentSession(ctx context.Context, parentSessionID string) ([]Task, error)
+}
+
 func createSessionWithQuerier(ctx context.Context, q sessionQuerier, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error) {
 	row, err := q.CreateSession(ctx, CreateSessionParams{
 		ID:               params.ID,
-		ParentSessionID:  params.ParentSessionID,
 		Title:            params.Title,
 		MessageCount:     params.MessageCount,
 		CompletionTokens: params.CompletionTokens,
@@ -75,7 +81,6 @@ func createSessionWithQuerier(ctx context.Context, q sessionQuerier, params sess
 
 	return sessioncontract.Session{
 		ID:               row.ID,
-		ParentSessionID:  row.ParentSessionID,
 		Title:            row.Title,
 		MessageCount:     row.MessageCount,
 		CompletionTokens: row.CompletionTokens,
@@ -97,7 +102,6 @@ func listSessionsWithQuerier(ctx context.Context, q sessionQuerier) ([]sessionco
 	for _, row := range rows {
 		sessions = append(sessions, sessioncontract.Session{
 			ID:               row.ID,
-			ParentSessionID:  row.ParentSessionID,
 			Title:            row.Title,
 			MessageCount:     row.MessageCount,
 			CompletionTokens: row.CompletionTokens,
@@ -123,7 +127,6 @@ func getSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) (se
 
 	return sessioncontract.Session{
 		ID:               row.ID,
-		ParentSessionID:  row.ParentSessionID,
 		Title:            row.Title,
 		MessageCount:     row.MessageCount,
 		CompletionTokens: row.CompletionTokens,
@@ -137,7 +140,6 @@ func getSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) (se
 
 func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params sessioncontract.UpdateSessionParams) (sessioncontract.Session, error) {
 	row, err := q.UpdateSession(ctx, UpdateSessionParams{
-		ParentSessionID:  params.ParentSessionID,
 		Title:            params.Title,
 		MessageCount:     params.MessageCount,
 		CompletionTokens: params.CompletionTokens,
@@ -156,7 +158,6 @@ func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params sess
 
 	return sessioncontract.Session{
 		ID:               row.ID,
-		ParentSessionID:  row.ParentSessionID,
 		Title:            row.Title,
 		MessageCount:     row.MessageCount,
 		CompletionTokens: row.CompletionTokens,
@@ -168,7 +169,17 @@ func updateSessionWithQuerier(ctx context.Context, q sessionQuerier, params sess
 	}, nil
 }
 
-func deleteSessionWithQuerier(ctx context.Context, q sessionQuerier, id string) error {
+func deleteSessionWithQuerier(ctx context.Context, q sessionDeleteQuerier, id string) error {
+	tasks, err := q.ListTasksByParentSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if err := deleteSessionWithQuerier(ctx, q, task.SubagentSessionID); err != nil {
+			return err
+		}
+	}
+
 	rows, err := q.DeleteSession(ctx, id)
 	if err != nil {
 		return err

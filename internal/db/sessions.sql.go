@@ -12,7 +12,6 @@ import (
 const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (
     id,
-    parent_session_id,
     title,
     message_count,
     completion_tokens,
@@ -22,13 +21,12 @@ INSERT INTO sessions (
     created_at,
     updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, parent_session_id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
 `
 
 type CreateSessionParams struct {
 	ID               string `json:"id"`
-	ParentSessionID  string `json:"parent_session_id"`
 	Title            string `json:"title"`
 	MessageCount     int64  `json:"message_count"`
 	CompletionTokens int64  `json:"completion_tokens"`
@@ -42,7 +40,6 @@ type CreateSessionParams struct {
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
 	row := q.queryRow(ctx, q.createSessionStmt, createSession,
 		arg.ID,
-		arg.ParentSessionID,
 		arg.Title,
 		arg.MessageCount,
 		arg.CompletionTokens,
@@ -55,7 +52,6 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 	var i Session
 	err := row.Scan(
 		&i.ID,
-		&i.ParentSessionID,
 		&i.Title,
 		&i.MessageCount,
 		&i.CompletionTokens,
@@ -82,7 +78,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) (int64, error) {
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, parent_session_id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
+SELECT id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
 FROM sessions
 WHERE id = ?
 `
@@ -92,7 +88,6 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 	var i Session
 	err := row.Scan(
 		&i.ID,
-		&i.ParentSessionID,
 		&i.Title,
 		&i.MessageCount,
 		&i.CompletionTokens,
@@ -106,7 +101,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, parent_session_id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
+SELECT id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
 FROM sessions
 ORDER BY updated_at DESC, created_at DESC, id DESC
 `
@@ -122,7 +117,6 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 		var i Session
 		if err := rows.Scan(
 			&i.ID,
-			&i.ParentSessionID,
 			&i.Title,
 			&i.MessageCount,
 			&i.CompletionTokens,
@@ -147,8 +141,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 
 const updateSession = `-- name: UpdateSession :one
 UPDATE sessions
-SET parent_session_id = ?,
-    title = ?,
+SET title = ?,
     message_count = ?,
     completion_tokens = ?,
     cost_micros = ?,
@@ -156,11 +149,10 @@ SET parent_session_id = ?,
     todos_json = ?,
     updated_at = ?
 WHERE id = ?
-RETURNING id, parent_session_id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
+RETURNING id, title, message_count, completion_tokens, cost_micros, summary_message_id, todos_json, created_at, updated_at
 `
 
 type UpdateSessionParams struct {
-	ParentSessionID  string `json:"parent_session_id"`
 	Title            string `json:"title"`
 	MessageCount     int64  `json:"message_count"`
 	CompletionTokens int64  `json:"completion_tokens"`
@@ -173,7 +165,6 @@ type UpdateSessionParams struct {
 
 func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error) {
 	row := q.queryRow(ctx, q.updateSessionStmt, updateSession,
-		arg.ParentSessionID,
 		arg.Title,
 		arg.MessageCount,
 		arg.CompletionTokens,
@@ -186,7 +177,6 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 	var i Session
 	err := row.Scan(
 		&i.ID,
-		&i.ParentSessionID,
 		&i.Title,
 		&i.MessageCount,
 		&i.CompletionTokens,

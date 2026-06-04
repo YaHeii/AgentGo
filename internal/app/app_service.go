@@ -54,10 +54,6 @@ func (s *APPService) GetSessionID() string {
 	return s.sessions.GetSessionID()
 }
 
-func (s *APPService) GetParentSessionID() string {
-	return s.sessions.GetParentSessionID()
-}
-
 func (s *APPService) ListTools(ctx context.Context, permissionLevel toolcontract.SecurityLevel) []toolcontract.Metadata {
 	if s.tools == nil {
 		return nil

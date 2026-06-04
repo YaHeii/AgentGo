@@ -15,7 +15,6 @@ type sessionStore interface {
 	Restore(ctx context.Context, sessionID string, d Dispatcher) error
 	SwitchSession(ctx context.Context, sessionID string, d Dispatcher) error
 	GetSessionID() string
-	GetParentSessionID() string
 	Delete(ctx context.Context, id string, d Dispatcher) error
 	ListHistory(ctx context.Context, sessionID string, d Dispatcher) ([]messagecontract.Message, error)
 	CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams, d Dispatcher) (messagecontract.Message, error)

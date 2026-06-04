@@ -24,6 +24,9 @@ func New(db DBTX) *Queries {
 func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	q := Queries{db: db}
 	var err error
+	if q.completeTaskStmt, err = db.PrepareContext(ctx, completeTask); err != nil {
+		return nil, fmt.Errorf("error preparing query CompleteTask: %w", err)
+	}
 	if q.createChunkStmt, err = db.PrepareContext(ctx, createChunk); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateChunk: %w", err)
 	}
@@ -32,6 +35,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.createSessionStmt, err = db.PrepareContext(ctx, createSession); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateSession: %w", err)
+	}
+	if q.createTaskStmt, err = db.PrepareContext(ctx, createTask); err != nil {
+		return nil, fmt.Errorf("error preparing query CreateTask: %w", err)
 	}
 	if q.deleteChunksByDocumentIDStmt, err = db.PrepareContext(ctx, deleteChunksByDocumentID); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteChunksByDocumentID: %w", err)
@@ -42,11 +48,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionStmt, err = db.PrepareContext(ctx, deleteSession); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSession: %w", err)
 	}
+	if q.failTaskStmt, err = db.PrepareContext(ctx, failTask); err != nil {
+		return nil, fmt.Errorf("error preparing query FailTask: %w", err)
+	}
 	if q.getDocumentBySourcePathStmt, err = db.PrepareContext(ctx, getDocumentBySourcePath); err != nil {
 		return nil, fmt.Errorf("error preparing query GetDocumentBySourcePath: %w", err)
 	}
 	if q.getSessionStmt, err = db.PrepareContext(ctx, getSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSession: %w", err)
+	}
+	if q.getTaskStmt, err = db.PrepareContext(ctx, getTask); err != nil {
+		return nil, fmt.Errorf("error preparing query GetTask: %w", err)
 	}
 	if q.listChunksByDocumentIDStmt, err = db.PrepareContext(ctx, listChunksByDocumentID); err != nil {
 		return nil, fmt.Errorf("error preparing query ListChunksByDocumentID: %w", err)
@@ -57,11 +69,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listSessionsStmt, err = db.PrepareContext(ctx, listSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessions: %w", err)
 	}
+	if q.listTasksByParentSessionStmt, err = db.PrepareContext(ctx, listTasksByParentSession); err != nil {
+		return nil, fmt.Errorf("error preparing query ListTasksByParentSession: %w", err)
+	}
 	if q.searchChunksByPrefixStmt, err = db.PrepareContext(ctx, searchChunksByPrefix); err != nil {
 		return nil, fmt.Errorf("error preparing query SearchChunksByPrefix: %w", err)
 	}
 	if q.updateSessionStmt, err = db.PrepareContext(ctx, updateSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSession: %w", err)
+	}
+	if q.updateTaskProgressStmt, err = db.PrepareContext(ctx, updateTaskProgress); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateTaskProgress: %w", err)
 	}
 	if q.upsertDocumentStmt, err = db.PrepareContext(ctx, upsertDocument); err != nil {
 		return nil, fmt.Errorf("error preparing query UpsertDocument: %w", err)
@@ -71,6 +89,11 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 
 func (q *Queries) Close() error {
 	var err error
+	if q.completeTaskStmt != nil {
+		if cerr := q.completeTaskStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing completeTaskStmt: %w", cerr)
+		}
+	}
 	if q.createChunkStmt != nil {
 		if cerr := q.createChunkStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createChunkStmt: %w", cerr)
@@ -84,6 +107,11 @@ func (q *Queries) Close() error {
 	if q.createSessionStmt != nil {
 		if cerr := q.createSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createSessionStmt: %w", cerr)
+		}
+	}
+	if q.createTaskStmt != nil {
+		if cerr := q.createTaskStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing createTaskStmt: %w", cerr)
 		}
 	}
 	if q.deleteChunksByDocumentIDStmt != nil {
@@ -101,6 +129,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteSessionStmt: %w", cerr)
 		}
 	}
+	if q.failTaskStmt != nil {
+		if cerr := q.failTaskStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing failTaskStmt: %w", cerr)
+		}
+	}
 	if q.getDocumentBySourcePathStmt != nil {
 		if cerr := q.getDocumentBySourcePathStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getDocumentBySourcePathStmt: %w", cerr)
@@ -109,6 +142,11 @@ func (q *Queries) Close() error {
 	if q.getSessionStmt != nil {
 		if cerr := q.getSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getSessionStmt: %w", cerr)
+		}
+	}
+	if q.getTaskStmt != nil {
+		if cerr := q.getTaskStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getTaskStmt: %w", cerr)
 		}
 	}
 	if q.listChunksByDocumentIDStmt != nil {
@@ -126,6 +164,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listSessionsStmt: %w", cerr)
 		}
 	}
+	if q.listTasksByParentSessionStmt != nil {
+		if cerr := q.listTasksByParentSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listTasksByParentSessionStmt: %w", cerr)
+		}
+	}
 	if q.searchChunksByPrefixStmt != nil {
 		if cerr := q.searchChunksByPrefixStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing searchChunksByPrefixStmt: %w", cerr)
@@ -134,6 +177,11 @@ func (q *Queries) Close() error {
 	if q.updateSessionStmt != nil {
 		if cerr := q.updateSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateSessionStmt: %w", cerr)
+		}
+	}
+	if q.updateTaskProgressStmt != nil {
+		if cerr := q.updateTaskProgressStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateTaskProgressStmt: %w", cerr)
 		}
 	}
 	if q.upsertDocumentStmt != nil {
@@ -180,19 +228,25 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 type Queries struct {
 	db                             DBTX
 	tx                             *sql.Tx
+	completeTaskStmt               *sql.Stmt
 	createChunkStmt                *sql.Stmt
 	createMessageStmt              *sql.Stmt
 	createSessionStmt              *sql.Stmt
+	createTaskStmt                 *sql.Stmt
 	deleteChunksByDocumentIDStmt   *sql.Stmt
 	deleteDocumentBySourcePathStmt *sql.Stmt
 	deleteSessionStmt              *sql.Stmt
+	failTaskStmt                   *sql.Stmt
 	getDocumentBySourcePathStmt    *sql.Stmt
 	getSessionStmt                 *sql.Stmt
+	getTaskStmt                    *sql.Stmt
 	listChunksByDocumentIDStmt     *sql.Stmt
 	listMessagesStmt               *sql.Stmt
 	listSessionsStmt               *sql.Stmt
+	listTasksByParentSessionStmt   *sql.Stmt
 	searchChunksByPrefixStmt       *sql.Stmt
 	updateSessionStmt              *sql.Stmt
+	updateTaskProgressStmt         *sql.Stmt
 	upsertDocumentStmt             *sql.Stmt
 }
 
@@ -200,19 +254,25 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
 		db:                             tx,
 		tx:                             tx,
+		completeTaskStmt:               q.completeTaskStmt,
 		createChunkStmt:                q.createChunkStmt,
 		createMessageStmt:              q.createMessageStmt,
 		createSessionStmt:              q.createSessionStmt,
+		createTaskStmt:                 q.createTaskStmt,
 		deleteChunksByDocumentIDStmt:   q.deleteChunksByDocumentIDStmt,
 		deleteDocumentBySourcePathStmt: q.deleteDocumentBySourcePathStmt,
 		deleteSessionStmt:              q.deleteSessionStmt,
+		failTaskStmt:                   q.failTaskStmt,
 		getDocumentBySourcePathStmt:    q.getDocumentBySourcePathStmt,
 		getSessionStmt:                 q.getSessionStmt,
+		getTaskStmt:                    q.getTaskStmt,
 		listChunksByDocumentIDStmt:     q.listChunksByDocumentIDStmt,
 		listMessagesStmt:               q.listMessagesStmt,
 		listSessionsStmt:               q.listSessionsStmt,
+		listTasksByParentSessionStmt:   q.listTasksByParentSessionStmt,
 		searchChunksByPrefixStmt:       q.searchChunksByPrefixStmt,
 		updateSessionStmt:              q.updateSessionStmt,
+		updateTaskProgressStmt:         q.updateTaskProgressStmt,
 		upsertDocumentStmt:             q.upsertDocumentStmt,
 	}
 }

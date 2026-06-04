@@ -159,11 +159,10 @@ func TestSessionServiceListReturnsContractSessions(t *testing.T) {
 	st := newFakeSessionStore()
 	st.sessions = []sessioncontract.Session{
 		{
-			ID:              "session-2",
-			ParentSessionID: "parent-1",
-			Title:           "latest",
-			CreatedAt:       time.Unix(1710000000, 0).UTC(),
-			UpdatedAt:       time.Unix(1710000500, 0).UTC(),
+			ID:        "session-2",
+			Title:     "latest",
+			CreatedAt: time.Unix(1710000000, 0).UTC(),
+			UpdatedAt: time.Unix(1710000500, 0).UTC(),
 		},
 	}
 	svc := NewSessionService(st, newFakeSessionMessages(), newStubDispatcher())
@@ -173,11 +172,10 @@ func TestSessionServiceListReturnsContractSessions(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []sessioncontract.Session{
 		{
-			ID:              "session-2",
-			ParentSessionID: "parent-1",
-			Title:           "latest",
-			CreatedAt:       time.Unix(1710000000, 0).UTC(),
-			UpdatedAt:       time.Unix(1710000500, 0).UTC(),
+			ID:        "session-2",
+			Title:     "latest",
+			CreatedAt: time.Unix(1710000000, 0).UTC(),
+			UpdatedAt: time.Unix(1710000500, 0).UTC(),
 		},
 	}, got)
 }
@@ -239,8 +237,7 @@ func TestSessionServiceSwitchSessionUpdatesStateAndPublishesEvent(t *testing.T) 
 	st := newFakeSessionStore()
 	st.sessions = []sessioncontract.Session{
 		{
-			ID:              "session-1",
-			ParentSessionID: "parent-1",
+			ID: "session-1",
 		},
 	}
 	dispatcher := newStubDispatcher()
@@ -250,9 +247,7 @@ func TestSessionServiceSwitchSessionUpdatesStateAndPublishesEvent(t *testing.T) 
 	err := svc.SwitchSession(context.Background(), "session-1", dispatcher)
 	require.NoError(t, err)
 	require.Equal(t, "session-1", svc.GetSessionID())
-	require.Equal(t, "parent-1", svc.GetParentSessionID())
 	require.Equal(t, "session-1", lifecycle.State.SessionID)
-	require.Equal(t, "parent-1", lifecycle.State.ParentSessionID)
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
@@ -302,10 +297,8 @@ func TestSessionServiceRestoreReturnsOnlyErrorAndPublishesEvent(t *testing.T) {
 	err := svc.Restore(context.Background(), "session-1", dispatcher)
 	require.NoError(t, err)
 	require.Equal(t, "session-1", svc.GetSessionID())
-	require.Equal(t, "", svc.GetParentSessionID())
 	require.Equal(t, "session-1", msgs.lastListSessionID)
 	require.Equal(t, "session-1", lifecycle.State.SessionID)
-	require.Equal(t, "", lifecycle.State.ParentSessionID)
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
@@ -328,7 +321,6 @@ func newFakeSessionStore() *fakeSessionStore {
 func (s *fakeSessionStore) CreateSession(_ context.Context, params sessioncontract.CreateSessionParams) (sessioncontract.Session, error) {
 	session := sessioncontract.Session{
 		ID:               params.ID,
-		ParentSessionID:  params.ParentSessionID,
 		Title:            params.Title,
 		MessageCount:     params.MessageCount,
 		CompletionTokens: params.CompletionTokens,
@@ -365,7 +357,6 @@ func (s *fakeSessionStore) UpdateSession(_ context.Context, params sessioncontra
 		if params.Title != "" {
 			s.sessions[i].Title = params.Title
 		}
-		s.sessions[i].ParentSessionID = params.ParentSessionID
 		s.sessions[i].MessageCount = params.MessageCount
 		s.sessions[i].CompletionTokens = params.CompletionTokens
 		s.sessions[i].CostMicros = params.CostMicros

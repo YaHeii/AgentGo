@@ -132,7 +132,6 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 	State.ProjectRoot = projectRoot
 	State.PermissionLevel = 2
 	State.SessionID = ""
-	State.ParentSessionID = ""
 	State.InitialEnv = loadEnvironmentSnapshot()
 	State.ModelLimit = normalizeContextWindow(s.cfg.ContextWindow)
 	State.MaxTurn = normalizeContextWindow(s.cfg.MaxTurn)

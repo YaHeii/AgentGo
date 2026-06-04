@@ -9,19 +9,25 @@ import (
 )
 
 type Querier interface {
+	CompleteTask(ctx context.Context, arg CompleteTaskParams) (Task, error)
 	CreateChunk(ctx context.Context, arg CreateChunkParams) (Chunk, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	DeleteChunksByDocumentID(ctx context.Context, documentID int64) (int64, error)
 	DeleteDocumentBySourcePath(ctx context.Context, sourcePath string) (int64, error)
 	DeleteSession(ctx context.Context, id string) (int64, error)
+	FailTask(ctx context.Context, arg FailTaskParams) (Task, error)
 	GetDocumentBySourcePath(ctx context.Context, sourcePath string) (Document, error)
 	GetSession(ctx context.Context, id string) (Session, error)
+	GetTask(ctx context.Context, subagentSessionID string) (Task, error)
 	ListChunksByDocumentID(ctx context.Context, documentID int64) ([]Chunk, error)
 	ListMessages(ctx context.Context, sessionID string) ([]Message, error)
 	ListSessions(ctx context.Context) ([]Session, error)
+	ListTasksByParentSession(ctx context.Context, parentSessionID string) ([]Task, error)
 	SearchChunksByPrefix(ctx context.Context, arg SearchChunksByPrefixParams) ([]SearchChunksByPrefixRow, error)
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
+	UpdateTaskProgress(ctx context.Context, arg UpdateTaskProgressParams) (Task, error)
 	UpsertDocument(ctx context.Context, arg UpsertDocumentParams) (Document, error)
 }
 

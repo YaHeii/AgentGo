@@ -4,6 +4,10 @@
 
 package db
 
+import (
+	"database/sql"
+)
+
 type Chunk struct {
 	ID         int64  `json:"id"`
 	DocumentID int64  `json:"document_id"`
@@ -32,7 +36,6 @@ type Message struct {
 
 type Session struct {
 	ID               string `json:"id"`
-	ParentSessionID  string `json:"parent_session_id"`
 	Title            string `json:"title"`
 	MessageCount     int64  `json:"message_count"`
 	CompletionTokens int64  `json:"completion_tokens"`
@@ -41,4 +44,17 @@ type Session struct {
 	TodosJson        string `json:"todos_json"`
 	CreatedAt        int64  `json:"created_at"`
 	UpdatedAt        int64  `json:"updated_at"`
+}
+
+type Task struct {
+	SubagentSessionID   string         `json:"subagent_session_id"`
+	ParentSessionID     string         `json:"parent_session_id"`
+	Kind                string         `json:"kind"`
+	Status              string         `json:"status"`
+	InputPayloadJson    sql.NullString `json:"input_payload_json"`
+	ProgressPayloadJson sql.NullString `json:"progress_payload_json"`
+	ResultPayloadJson   sql.NullString `json:"result_payload_json"`
+	ErrorMessage        string         `json:"error_message"`
+	CreatedAt           int64          `json:"created_at"`
+	CompletedAt         sql.NullInt64  `json:"completed_at"`
 }

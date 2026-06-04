@@ -21,7 +21,6 @@ type SessionService struct {
 	dispatcher      app.Dispatcher
 	nowFunc         func() time.Time
 	activeSessionID string
-	parentSessionID string
 }
 
 type RestoreResult struct {
@@ -37,7 +36,6 @@ func NewSessionService(st sessionStore, msgs messageStore, d app.Dispatcher) *Se
 		dispatcher:      d,
 		nowFunc:         time.Now,
 		activeSessionID: "",
-		parentSessionID: "",
 	}
 }
 
@@ -81,7 +79,6 @@ func (s *SessionService) Save(ctx context.Context, session sessioncontract.Sessi
 	updatedAt := s.nowFunc().UTC()
 	row, err := s.sessionStore.UpdateSession(ctx, sessioncontract.UpdateSessionParams{
 		ID:               session.ID,
-		ParentSessionID:  session.ParentSessionID,
 		Title:            session.Title,
 		MessageCount:     session.MessageCount,
 		CompletionTokens: session.CompletionTokens,
@@ -126,7 +123,6 @@ func (s *SessionService) Rename(ctx context.Context, id string, title string, d 
 	updatedAt := s.nowFunc().UTC()
 	row, err := s.sessionStore.UpdateSession(ctx, sessioncontract.UpdateSessionParams{
 		ID:               id,
-		ParentSessionID:  current.ParentSessionID,
 		Title:            title,
 		MessageCount:     current.MessageCount,
 		CompletionTokens: current.CompletionTokens,
@@ -172,7 +168,6 @@ func (s *SessionService) SwitchSession(ctx context.Context, sessionID string, d 
 	}
 
 	s.activeSessionID = sessionID
-	s.parentSessionID = sessionRow.ParentSessionID
 	s.syncLifecycleState()
 	session := sessionRow
 	d.Dispatch(app.BaseEvent{
@@ -187,10 +182,6 @@ func (s *SessionService) SwitchSession(ctx context.Context, sessionID string, d 
 
 func (s *SessionService) GetSessionID() string {
 	return s.activeSessionID
-}
-
-func (s *SessionService) GetParentSessionID() string {
-	return s.parentSessionID
 }
 
 func (s *SessionService) CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams, d app.Dispatcher) (messagecontract.Message, error) {
@@ -234,7 +225,6 @@ func (s *SessionService) restoreSession(ctx context.Context, sessionID string, d
 		Messages: msgs,
 	}
 	s.activeSessionID = sessionID
-	s.parentSessionID = sessionRow.ParentSessionID
 	s.syncLifecycleState()
 
 	d.Dispatch(app.BaseEvent{
@@ -268,5 +258,4 @@ func (s *SessionService) syncLifecycleState() {
 		return
 	}
 	lifecycle.State.SessionID = s.activeSessionID
-	lifecycle.State.ParentSessionID = s.parentSessionID
 }
