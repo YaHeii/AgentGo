@@ -11,6 +11,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/lifecycle"
 	messageevent "github.com/YaHeii/agentGo/internal/message"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
+	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/session"
 	uv "github.com/charmbracelet/ultraviolet"
 )
@@ -252,6 +253,23 @@ func (u *UI) handleAppEvent(event app.Event) tea.Cmd {
 			}
 		}
 		u.chat.refreshTranscript()
+	case app.EventProvider:
+		providerEvent, ok := event.Data().(provider.StreamEvent)
+		if !ok || !u.chat.loading {
+			return nil
+		}
+		delta := ""
+		switch providerEvent.Type {
+		case provider.StreamEventTextDelta:
+			delta = providerEvent.TextDelta
+		case provider.StreamEventRefusalDelta:
+			delta = providerEvent.RefusalDelta
+		default:
+			return nil
+		}
+		if u.chat.ApplyProviderTextDelta(delta) {
+			u.chat.refreshTranscript()
+		}
 	}
 	return nil
 }

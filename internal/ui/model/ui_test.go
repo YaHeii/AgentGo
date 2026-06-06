@@ -12,6 +12,7 @@ import (
 	"github.com/YaHeii/agentGo/internal/app"
 	"github.com/YaHeii/agentGo/internal/lifecycle"
 	message "github.com/YaHeii/agentGo/internal/message/contract"
+	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/session"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -488,6 +489,51 @@ func TestAgentCompletedEventRendersMarkdownAndStopsLoading(t *testing.T) {
 	}
 	if renderer.calls != 1 {
 		t.Fatalf("expected markdown render, got %d", renderer.calls)
+	}
+}
+
+func TestProviderTextDeltaUpdatesActiveAssistantMessage(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.chat.loading = true
+
+	started := appEventMsg{
+		event: app.BaseEvent{
+			T: app.EventAgent,
+			Payload: agent.QueryEvent{
+				Status: agentcontract.LoopStarted,
+				State: agent.LoopState{
+					Messages: []message.Message{
+						messageRecord("user-1", message.KindUser, "hello"),
+						messageRecord("assistant-1", message.KindAssistant, ""),
+					},
+				},
+			},
+		},
+	}
+	updated, _ := ui.Update(started)
+	ui = updated.(*UI)
+
+	for _, delta := range []string{"hel", "lo"} {
+		updated, _ = ui.Update(appEventMsg{
+			event: app.BaseEvent{
+				T: app.EventProvider,
+				Payload: provider.StreamEvent{
+					Type:      provider.StreamEventTextDelta,
+					TextDelta: delta,
+				},
+			},
+		})
+		ui = updated.(*UI)
+	}
+
+	if got := textContent(ui.chat.messages[1].Parts); got != "hello" {
+		t.Fatalf("expected streamed assistant text hello, got %q", got)
+	}
+	if !strings.Contains(ui.chat.viewport.View(), "hello") {
+		t.Fatalf("expected transcript to show streamed text, got %q", ui.chat.viewport.View())
+	}
+	if !ui.chat.loading {
+		t.Fatal("expected provider delta to keep loading state")
 	}
 }
 

@@ -197,6 +197,30 @@ func (c *Chat) AppendOrUpsertMessage(msg message.Message) {
 	c.messages = append(c.messages, msg)
 }
 
+func (c *Chat) ApplyProviderTextDelta(delta string) bool {
+	if delta == "" {
+		return false
+	}
+
+	for i := len(c.messages) - 1; i >= 0; i-- {
+		if c.messages[i].Kind != message.KindAssistant {
+			continue
+		}
+		for partIndex := range c.messages[i].Parts {
+			if c.messages[i].Parts[partIndex].Type == message.PartTypeText {
+				c.messages[i].Parts[partIndex].Text += delta
+				return true
+			}
+		}
+		c.messages[i].Parts = append(c.messages[i].Parts, message.Part{
+			Type: message.PartTypeText,
+			Text: delta,
+		})
+		return true
+	}
+	return false
+}
+
 func (c *Chat) refreshTranscript() {
 	c.items = buildTranscriptItems(c.messages, c.markdown, c.quietMarkdown, c.expanded)
 	c.syncViewport()
