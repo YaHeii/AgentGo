@@ -206,9 +206,96 @@ func TestMessageServiceCreateMessagePreservesSystemAndProgressPayloads(t *testin
 	require.Equal(t, "thinking", payload.Progress.Stage)
 }
 
+func TestMessageServiceGetReturnsStoredMessage(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	st.messagesBySession["session-1"] = []MessageRecord{
+		{
+			ID:               "m1",
+			SessionID:        "session-1",
+			Kind:             string(messagecontract.KindAssistant),
+			FinishedAt:       time.Unix(1710000000, 0).UTC(),
+			IsCompactSummary: false,
+			MessageJSON:      `{"parts":[{"Type":"text","Text":"hello"}]}`,
+		},
+	}
+
+	svc := NewMessageService(st)
+
+	msg, err := svc.Get(context.Background(), "m1")
+	require.NoError(t, err)
+	require.Equal(t, "m1", msg.ID)
+	require.Equal(t, "hello", msg.Parts[0].Text)
+}
+
+func TestMessageServiceDeleteRemovesMessageByID(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	st.messagesBySession["session-1"] = []MessageRecord{
+		{
+			ID:          "m1",
+			SessionID:   "session-1",
+			Kind:        string(messagecontract.KindUser),
+			FinishedAt:  time.Unix(1710000000, 0).UTC(),
+			MessageJSON: `{"parts":[{"Type":"text","Text":"hello"}]}`,
+		},
+		{
+			ID:          "m2",
+			SessionID:   "session-1",
+			Kind:        string(messagecontract.KindAssistant),
+			FinishedAt:  time.Unix(1710000001, 0).UTC(),
+			MessageJSON: `{"parts":[{"Type":"text","Text":"world"}]}`,
+		},
+	}
+
+	svc := NewMessageService(st)
+
+	err := svc.Delete(context.Background(), "m1")
+	require.NoError(t, err)
+	require.Equal(t, []string{"m1"}, st.deletedMessageIDs)
+	require.Len(t, st.messagesBySession["session-1"], 1)
+	require.Equal(t, "m2", st.messagesBySession["session-1"][0].ID)
+}
+
+func TestMessageServiceDeleteSessionMessagesRemovesAllSessionMessages(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeStore()
+	st.messagesBySession["session-1"] = []MessageRecord{
+		{
+			ID:          "m1",
+			SessionID:   "session-1",
+			Kind:        string(messagecontract.KindUser),
+			FinishedAt:  time.Unix(1710000000, 0).UTC(),
+			MessageJSON: `{"parts":[{"Type":"text","Text":"hello"}]}`,
+		},
+	}
+	st.messagesBySession["session-2"] = []MessageRecord{
+		{
+			ID:          "m2",
+			SessionID:   "session-2",
+			Kind:        string(messagecontract.KindAssistant),
+			FinishedAt:  time.Unix(1710000001, 0).UTC(),
+			MessageJSON: `{"parts":[{"Type":"text","Text":"world"}]}`,
+		},
+	}
+
+	svc := NewMessageService(st)
+
+	err := svc.DeleteSessionMessages(context.Background(), "session-1")
+	require.NoError(t, err)
+	require.Equal(t, []string{"session-1"}, st.deletedSessionIDs)
+	require.Empty(t, st.messagesBySession["session-1"])
+	require.Len(t, st.messagesBySession["session-2"], 1)
+}
+
 type fakeStore struct {
 	messagesBySession map[string][]MessageRecord
 	createdMessages   []MessageRecord
+	deletedMessageIDs []string
+	deletedSessionIDs []string
 }
 
 func newFakeStore() *fakeStore {
@@ -235,4 +322,35 @@ func (s *fakeStore) CreateMessage(_ context.Context, params CreateMessageRecordP
 func (s *fakeStore) ListMessages(_ context.Context, sessionID string) ([]MessageRecord, error) {
 	messages := s.messagesBySession[sessionID]
 	return append([]MessageRecord(nil), messages...), nil
+}
+
+func (s *fakeStore) GetMessage(_ context.Context, id string) (MessageRecord, error) {
+	for _, messages := range s.messagesBySession {
+		for _, msg := range messages {
+			if msg.ID == id {
+				return msg, nil
+			}
+		}
+	}
+	return MessageRecord{}, errTODO
+}
+
+func (s *fakeStore) DeleteMessage(_ context.Context, id string) error {
+	s.deletedMessageIDs = append(s.deletedMessageIDs, id)
+	for sessionID, messages := range s.messagesBySession {
+		filtered := messages[:0]
+		for _, msg := range messages {
+			if msg.ID != id {
+				filtered = append(filtered, msg)
+			}
+		}
+		s.messagesBySession[sessionID] = append([]MessageRecord(nil), filtered...)
+	}
+	return nil
+}
+
+func (s *fakeStore) DeleteSessionMessages(_ context.Context, sessionID string) error {
+	s.deletedSessionIDs = append(s.deletedSessionIDs, sessionID)
+	delete(s.messagesBySession, sessionID)
+	return nil
 }

@@ -22,7 +22,6 @@ func NewMessageService(st messageStore) *MessageService {
 	}
 }
 
-// TODO:Can the sessionID be passed into the ctx file? Is the ctx reset when the agent creates a single session?
 func (s *MessageService) CreateMessage(ctx context.Context, params messagecontract.CreateMessageParams) (messagecontract.Message, error) {
 	now := time.Now().UTC()
 	if len(params.Parts) == 0 {
@@ -193,14 +192,18 @@ func (s *MessageService) ListAllUserMessages(_ context.Context) ([]messagecontra
 	return nil, errTODO
 }
 
-func (s *MessageService) Delete(_ context.Context, _ string) error {
-	return errTODO
+func (s *MessageService) Delete(ctx context.Context, id string) error {
+	return s.messageStore.DeleteMessage(ctx, id)
 }
 
-func (s *MessageService) DeleteSessionMessages(_ context.Context, _ string) error {
-	return errTODO
+func (s *MessageService) DeleteSessionMessages(ctx context.Context, sessionID string) error {
+	return s.messageStore.DeleteSessionMessages(ctx, sessionID)
 }
 
-func (s *MessageService) Get(_ context.Context, _ string) (messagecontract.Message, error) {
-	return messagecontract.Message{}, errTODO
+func (s *MessageService) Get(ctx context.Context, id string) (messagecontract.Message, error) {
+	row, err := s.messageStore.GetMessage(ctx, id)
+	if err != nil {
+		return messagecontract.Message{}, err
+	}
+	return toMessage(row)
 }

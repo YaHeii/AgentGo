@@ -33,6 +33,9 @@ type TxStore interface {
 
 	CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error)
 	ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error)
+	GetMessage(ctx context.Context, id string) (message.MessageRecord, error)
+	DeleteMessage(ctx context.Context, id string) error
+	DeleteSessionMessages(ctx context.Context, sessionID string) error
 
 	CreateTask(ctx context.Context, params taskcontract.CreateTaskParams) (taskcontract.Task, error)
 	GetTask(ctx context.Context, subagentSessionID string) (taskcontract.Task, error)
@@ -63,6 +66,9 @@ type dbStore interface {
 
 	CreateMessage(ctx context.Context, params message.CreateMessageRecordParams) (message.MessageRecord, error)
 	ListMessages(ctx context.Context, sessionID string) ([]message.MessageRecord, error)
+	GetMessage(ctx context.Context, id string) (message.MessageRecord, error)
+	DeleteMessage(ctx context.Context, id string) error
+	DeleteSessionMessages(ctx context.Context, sessionID string) error
 
 	CreateTask(ctx context.Context, params taskcontract.CreateTaskParams) (taskcontract.Task, error)
 	GetTask(ctx context.Context, subagentSessionID string) (taskcontract.Task, error)

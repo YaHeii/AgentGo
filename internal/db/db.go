@@ -45,14 +45,23 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteDocumentBySourcePathStmt, err = db.PrepareContext(ctx, deleteDocumentBySourcePath); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteDocumentBySourcePath: %w", err)
 	}
+	if q.deleteMessageStmt, err = db.PrepareContext(ctx, deleteMessage); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteMessage: %w", err)
+	}
 	if q.deleteSessionStmt, err = db.PrepareContext(ctx, deleteSession); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSession: %w", err)
+	}
+	if q.deleteSessionMessagesStmt, err = db.PrepareContext(ctx, deleteSessionMessages); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteSessionMessages: %w", err)
 	}
 	if q.failTaskStmt, err = db.PrepareContext(ctx, failTask); err != nil {
 		return nil, fmt.Errorf("error preparing query FailTask: %w", err)
 	}
 	if q.getDocumentBySourcePathStmt, err = db.PrepareContext(ctx, getDocumentBySourcePath); err != nil {
 		return nil, fmt.Errorf("error preparing query GetDocumentBySourcePath: %w", err)
+	}
+	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
+		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
 	}
 	if q.getSessionStmt, err = db.PrepareContext(ctx, getSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSession: %w", err)
@@ -124,9 +133,19 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteDocumentBySourcePathStmt: %w", cerr)
 		}
 	}
+	if q.deleteMessageStmt != nil {
+		if cerr := q.deleteMessageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteMessageStmt: %w", cerr)
+		}
+	}
 	if q.deleteSessionStmt != nil {
 		if cerr := q.deleteSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteSessionStmt: %w", cerr)
+		}
+	}
+	if q.deleteSessionMessagesStmt != nil {
+		if cerr := q.deleteSessionMessagesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteSessionMessagesStmt: %w", cerr)
 		}
 	}
 	if q.failTaskStmt != nil {
@@ -137,6 +156,11 @@ func (q *Queries) Close() error {
 	if q.getDocumentBySourcePathStmt != nil {
 		if cerr := q.getDocumentBySourcePathStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getDocumentBySourcePathStmt: %w", cerr)
+		}
+	}
+	if q.getMessageStmt != nil {
+		if cerr := q.getMessageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getMessageStmt: %w", cerr)
 		}
 	}
 	if q.getSessionStmt != nil {
@@ -235,9 +259,12 @@ type Queries struct {
 	createTaskStmt                 *sql.Stmt
 	deleteChunksByDocumentIDStmt   *sql.Stmt
 	deleteDocumentBySourcePathStmt *sql.Stmt
+	deleteMessageStmt              *sql.Stmt
 	deleteSessionStmt              *sql.Stmt
+	deleteSessionMessagesStmt      *sql.Stmt
 	failTaskStmt                   *sql.Stmt
 	getDocumentBySourcePathStmt    *sql.Stmt
+	getMessageStmt                 *sql.Stmt
 	getSessionStmt                 *sql.Stmt
 	getTaskStmt                    *sql.Stmt
 	listChunksByDocumentIDStmt     *sql.Stmt
@@ -261,9 +288,12 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		createTaskStmt:                 q.createTaskStmt,
 		deleteChunksByDocumentIDStmt:   q.deleteChunksByDocumentIDStmt,
 		deleteDocumentBySourcePathStmt: q.deleteDocumentBySourcePathStmt,
+		deleteMessageStmt:              q.deleteMessageStmt,
 		deleteSessionStmt:              q.deleteSessionStmt,
+		deleteSessionMessagesStmt:      q.deleteSessionMessagesStmt,
 		failTaskStmt:                   q.failTaskStmt,
 		getDocumentBySourcePathStmt:    q.getDocumentBySourcePathStmt,
+		getMessageStmt:                 q.getMessageStmt,
 		getSessionStmt:                 q.getSessionStmt,
 		getTaskStmt:                    q.getTaskStmt,
 		listChunksByDocumentIDStmt:     q.listChunksByDocumentIDStmt,

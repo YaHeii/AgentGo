@@ -48,6 +48,53 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 	return i, err
 }
 
+const deleteMessage = `-- name: DeleteMessage :execrows
+DELETE FROM messages
+WHERE id = ?
+`
+
+func (q *Queries) DeleteMessage(ctx context.Context, id string) (int64, error) {
+	result, err := q.exec(ctx, q.deleteMessageStmt, deleteMessage, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteSessionMessages = `-- name: DeleteSessionMessages :execrows
+DELETE FROM messages
+WHERE session_id = ?
+`
+
+func (q *Queries) DeleteSessionMessages(ctx context.Context, sessionID string) (int64, error) {
+	result, err := q.exec(ctx, q.deleteSessionMessagesStmt, deleteSessionMessages, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getMessage = `-- name: GetMessage :one
+SELECT id, session_id, kind, provider, finished_at, is_compact_summary, message_json
+FROM messages
+WHERE id = ?
+`
+
+func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
+	row := q.queryRow(ctx, q.getMessageStmt, getMessage, id)
+	var i Message
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.Kind,
+		&i.Provider,
+		&i.FinishedAt,
+		&i.IsCompactSummary,
+		&i.MessageJson,
+	)
+	return i, err
+}
+
 const listMessages = `-- name: ListMessages :many
 SELECT id, session_id, kind, provider, finished_at, is_compact_summary, message_json
 FROM messages
