@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -176,6 +177,37 @@ func loadHistoryCmd(appSvc appService, sessionID string) tea.Cmd {
 			messages:  messages,
 			err:       err,
 		}
+	}
+}
+
+func listSessionsCmd(appSvc appService) tea.Cmd {
+	return func() tea.Msg {
+		if appSvc == nil {
+			return sessionsLoadedMsg{err: errors.New("app service is required")}
+		}
+		sessions, err := appSvc.ListSessions(context.Background())
+		return sessionsLoadedMsg{
+			sessions: sessions,
+			err:      err,
+		}
+	}
+}
+
+func switchSessionCmd(appSvc appService, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		if appSvc == nil {
+			return switchSessionDoneMsg{err: errors.New("app service is required")}
+		}
+		return switchSessionDoneMsg{err: appSvc.SwitchSession(context.Background(), sessionID)}
+	}
+}
+
+func startNewSessionCmd(appSvc appService, title string) tea.Cmd {
+	return func() tea.Msg {
+		if appSvc == nil {
+			return startNewSessionDoneMsg{err: errors.New("app service is required")}
+		}
+		return startNewSessionDoneMsg{err: appSvc.StartNewSession(context.Background(), title)}
 	}
 }
 

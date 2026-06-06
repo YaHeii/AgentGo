@@ -13,6 +13,7 @@ import (
 	message "github.com/YaHeii/agentGo/internal/message/contract"
 	"github.com/YaHeii/agentGo/internal/provider"
 	"github.com/YaHeii/agentGo/internal/session"
+	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 	uv "github.com/charmbracelet/ultraviolet"
 )
 
@@ -38,12 +39,28 @@ type historyLoadedMsg struct {
 	err       error
 }
 
+type sessionsLoadedMsg struct {
+	sessions []sessioncontract.Session
+	err      error
+}
+
+type switchSessionDoneMsg struct {
+	err error
+}
+
+type startNewSessionDoneMsg struct {
+	err error
+}
+
 type bootstrapDoneMsg struct {
 	err error
 }
 
 type appService interface {
+	ListSessions(ctx context.Context) ([]sessioncontract.Session, error)
 	ListHistory(ctx context.Context, sessionID string) ([]message.Message, error)
+	StartNewSession(ctx context.Context, title string) error
+	SwitchSession(ctx context.Context, sessionID string) error
 	RunQuery(ctx context.Context, sessionID string, prompt string) error
 	Events() <-chan app.Event
 }
@@ -123,6 +140,34 @@ func (u *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		u.chat.renderStableMarkdown(msg.messages)
 		u.chat.refreshTranscript()
 		return u, u.nextAppEventCmd()
+	case sessionsLoadedMsg:
+		if msg.err != nil {
+			u.slashMenu.Close()
+			u.setTransientStatus(msg.err.Error())
+			u.recomputeLayout()
+			return u, nil
+		}
+		if len(msg.sessions) == 0 {
+			u.slashMenu.Close()
+			u.setTransientStatus("no sessions")
+			u.recomputeLayout()
+			return u, nil
+		}
+		u.slashMenu.OpenSessions(msg.sessions, max(1, u.width))
+		u.recomputeLayout()
+		return u, nil
+	case switchSessionDoneMsg:
+		if msg.err != nil {
+			u.setTransientStatus(msg.err.Error())
+			return u, nil
+		}
+		return u, nil
+	case startNewSessionDoneMsg:
+		if msg.err != nil {
+			u.setTransientStatus(msg.err.Error())
+			return u, nil
+		}
+		return u, nil
 	case appEventMsg:
 		cmd := u.handleAppEvent(msg.event)
 		if cmd != nil {
@@ -296,16 +341,57 @@ func (u *UI) executeSelectedSlashCommand() (tea.Model, tea.Cmd) {
 }
 
 func (u *UI) executeSelectedSlashCommandWithCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	switch u.slashMenu.Mode() {
+	case slashMenuModeSessions:
+		sessionID, ok := u.slashMenu.SelectedSessionID()
+		if !ok {
+			return u, cmd
+		}
+		u.input.Clear()
+		u.slashMenu.Close()
+		u.recomputeLayout()
+		return u, switchSessionCmd(u.app, sessionID)
+	case slashMenuModePermissions:
+		level, ok := u.slashMenu.SelectedPermissionLevel()
+		if !ok {
+			return u, cmd
+		}
+		u.input.Clear()
+		u.slashMenu.Close()
+		if lifecycle.State == nil {
+			u.setTransientStatus("permission state unavailable")
+			u.recomputeLayout()
+			return u, nil
+		}
+		lifecycle.State.PermissionLevel = level
+		u.setTransientStatus("permission: " + permissionLabel(level))
+		u.recomputeLayout()
+		return u, nil
+	}
+
 	command, ok := u.slashMenu.SelectedCommand()
 	if !ok {
 		return u, cmd
 	}
 
 	u.input.Clear()
-	u.slashMenu.Close()
-	u.setTransientStatus("not implemented: " + command)
-	u.recomputeLayout()
-	return u, cmd
+	switch command {
+	case "/historySession":
+		return u, listSessionsCmd(u.app)
+	case "/permission":
+		u.slashMenu.OpenPermissions(max(1, u.width))
+		u.recomputeLayout()
+		return u, nil
+	case "/newSession":
+		u.slashMenu.Close()
+		u.recomputeLayout()
+		return u, startNewSessionCmd(u.app, "New Session")
+	default:
+		u.slashMenu.Close()
+		u.setTransientStatus("not implemented: " + command)
+		u.recomputeLayout()
+		return u, cmd
+	}
 }
 
 func (u *UI) syncSlashMenuFromInput() {

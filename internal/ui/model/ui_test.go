@@ -265,49 +265,163 @@ func TestUpdateBackspaceRoutesToInput(t *testing.T) {
 	}
 }
 
-func TestUpdateSlashMenuInterceptsEnterAndSetsTransientStatus(t *testing.T) {
+func TestUpdateSlashMenuEnterKeepsCompactExplicitlyUnimplemented(t *testing.T) {
 	ui := New(newStubAppService())
 	ui.width = 80
 	ui.height = 24
 
-	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "/", Code: '/'}))
-	ui = updated.(*UI)
+	ui.input.Append("/compact")
+	ui.syncSlashMenuFromInput()
 
 	if !ui.slashMenu.IsOpen() {
 		t.Fatal("expected slash menu open")
 	}
 
-	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	ui = updated.(*UI)
 
 	if ui.slashMenu.IsOpen() {
 		t.Fatal("expected slash menu to close after execution")
 	}
-	if !strings.Contains(ui.header.TransientStatus(), "not implemented: /historySession") {
+	if !strings.Contains(ui.header.TransientStatus(), "not implemented: /compact") {
 		t.Fatalf("expected transient slash status, got %q", ui.header.TransientStatus())
 	}
 }
 
-func TestUpdateSlashMenuInterceptsKeypadEnterAndSetsTransientStatus(t *testing.T) {
+func TestUpdateSlashMenuKeypadEnterKeepsCompactExplicitlyUnimplemented(t *testing.T) {
 	ui := New(newStubAppService())
 	ui.width = 80
 	ui.height = 24
 
-	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "/", Code: '/'}))
-	ui = updated.(*UI)
+	ui.input.Append("/compact")
+	ui.syncSlashMenuFromInput()
 
 	if !ui.slashMenu.IsOpen() {
 		t.Fatal("expected slash menu open")
 	}
 
-	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyKpEnter}))
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyKpEnter}))
 	ui = updated.(*UI)
 
 	if ui.slashMenu.IsOpen() {
 		t.Fatal("expected slash menu to close after execution")
 	}
-	if !strings.Contains(ui.header.TransientStatus(), "not implemented: /historySession") {
+	if !strings.Contains(ui.header.TransientStatus(), "not implemented: /compact") {
 		t.Fatalf("expected transient slash status, got %q", ui.header.TransientStatus())
+	}
+}
+
+func TestHistorySessionCommandListsSessionsAndSwitchesSelection(t *testing.T) {
+	svc := newStubAppService()
+	svc.sessions = []sessioncontract.Session{
+		{ID: "session-1", Title: "First"},
+		{ID: "session-2", Title: "Second"},
+	}
+	ui := New(svc)
+	ui.width = 80
+	ui.height = 24
+
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Text: "/", Code: '/'}))
+	ui = updated.(*UI)
+	updated, cmd := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui = updated.(*UI)
+	if cmd == nil {
+		t.Fatal("expected sessions load command")
+	}
+
+	updated, _ = ui.Update(cmd())
+	ui = updated.(*UI)
+	if !ui.slashMenu.IsOpen() || !strings.Contains(ui.slashMenu.View(), "Second") {
+		t.Fatalf("expected session list view, got %q", ui.slashMenu.View())
+	}
+
+	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	ui = updated.(*UI)
+	updated, cmd = ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui = updated.(*UI)
+	if cmd == nil {
+		t.Fatal("expected switch session command")
+	}
+
+	updated, _ = ui.Update(cmd())
+	ui = updated.(*UI)
+	if svc.lastSwitchSessionID != "session-2" {
+		t.Fatalf("expected switched session-2, got %q", svc.lastSwitchSessionID)
+	}
+	if ui.slashMenu.IsOpen() {
+		t.Fatal("expected slash menu closed after switch")
+	}
+}
+
+func TestPermissionCommandUpdatesLifecyclePermissionLevel(t *testing.T) {
+	t.Cleanup(func() {
+		lifecycle.State = nil
+	})
+	lifecycle.State = &lifecycle.GlobalState{PermissionLevel: lifecycle.SafeLevel}
+
+	ui := New(newStubAppService())
+	ui.width = 80
+	ui.height = 24
+	ui.input.Append("/per")
+	ui.syncSlashMenuFromInput()
+	updated, _ := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui = updated.(*UI)
+
+	if !ui.slashMenu.IsOpen() || !strings.Contains(ui.slashMenu.View(), "attention") {
+		t.Fatalf("expected permission list view, got %q", ui.slashMenu.View())
+	}
+
+	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	ui = updated.(*UI)
+	updated, _ = ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui = updated.(*UI)
+
+	if lifecycle.State.PermissionLevel != lifecycle.AttentionLevel {
+		t.Fatalf("expected attention permission, got %v", lifecycle.State.PermissionLevel)
+	}
+	if ui.slashMenu.IsOpen() {
+		t.Fatal("expected slash menu closed")
+	}
+}
+
+func TestNewSessionCommandStartsNewSession(t *testing.T) {
+	svc := newStubAppService()
+	ui := New(svc)
+	ui.width = 80
+	ui.height = 24
+	ui.input.Append("/new")
+	ui.syncSlashMenuFromInput()
+
+	updated, cmd := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui = updated.(*UI)
+	if cmd == nil {
+		t.Fatal("expected new session command")
+	}
+
+	updated, _ = ui.Update(cmd())
+	ui = updated.(*UI)
+	if svc.lastNewSessionTitle != "New Session" {
+		t.Fatalf("expected New Session title, got %q", svc.lastNewSessionTitle)
+	}
+	if ui.slashMenu.IsOpen() {
+		t.Fatal("expected slash menu closed")
+	}
+}
+
+func TestCompactCommandRemainsExplicitlyUnimplemented(t *testing.T) {
+	ui := New(newStubAppService())
+	ui.width = 80
+	ui.height = 24
+	ui.input.Append("/compact")
+	ui.syncSlashMenuFromInput()
+
+	updated, cmd := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui = updated.(*UI)
+	if cmd != nil {
+		t.Fatal("expected no command for compact")
+	}
+	if !strings.Contains(ui.header.TransientStatus(), "not implemented: /compact") {
+		t.Fatalf("expected compact not implemented status, got %q", ui.header.TransientStatus())
 	}
 }
 
@@ -557,9 +671,15 @@ type stubAppService struct {
 	eventsCalls          int
 	runQueryFn           func(ctx context.Context, sessionID string, prompt string) error
 	history              []message.Message
+	sessions             []sessioncontract.Session
 	lastHistorySessionID string
+	lastSwitchSessionID  string
+	lastNewSessionTitle  string
 	lastSessionID        string
 	lastPrompt           string
+	listSessionsErr      error
+	switchSessionErr     error
+	startNewSessionErr   error
 }
 
 func newStubAppService() *stubAppService {
@@ -578,6 +698,20 @@ func (s *stubAppService) RunQuery(ctx context.Context, sessionID string, prompt 
 		return nil
 	}
 	return s.runQueryFn(ctx, sessionID, prompt)
+}
+
+func (s *stubAppService) ListSessions(context.Context) ([]sessioncontract.Session, error) {
+	return append([]sessioncontract.Session(nil), s.sessions...), s.listSessionsErr
+}
+
+func (s *stubAppService) SwitchSession(_ context.Context, sessionID string) error {
+	s.lastSwitchSessionID = sessionID
+	return s.switchSessionErr
+}
+
+func (s *stubAppService) StartNewSession(_ context.Context, title string) error {
+	s.lastNewSessionTitle = title
+	return s.startNewSessionErr
 }
 
 func (s *stubAppService) Events() <-chan app.Event {
