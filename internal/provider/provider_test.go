@@ -92,10 +92,12 @@ func TestRunTurnPassesAgentAssembledRequestToClient(t *testing.T) {
 
 	firstEvent := <-events
 	require.Equal(t, app.EventProvider, firstEvent.Type())
+	require.Equal(t, app.EventProviderTextDelta, firstEvent.Name())
 	require.Equal(t, StreamEventTextDelta, firstEvent.Data().(StreamEvent).Type)
 
 	secondEvent := <-events
 	require.Equal(t, app.EventProvider, secondEvent.Type())
+	require.Equal(t, app.EventProviderTurnFinished, secondEvent.Name())
 	require.Equal(t, StreamEventTurnFinished, secondEvent.Data().(StreamEvent).Type)
 }
 
@@ -154,10 +156,13 @@ func TestRunTurnAggregatesToolCallDeltasIntoResult(t *testing.T) {
 	}, result.ToolCalls[0])
 
 	firstEvent := <-events
+	require.Equal(t, app.EventProviderToolCallDelta, firstEvent.Name())
 	require.Equal(t, StreamEventToolCallDelta, firstEvent.Data().(StreamEvent).Type)
 	secondEvent := <-events
+	require.Equal(t, app.EventProviderToolCallDelta, secondEvent.Name())
 	require.Equal(t, StreamEventToolCallDelta, secondEvent.Data().(StreamEvent).Type)
 	thirdEvent := <-events
+	require.Equal(t, app.EventProviderTurnFinished, thirdEvent.Name())
 	require.Equal(t, StreamEventTurnFinished, thirdEvent.Data().(StreamEvent).Type)
 }
 
@@ -181,8 +186,10 @@ func TestRunTurnReturnsPartialResultWhenProviderErrorOccurs(t *testing.T) {
 	require.Equal(t, "partial", result.Text)
 
 	firstEvent := <-events
+	require.Equal(t, app.EventProviderTextDelta, firstEvent.Name())
 	require.Equal(t, StreamEventTextDelta, firstEvent.Data().(StreamEvent).Type)
 	secondEvent := <-events
+	require.Equal(t, app.EventProviderError, secondEvent.Name())
 	require.Equal(t, StreamEventProviderError, secondEvent.Data().(StreamEvent).Type)
 }
 

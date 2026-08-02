@@ -41,6 +41,7 @@ func TestSessionServiceCreatePublishesCreatedEvent(t *testing.T) {
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
 	require.Equal(t, app.EventSession, event.Type())
+	require.Equal(t, app.EventSessionCreated, event.Name())
 
 	payload, ok := event.Data().(SessionEvent)
 	require.True(t, ok)
@@ -90,12 +91,44 @@ func TestSessionServiceRenameUpdatesSessionAndPublishesUpdatedEvent(t *testing.T
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
+	require.Equal(t, app.EventSession, event.Type())
+	require.Equal(t, app.EventSessionUpdated, event.Name())
 
 	payload, ok := event.Data().(SessionEvent)
 	require.True(t, ok)
 	require.Equal(t, StatusUpdated, payload.Status)
 	require.NotNil(t, payload.Session)
 	require.Equal(t, "new", payload.Session.Title)
+}
+
+func TestSessionServiceDeletePublishesDeletedEvent(t *testing.T) {
+	t.Parallel()
+
+	st := newFakeSessionStore()
+	st.sessions = []sessioncontract.Session{
+		{
+			ID:        "session-1",
+			Title:     "old",
+			TodosJSON: "[]",
+			CreatedAt: time.Unix(1710000000, 0).UTC(),
+			UpdatedAt: time.Unix(1710000000, 0).UTC(),
+		},
+	}
+	dispatcher := newStubDispatcher()
+	svc := NewSessionService(st, newFakeSessionMessages(), dispatcher)
+
+	err := svc.Delete(context.Background(), "session-1", dispatcher)
+	require.NoError(t, err)
+
+	event := dispatcher.lastEvent
+	require.NotNil(t, event)
+	require.Equal(t, app.EventSession, event.Type())
+	require.Equal(t, app.EventSessionDeleted, event.Name())
+
+	payload, ok := event.Data().(SessionEvent)
+	require.True(t, ok)
+	require.Equal(t, StatusDeleted, payload.Status)
+	require.Nil(t, payload.Session)
 }
 
 func TestSessionServiceSaveUpdatesSessionTodosJSON(t *testing.T) {
@@ -220,6 +253,7 @@ func TestSessionServiceCreateMessageRoutesThroughMessageDependency(t *testing.T)
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
 	require.Equal(t, app.EventMessage, event.Type())
+	require.Equal(t, app.EventMessageCreated, event.Name())
 
 	payload, ok := event.Data().(message.MessageEvent)
 	require.True(t, ok)
@@ -251,12 +285,14 @@ func TestSessionServiceSwitchSessionUpdatesStateAndPublishesEvent(t *testing.T) 
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
+	require.Equal(t, app.EventSession, event.Type())
 
 	payload, ok := event.Data().(SessionEvent)
 	require.True(t, ok)
 	require.Equal(t, StatusSwitched, payload.Status)
 	require.NotNil(t, payload.Session)
 	require.Equal(t, "session-1", payload.Session.ID)
+	require.Equal(t, app.EventSessionSwitched, event.Name())
 }
 
 func TestSessionServiceSwitchSessionReturnsNotFoundWhenMissing(t *testing.T) {
@@ -302,12 +338,14 @@ func TestSessionServiceRestoreReturnsOnlyErrorAndPublishesEvent(t *testing.T) {
 
 	event := dispatcher.lastEvent
 	require.NotNil(t, event)
+	require.Equal(t, app.EventSession, event.Type())
 
 	payload, ok := event.Data().(SessionEvent)
 	require.True(t, ok)
 	require.Equal(t, StatusRestored, payload.Status)
 	require.NotNil(t, payload.Session)
 	require.Equal(t, "session-1", payload.Session.ID)
+	require.Equal(t, app.EventSessionRestored, event.Name())
 }
 
 type fakeSessionStore struct {

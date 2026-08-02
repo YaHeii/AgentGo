@@ -73,7 +73,7 @@ func TestDispatcherClosesSubscriberWhenContextIsCancelled(t *testing.T) {
 	}
 }
 
-func TestDispatcherPublishesLegacyTypeOnlyEventsDuringMigration(t *testing.T) {
+func TestDispatcherIgnoresTypeOnlyEventsWithoutName(t *testing.T) {
 	t.Parallel()
 
 	dispatcher := NewDispatcher(4)
@@ -85,5 +85,9 @@ func TestDispatcherPublishesLegacyTypeOnlyEventsDuringMigration(t *testing.T) {
 	}
 	dispatcher.Dispatch(want)
 
-	require.Equal(t, want, <-events)
+	select {
+	case got := <-events:
+		t.Fatalf("unexpected event delivered: %#v", got)
+	case <-time.After(20 * time.Millisecond):
+	}
 }

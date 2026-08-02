@@ -482,14 +482,7 @@ func (r *QueryLoop) dispatch(status agentcontract.LoopStatus, state LoopState, e
 	if r.deps.dispatcher == nil {
 		return
 	}
-	r.deps.dispatcher.Dispatch(app.BaseEvent{
-		T: app.EventAgent,
-		Payload: QueryEvent{
-			Status: status,
-			State:  copyLoopState(state),
-			Err:    err,
-		},
-	})
+	r.deps.dispatcher.Dispatch(NewQueryAppEvent(status, state, err))
 }
 
 func buildAssistantParts(turn providercontract.TurnResult) []message.Part {

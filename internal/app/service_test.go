@@ -214,11 +214,12 @@ func TestDispatcherPublishesEventsToSubscribers(t *testing.T) {
 	dispatcher := app.NewDispatcher(4)
 	events := dispatcher.Subscribe(context.Background())
 
-	want := fakeEvent{name: app.EventSession, payload: "session-created"}
+	want := fakeEvent{name: app.EventSession, event: app.EventSessionCreated, payload: "session-created"}
 	dispatcher.Dispatch(want)
 
 	got := <-events
 	require.Equal(t, want, got)
+	require.Equal(t, app.EventSessionCreated, got.Name())
 }
 
 type stubSessionService struct {

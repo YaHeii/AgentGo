@@ -27,37 +27,132 @@ func NewEvent(name EventName, payload any) Event {
 }
 
 var eventCatalog = map[EventName]eventMeta{
-	EventSessionCreated:  memoryEvent(EventSessionCreated, EventSession),
-	EventSessionUpdated:  memoryEvent(EventSessionUpdated, EventSession),
-	EventSessionDeleted:  memoryEvent(EventSessionDeleted, EventSession),
-	EventSessionSwitched: memoryEvent(EventSessionSwitched, EventSession),
-	EventSessionRestored: memoryEvent(EventSessionRestored, EventSession),
-
-	EventMessageCreated: memoryEvent(EventMessageCreated, EventMessage),
-
-	EventAgentLoopStarted:      memoryEvent(EventAgentLoopStarted, EventAgent),
-	EventAgentLoopAwaitingTool: memoryEvent(EventAgentLoopAwaitingTool, EventAgent),
-	EventAgentLoopCompleted:    memoryEvent(EventAgentLoopCompleted, EventAgent),
-	EventAgentLoopFailed:       memoryEvent(EventAgentLoopFailed, EventAgent),
-	EventAgentLoopCancelled:    memoryEvent(EventAgentLoopCancelled, EventAgent),
-
-	EventProviderTextDelta:      memoryEvent(EventProviderTextDelta, EventProvider),
-	EventProviderReasoningDelta: memoryEvent(EventProviderReasoningDelta, EventProvider),
-	EventProviderRefusalDelta:   memoryEvent(EventProviderRefusalDelta, EventProvider),
-	EventProviderToolCallDelta:  memoryEvent(EventProviderToolCallDelta, EventProvider),
-	EventProviderUsageAvailable: memoryEvent(EventProviderUsageAvailable, EventProvider),
-	EventProviderTurnFinished:   memoryEvent(EventProviderTurnFinished, EventProvider),
-	EventProviderError:          memoryEvent(EventProviderError, EventProvider),
-}
-
-func memoryEvent(name EventName, eventType EventType) eventMeta {
-	return eventMeta{
-		Type: eventType,
+	EventSessionCreated: {
+		Type: EventSession,
 		Route: RoutePolicy{
 			Delivery:   DeliveryMemory,
-			RoutingKey: string(name),
+			RoutingKey: string(EventSessionCreated),
 		},
-	}
+	},
+	EventSessionUpdated: {
+		Type: EventSession,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventSessionUpdated),
+		},
+	},
+	EventSessionDeleted: {
+		Type: EventSession,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventSessionDeleted),
+		},
+	},
+	EventSessionSwitched: {
+		Type: EventSession,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventSessionSwitched),
+		},
+	},
+	EventSessionRestored: {
+		Type: EventSession,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventSessionRestored),
+		},
+	},
+	EventMessageCreated: {
+		Type: EventMessage,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventMessageCreated),
+		},
+	},
+	EventAgentLoopStarted: {
+		Type: EventAgent,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventAgentLoopStarted),
+		},
+	},
+	EventAgentLoopAwaitingTool: {
+		Type: EventAgent,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventAgentLoopAwaitingTool),
+		},
+	},
+	EventAgentLoopCompleted: {
+		Type: EventAgent,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventAgentLoopCompleted),
+		},
+	},
+	EventAgentLoopFailed: {
+		Type: EventAgent,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventAgentLoopFailed),
+		},
+	},
+	EventAgentLoopCancelled: {
+		Type: EventAgent,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventAgentLoopCancelled),
+		},
+	},
+	EventProviderTextDelta: {
+		Type: EventProvider,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventProviderTextDelta),
+		},
+	},
+	EventProviderReasoningDelta: {
+		Type: EventProvider,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventProviderReasoningDelta),
+		},
+	},
+	EventProviderRefusalDelta: {
+		Type: EventProvider,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventProviderRefusalDelta),
+		},
+	},
+	EventProviderToolCallDelta: {
+		Type: EventProvider,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventProviderToolCallDelta),
+		},
+	},
+	EventProviderUsageAvailable: {
+		Type: EventProvider,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventProviderUsageAvailable),
+		},
+	},
+	EventProviderTurnFinished: {
+		Type: EventProvider,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventProviderTurnFinished),
+		},
+	},
+	EventProviderError: {
+		Type: EventProvider,
+		Route: RoutePolicy{
+			Delivery:   DeliveryMemory,
+			RoutingKey: string(EventProviderError),
+		},
+	},
 }
 
 func routeForEvent(evt Event) (RoutePolicy, bool) {
@@ -67,12 +162,6 @@ func routeForEvent(evt Event) (RoutePolicy, bool) {
 	if name := evt.Name(); name != "" {
 		meta, ok := eventCatalog[name]
 		return meta.Route, ok
-	}
-	if eventType := evt.Type(); eventType != "" {
-		return RoutePolicy{
-			Delivery:   DeliveryMemory,
-			RoutingKey: string(eventType),
-		}, true
 	}
 	return RoutePolicy{}, false
 }

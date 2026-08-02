@@ -86,10 +86,7 @@ func (s *ProviderService) publish(event StreamEvent) {
 	if s.dispatcher == nil {
 		return
 	}
-	s.dispatcher.Dispatch(app.BaseEvent{
-		T:       app.EventProvider,
-		Payload: event,
-	})
+	s.dispatcher.Dispatch(NewStreamAppEvent(event))
 }
 
 func preferFingerprint(current string, next string) string {

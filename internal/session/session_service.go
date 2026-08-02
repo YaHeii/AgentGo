@@ -56,13 +56,7 @@ func (s *SessionService) Create(ctx context.Context, title string, d app.Dispatc
 		return "", err
 	}
 
-	d.Dispatch(app.BaseEvent{
-		T: "session",
-		Payload: SessionEvent{
-			Status:  StatusCreated,
-			Session: sessionPtr(row),
-		},
-	})
+	d.Dispatch(NewSessionCreatedEvent(row))
 	return row.ID, nil
 }
 
@@ -136,13 +130,7 @@ func (s *SessionService) Rename(ctx context.Context, id string, title string, d 
 	}
 
 	session := row
-	d.Dispatch(app.BaseEvent{
-		T: "session",
-		Payload: SessionEvent{
-			Status:  StatusUpdated,
-			Session: sessionPtr(session),
-		},
-	})
+	d.Dispatch(NewSessionUpdatedEvent(session))
 	return session, nil
 }
 
@@ -151,13 +139,7 @@ func (s *SessionService) Delete(ctx context.Context, id string, d app.Dispatcher
 		return mapError(err)
 	}
 
-	d.Dispatch(app.BaseEvent{
-		T: "session",
-		Payload: SessionEvent{
-			Status:  StatusUpdated,
-			Session: nil,
-		},
-	})
+	d.Dispatch(NewSessionDeletedEvent())
 	return nil
 }
 
@@ -170,13 +152,7 @@ func (s *SessionService) SwitchSession(ctx context.Context, sessionID string, d 
 	s.activeSessionID = sessionID
 	s.syncLifecycleState()
 	session := sessionRow
-	d.Dispatch(app.BaseEvent{
-		T: "session",
-		Payload: SessionEvent{
-			Status:  StatusSwitched,
-			Session: sessionPtr(session),
-		},
-	})
+	d.Dispatch(NewSessionSwitchedEvent(session))
 	return nil
 }
 
@@ -190,13 +166,7 @@ func (s *SessionService) CreateMessage(ctx context.Context, params messagecontra
 		return messagecontract.Message{}, err
 	}
 
-	d.Dispatch(app.BaseEvent{
-		T: app.EventMessage,
-		Payload: message.MessageEvent{
-			Status:  message.StatusPending,
-			Message: &msg,
-		},
-	})
+	d.Dispatch(message.NewMessageCreatedEvent(msg))
 	return msg, nil
 }
 
@@ -227,13 +197,7 @@ func (s *SessionService) restoreSession(ctx context.Context, sessionID string, d
 	s.activeSessionID = sessionID
 	s.syncLifecycleState()
 
-	d.Dispatch(app.BaseEvent{
-		T: "session",
-		Payload: SessionEvent{
-			Status:  StatusRestored,
-			Session: sessionPtr(result.Session),
-		},
-	})
+	d.Dispatch(NewSessionRestoredEvent(result.Session))
 	return result, nil
 }
 
@@ -247,10 +211,6 @@ func mapError(err error) error {
 	}
 
 	return err
-}
-
-func sessionPtr(session sessioncontract.Session) *sessioncontract.Session {
-	return &session
 }
 
 func (s *SessionService) syncLifecycleState() {

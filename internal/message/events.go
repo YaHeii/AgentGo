@@ -3,6 +3,7 @@ package message
 import (
 	"fmt"
 
+	"github.com/YaHeii/agentGo/internal/app"
 	messagecontract "github.com/YaHeii/agentGo/internal/message/contract"
 )
 
@@ -31,4 +32,12 @@ func (s MessageStatus) String() string {
 type MessageEvent struct {
 	Status  MessageStatus
 	Message *messagecontract.Message
+}
+
+func NewMessageCreatedEvent(msg messagecontract.Message) app.Event {
+	messageCopy := msg
+	return app.NewEvent(app.EventMessageCreated, MessageEvent{
+		Status:  StatusPending,
+		Message: &messageCopy,
+	})
 }

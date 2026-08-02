@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 
+	"github.com/YaHeii/agentGo/internal/app"
 	sessioncontract "github.com/YaHeii/agentGo/internal/session/contract"
 )
 
@@ -36,4 +37,31 @@ func (s SessionStatus) String() string {
 type SessionEvent struct {
 	Status  SessionStatus
 	Session *sessioncontract.Session
+}
+
+func NewSessionCreatedEvent(session sessioncontract.Session) app.Event {
+	return newSessionEvent(app.EventSessionCreated, StatusCreated, &session)
+}
+
+func NewSessionUpdatedEvent(session sessioncontract.Session) app.Event {
+	return newSessionEvent(app.EventSessionUpdated, StatusUpdated, &session)
+}
+
+func NewSessionDeletedEvent() app.Event {
+	return newSessionEvent(app.EventSessionDeleted, StatusDeleted, nil)
+}
+
+func NewSessionSwitchedEvent(session sessioncontract.Session) app.Event {
+	return newSessionEvent(app.EventSessionSwitched, StatusSwitched, &session)
+}
+
+func NewSessionRestoredEvent(session sessioncontract.Session) app.Event {
+	return newSessionEvent(app.EventSessionRestored, StatusRestored, &session)
+}
+
+func newSessionEvent(name app.EventName, status SessionStatus, session *sessioncontract.Session) app.Event {
+	return app.NewEvent(name, SessionEvent{
+		Status:  status,
+		Session: session,
+	})
 }
