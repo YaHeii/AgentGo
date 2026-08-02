@@ -212,7 +212,6 @@ func cloneMessages(history []message.Message) []message.Message {
 	return copied
 }
 
-
 func (r *QueryLoop) estimateMessagesTokens(model string, messages []message.Message) (int, error) {
 	if lifecycle.CurrentSupervisor == nil {
 		return 0, errors.New("agent: supervisor is required for token estimation")
@@ -478,7 +477,7 @@ func (r *QueryLoop) createSystemErrorMessage(ctx context.Context, sessionID stri
 	})
 }
 
-// dispatch mirrors query-loop state changes onto the shared app event bus.
+// dispatch mirrors query-loop state changes onto the shared app event gateway.
 func (r *QueryLoop) dispatch(status agentcontract.LoopStatus, state LoopState, err error) {
 	if r.deps.dispatcher == nil {
 		return

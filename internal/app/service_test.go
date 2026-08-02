@@ -350,11 +350,16 @@ func (s *stubToolService) Call(_ context.Context, req toolcontract.BatchRequest)
 
 type fakeEvent struct {
 	name    app.EventType
+	event   app.EventName
 	payload any
 }
 
 func (e fakeEvent) Type() app.EventType {
 	return e.name
+}
+
+func (e fakeEvent) Name() app.EventName {
+	return e.event
 }
 
 func (e fakeEvent) Data() any {
