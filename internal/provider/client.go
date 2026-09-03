@@ -109,6 +109,9 @@ func buildChatCompletionRequest(model string, req providercontract.Request) open
 	if req.Context.Temperature != nil {
 		out.Temperature = *req.Context.Temperature
 	}
+	if req.Context.MaxOutputTokens != nil && *req.Context.MaxOutputTokens > 0 {
+		out.MaxCompletionTokens = *req.Context.MaxOutputTokens
+	}
 
 	for _, msg := range req.Messages {
 		out.Messages = append(out.Messages, toOpenAIMessage(msg))
@@ -291,6 +294,10 @@ func flattenMessageParts(parts []messagecontract.Part) string {
 		case messagecontract.PartTypeToolResult:
 			if part.ToolResult != nil && strings.TrimSpace(part.ToolResult.Content) != "" {
 				segments = append(segments, part.ToolResult.Content)
+			}
+		case messagecontract.PartTypeSummary:
+			if strings.TrimSpace(part.Text) != "" {
+				segments = append(segments, part.Text)
 			}
 		}
 	}

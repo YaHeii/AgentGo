@@ -133,7 +133,11 @@ func (s *Supervisor) Initialize(ctx context.Context) error {
 	State.PermissionLevel = 2
 	State.SessionID = ""
 	State.InitialEnv = loadEnvironmentSnapshot()
-	State.ModelLimit = normalizeContextWindow(s.cfg.ContextWindow)
+	State.ModelLimit = normalizeContextWindow(s.cfg.MaxToken)
+	if State.ModelLimit <= 0 {
+		State.ModelLimit = normalizeContextWindow(s.cfg.ContextWindow)
+	}
+	State.MaxOutputTokens = 0
 	State.MaxTurn = normalizeContextWindow(s.cfg.MaxTurn)
 	State.Model = s.cfg.Model
 	State.CumulativeInputTokens = 0

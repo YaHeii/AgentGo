@@ -358,6 +358,7 @@ func TestSupervisorInitializeCopiesConfigIntoState(t *testing.T) {
 		Environment:   "development",
 		Model:         "test-model",
 		ContextWindow: 12345,
+		MaxToken:      678,
 		MaxTurn:       9,
 	})
 
@@ -365,11 +366,11 @@ func TestSupervisorInitializeCopiesConfigIntoState(t *testing.T) {
 		t.Fatalf("initialize supervisor: %v", err)
 	}
 
-	if State.ModelLimit != 12345 {
-		t.Fatalf("expected model limit 12345, got %d", State.ModelLimit)
-	}
 	if State.MaxTurn != 9 {
 		t.Fatalf("expected max turn 9, got %d", State.MaxTurn)
+	}
+	if State.ModelLimit != 678 {
+		t.Fatalf("expected MAX_TOKENS to define model limit 678, got %d", State.ModelLimit)
 	}
 }
 

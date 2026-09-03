@@ -19,6 +19,7 @@ type GlobalState struct {
 	SessionID               string
 	InitialEnv              map[string]string
 	ModelLimit              int
+	MaxOutputTokens         int
 	MaxTurn                 int
 	Model                   string
 	CumulativeInputTokens   int

@@ -302,7 +302,8 @@ func TestBuildChatCompletionRequestMapsMessagesToolsAndContext(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(payload, &body))
 	_, hasMaxCompletionTokens := body["max_completion_tokens"]
-	require.False(t, hasMaxCompletionTokens)
+	require.True(t, hasMaxCompletionTokens)
+	require.Equal(t, float64(maxOutputTokens), body["max_completion_tokens"])
 	_, hasMaxTokens := body["max_tokens"]
 	require.False(t, hasMaxTokens)
 }

@@ -34,13 +34,11 @@ func (s *Service) RunQuery(ctx context.Context, sessionID string, prompt string)
 }
 
 type QueryLoop struct {
-	messageWindow int
-	deps          QueryDeps
+	deps QueryDeps
 }
 
 func NewQueryLoop(appSvc appStore, providerSvc providerStore, d app.Dispatcher) *QueryLoop {
 	return &QueryLoop{
-		messageWindow: 20,
 		deps: QueryDeps{
 			App:        appSvc,
 			Provider:   providerSvc,
@@ -86,7 +84,10 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 	if err != nil {
 		return agentcontract.QueryResult{}, err
 	}
-	historyMessages := r.preprocessHistory(history)
+	historyMessages, err := r.prepareHistory(ctx, sessionID, history, initPrompt)
+	if err != nil {
+		return agentcontract.QueryResult{}, err
+	}
 
 	//Assemble loopstate
 	if !containsMessage(historyMessages, userMessage.ID) {
@@ -149,7 +150,10 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 		if err != nil {
 			return agentcontract.QueryResult{}, err
 		}
-		loopstate.Messages = r.preprocessHistory(history)
+		loopstate.Messages, err = r.prepareHistory(ctx, sessionID, history, "")
+		if err != nil {
+			return agentcontract.QueryResult{}, err
+		}
 		loopstate.Transition = "history_loaded"
 
 		assistantMessage, err := r.newAssistantMessage(sessionID, loopstate.TurnCount)
@@ -158,7 +162,10 @@ func (r *QueryLoop) RunQuery(ctx context.Context, sessionID string, prompt strin
 
 		// Later turns reuse persisted history and tool results instead of rebuilding
 		// the initial system prompt on every iteration.
-		req := r.buildRequest(loopstate)
+		req, err := r.buildRequest(loopstate)
+		if err != nil {
+			return agentcontract.QueryResult{}, err
+		}
 
 		loopstate, err = r.runTurn(ctx, loopstate, req)
 		if err != nil {
@@ -210,53 +217,6 @@ func cloneMessages(history []message.Message) []message.Message {
 		copied[i].Parts = cloneMessageParts(history[i].Parts)
 	}
 	return copied
-}
-
-func (r *QueryLoop) estimateMessagesTokens(model string, messages []message.Message) (int, error) {
-	if lifecycle.CurrentSupervisor == nil {
-		return 0, errors.New("agent: supervisor is required for token estimation")
-	}
-	return lifecycle.CurrentSupervisor.EstimateTokens(model, messages)
-}
-
-func (r *QueryLoop) exceedsModelLimit(model string, limit int, messages []message.Message) (bool, error) {
-	builder := flattenMessages(messages)
-	if len(builder) > limit {
-		return true, nil
-	}
-
-	tokens, err := r.estimateMessagesTokens(model, messages)
-	if err != nil {
-		return false, nil
-	}
-	return tokens > limit, nil
-}
-
-func flattenMessages(messages []message.Message) []byte {
-	var builder []byte
-	for _, msg := range messages {
-		for _, part := range msg.Parts {
-			switch part.Type {
-			case message.PartTypeText:
-				builder = append(builder, part.Text...)
-			case message.PartTypeThinking:
-				if part.Thinking != nil {
-					builder = append(builder, part.Thinking.Content...)
-					builder = append(builder, part.Thinking.Summary...)
-				}
-			case message.PartTypeToolCall:
-				if part.ToolCall != nil {
-					builder = append(builder, part.ToolCall.Name...)
-					builder = append(builder, part.ToolCall.Input...)
-				}
-			case message.PartTypeToolResult:
-				if part.ToolResult != nil {
-					builder = append(builder, part.ToolResult.Content...)
-				}
-			}
-		}
-	}
-	return builder
 }
 
 // runTurn executes one provider turn against the latest assistant placeholder,
@@ -530,6 +490,10 @@ func flattenMessageParts(parts []message.Part) string {
 		case message.PartTypeToolResult:
 			if part.ToolResult != nil && strings.TrimSpace(part.ToolResult.Content) != "" {
 				segments = append(segments, part.ToolResult.Content)
+			}
+		case message.PartTypeSummary:
+			if strings.TrimSpace(part.Text) != "" {
+				segments = append(segments, part.Text)
 			}
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,28 +77,6 @@ func (r *QueryLoop) renderPrompt(usrPrompt string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(buf.String()), nil
-}
-
-func (r *QueryLoop) preprocessHistory(history []message.Message) []message.Message {
-	processed := cloneMessages(history)
-	if r.messageWindow > 0 && len(processed) > r.messageWindow {
-		processed = processed[len(processed)-r.messageWindow:]
-	}
-	if lifecycle.State == nil || lifecycle.CurrentSupervisor == nil {
-		return processed
-	}
-	if lifecycle.State.ModelLimit <= 0 || strings.TrimSpace(lifecycle.State.Model) == "" {
-		return processed
-	}
-
-	for len(processed) > 1 {
-		exceeded, err := r.exceedsModelLimit(lifecycle.State.Model, lifecycle.State.ModelLimit, processed)
-		if err == nil && !exceeded {
-			return processed
-		}
-		processed = processed[1:]
-	}
-	return processed
 }
 
 // Load AGENTS.md
@@ -174,17 +153,16 @@ func appendGlobFilesIfExists(sb *strings.Builder, pattern string) {
 // buildInitialRequest prepends the rendered system prompt to the normal
 // provider request used for the first turn.
 func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (providercontract.Request, error) {
-	req := providercontract.Request{
-		Messages: []message.Message{
-			{
-				Kind: message.KindSystem,
-				Parts: []message.Part{
-					{Type: message.PartTypeText, Text: prompt},
-				},
-			},
-		},
+	loopReq, err := r.buildRequestWithSystemPrompt(state, prompt)
+	if err != nil {
+		return providercontract.Request{}, err
 	}
-	loopReq := r.buildRequest(state)
+	req := providercontract.Request{
+		Messages: []message.Message{{
+			Kind:  message.KindSystem,
+			Parts: []message.Part{{Type: message.PartTypeText, Text: prompt}},
+		}},
+	}
 	req.Messages = append(req.Messages, loopReq.Messages...)
 	req.Tools = loopReq.Tools
 	req.Context = loopReq.Context
@@ -193,7 +171,11 @@ func (r *QueryLoop) buildInitialRequest(state LoopState, prompt string) (provide
 
 // buildRequest replays persisted conversation state into the provider format
 // and attaches the currently allowed tool metadata.
-func (r *QueryLoop) buildRequest(state LoopState) providercontract.Request {
+func (r *QueryLoop) buildRequest(state LoopState) (providercontract.Request, error) {
+	return r.buildRequestWithSystemPrompt(state, "")
+}
+
+func (r *QueryLoop) buildRequestWithSystemPrompt(state LoopState, systemPrompt string) (providercontract.Request, error) {
 	requestMessages := trimPendingAssistant(state.Messages)
 	permissionLevel := toolcontract.SecurityLevel(0)
 	if lifecycle.State != nil {
@@ -204,6 +186,26 @@ func (r *QueryLoop) buildRequest(state LoopState) providercontract.Request {
 		tools = r.deps.App.ListTools(context.Background(), permissionLevel)
 	}
 
+	model := ""
+	modelLimit := 0
+	outputTokens := 0
+	if lifecycle.State != nil {
+		model = lifecycle.State.Model
+		modelLimit = lifecycle.State.ModelLimit
+		outputTokens = lifecycle.State.MaxOutputTokens
+	}
+	if strings.TrimSpace(model) == "" || modelLimit <= 0 {
+		return providercontract.Request{}, errors.New("agent: model and context window are required")
+	}
+	budget, err := calculateContextBudget(model, modelLimit, outputTokens, systemPrompt, tools)
+	if err != nil {
+		return providercontract.Request{}, err
+	}
+	requestMessages, err = selectHistoryByTokenBudget(model, requestMessages, budget.HistoryBudget)
+	if err != nil {
+		return providercontract.Request{}, err
+	}
+
 	req := providercontract.Request{
 		Messages: make([]message.Message, 0, len(requestMessages)),
 		Tools:    make([]toolcontract.Metadata, 0, len(tools)),
@@ -212,8 +214,8 @@ func (r *QueryLoop) buildRequest(state LoopState) providercontract.Request {
 		temperature := lifecycle.State.Temperature
 		req.Context.Temperature = &temperature
 	}
-	if lifecycle.State != nil && lifecycle.State.ModelLimit > 0 {
-		maxOutputTokens := lifecycle.State.ModelLimit
+	if lifecycle.State != nil && lifecycle.State.MaxOutputTokens > 0 {
+		maxOutputTokens := lifecycle.State.MaxOutputTokens
 		req.Context.MaxOutputTokens = &maxOutputTokens
 	}
 	for _, msg := range requestMessages {
@@ -226,7 +228,115 @@ func (r *QueryLoop) buildRequest(state LoopState) providercontract.Request {
 	for _, meta := range tools {
 		req.Tools = append(req.Tools, meta)
 	}
-	return req
+	return req, nil
+}
+
+func (r *QueryLoop) prepareHistory(ctx context.Context, sessionID string, history []message.Message, systemPrompt string) ([]message.Message, error) {
+	processed := cloneMessages(history)
+	if r.deps.App == nil {
+		return processed, nil
+	}
+
+	permissionLevel := toolcontract.SecurityLevel(0)
+	if lifecycle.State != nil {
+		permissionLevel = toolcontract.SecurityLevel(lifecycle.State.PermissionLevel)
+	}
+	tools := r.deps.App.ListTools(ctx, permissionLevel)
+	if lifecycle.State == nil || strings.TrimSpace(lifecycle.State.Model) == "" || lifecycle.State.ModelLimit <= 0 {
+		return processed, nil
+	}
+
+	model := lifecycle.State.Model
+	budget, err := calculateContextBudget(model, lifecycle.State.ModelLimit, 0, systemPrompt, tools)
+	if err != nil {
+		return nil, err
+	}
+	active := historyAfterLatestSummary(processed)
+	historyTokens, err := countMessagesTokens(model, active)
+	if err != nil {
+		return nil, err
+	}
+	if budget.ShouldCompact(budget.FixedTokens + historyTokens) {
+		active, err = r.compactHistory(ctx, sessionID, active, model, budget, systemPrompt)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return selectHistoryByTokenBudget(model, active, budget.HistoryBudget)
+}
+
+func (r *QueryLoop) compactHistory(ctx context.Context, sessionID string, history []message.Message, model string, budget contextBudget, currentTask string) ([]message.Message, error) {
+	if len(history) == 0 {
+		return history, nil
+	}
+	target := budget.ModelLimit*compactedHistoryPercent/100 - budget.FixedTokens
+	if target < 1 {
+		target = 1
+	}
+	kept, err := selectHistoryByTokenBudget(model, history, target)
+	if err != nil {
+		return nil, err
+	}
+	keptIDs := make(map[string]struct{}, len(kept))
+	for _, msg := range kept {
+		keptIDs[msg.ID] = struct{}{}
+	}
+	dropped := make([]message.Message, 0, len(history)-len(kept))
+	for _, msg := range history {
+		if _, ok := keptIDs[msg.ID]; !ok {
+			dropped = append(dropped, msg)
+		}
+	}
+	if len(dropped) == 0 {
+		return history, nil
+	}
+
+	summaryResult, err := r.compactContext(ctx, compactionRequest{
+		CurrentTask:     currentTask,
+		ExistingSummary: latestSummaryText(history),
+		RecentContext:   kept,
+		Candidates:      dropped,
+		Model:           model,
+		TokenBudget:     budget.ModelLimit * compactSummaryPercent / 100,
+	})
+	if err != nil {
+		return nil, err
+	}
+	summary := buildCompactSummaryMessage(sessionID, nil)
+	summaryText := summaryResult.SummaryText
+	summary.Parts[0].Text = summaryText
+	persisted, err := r.deps.App.CreateMessage(ctx, message.CreateMessageParams{
+		SessionID:        summary.SessionID,
+		Kind:             summary.Kind,
+		IsCompactSummary: summary.IsCompactSummary,
+		Parts:            summary.Parts,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agent: persist compact summary: %w", err)
+	}
+	return append([]message.Message{persisted}, kept...), nil
+}
+
+func historyAfterLatestSummary(history []message.Message) []message.Message {
+	lastSummary := -1
+	for i, msg := range history {
+		if msg.IsCompactSummary {
+			lastSummary = i
+		}
+	}
+	if lastSummary < 0 {
+		return history
+	}
+	return history[lastSummary:]
+}
+
+func latestSummaryText(history []message.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].IsCompactSummary {
+			return strings.TrimSpace(formatCompactionMessage(history[i]))
+		}
+	}
+	return ""
 }
 
 // Clean up invalid assistant messages at the end of the message history.
